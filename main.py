@@ -11,11 +11,17 @@ from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
 
 # Local imports
-from config import logger, ENVIRONMENT
+from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST
 from database import init_db, log_interaction
 from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone
 from models.memory import save_memory, get_memories
 from models.reminder import save_reminder, get_user_reminders
+from models.list_model import (
+    create_list, get_lists, get_list_by_name, get_list_items,
+    add_list_item, mark_item_complete, mark_item_incomplete,
+    delete_list_item, delete_list, rename_list, clear_list,
+    find_item_in_any_list, get_list_count, get_item_count
+)
 from services.sms_service import send_sms
 from services.ai_service import process_with_ai
 from services.onboarding_service import handle_onboarding
@@ -148,6 +154,40 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # PENDING LIST ITEM SELECTION
+        # ==========================================
+        # Check if user has a pending list item and sent a number
+        if user and len(user) > 17 and user[17]:  # pending_list_item exists
+            pending_item = user[17]
+            if incoming_msg.strip().isdigit():
+                list_num = int(incoming_msg.strip())
+                lists = get_lists(phone_number)
+                if 1 <= list_num <= len(lists):
+                    selected_list = lists[list_num - 1]
+                    list_id = selected_list[0]
+                    list_name = selected_list[1]
+
+                    # Check item limit
+                    item_count = get_item_count(list_id)
+                    if item_count >= MAX_ITEMS_PER_LIST:
+                        resp = MessagingResponse()
+                        resp.message(f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first.")
+                        create_or_update_user(phone_number, pending_list_item=None)
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    add_list_item(list_id, phone_number, pending_item)
+                    create_or_update_user(phone_number, pending_list_item=None)
+
+                    resp = MessagingResponse()
+                    resp.message(f"Added {pending_item} to your {list_name}")
+                    log_interaction(phone_number, incoming_msg, f"Added {pending_item} to {list_name}", "add_to_list", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Please reply with a number between 1 and {len(lists)}")
+                    return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # DELETE ALL COMMAND
         # ==========================================
         if incoming_msg.upper() == "DELETE ALL":
@@ -163,27 +203,42 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
         if incoming_msg.upper() == "YES":
             user = get_user(phone_number)
             if user and user[9]:  # pending_delete flag
-                from database import get_db_connection
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
-                c.execute('DELETE FROM reminders WHERE phone_number = %s', (phone_number,))
-                conn.commit()
-                conn.close()
+                # Check if this is a list deletion
+                pending_list_name = user[17] if len(user) > 17 else None
+                if pending_list_name:
+                    # Delete specific list
+                    if delete_list(phone_number, pending_list_name):
+                        reply_msg = f"Deleted your {pending_list_name} and all its items."
+                    else:
+                        reply_msg = "Couldn't delete that list."
+                    create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
+                    resp = MessagingResponse()
+                    resp.message(reply_msg)
+                    log_interaction(phone_number, incoming_msg, reply_msg, "delete_list_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    # Delete all memories and reminders
+                    from database import get_db_connection
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
+                    c.execute('DELETE FROM reminders WHERE phone_number = %s', (phone_number,))
+                    conn.commit()
+                    conn.close()
 
-                create_or_update_user(phone_number, pending_delete=False)
+                    create_or_update_user(phone_number, pending_delete=False)
 
-                resp = MessagingResponse()
-                resp.message("All your data has been permanently deleted.")
-                log_interaction(phone_number, incoming_msg, "All data deleted", "delete_confirmed", True)
-                return Response(content=str(resp), media_type="application/xml")
+                    resp = MessagingResponse()
+                    resp.message("All your data has been permanently deleted.")
+                    log_interaction(phone_number, incoming_msg, "All data deleted", "delete_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
 
         if incoming_msg.upper() in ["NO", "CANCEL"]:
             user = get_user(phone_number)
             if user and user[9]:  # pending_delete flag
-                create_or_update_user(phone_number, pending_delete=False)
+                create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
                 resp = MessagingResponse()
-                resp.message("✅ Delete cancelled. Your data is safe!")
+                resp.message("Cancelled. Your data is safe!")
                 log_interaction(phone_number, incoming_msg, "Delete cancelled", "delete_cancelled", True)
                 return Response(content=str(resp), media_type="application/xml")
 
@@ -201,6 +256,24 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
             resp = MessagingResponse()
             resp.message(reply)
             log_interaction(phone_number, incoming_msg, reply, "list", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # LIST COMMANDS (MY LISTS, SHOW LISTS)
+        # ==========================================
+        if incoming_msg.upper() in ["MY LISTS", "SHOW LISTS", "LIST LISTS", "LISTS"]:
+            lists = get_lists(phone_number)
+            if lists:
+                list_lines = []
+                for i, (list_id, list_name, item_count, completed_count) in enumerate(lists, 1):
+                    list_lines.append(f"{i}. {list_name} ({item_count} items)")
+                reply = "Your lists:\n\n" + "\n".join(list_lines)
+            else:
+                reply = "You don't have any lists yet. Try saying 'Create a grocery list'!"
+
+            resp = MessagingResponse()
+            resp.message(reply)
+            log_interaction(phone_number, incoming_msg, reply, "show_lists", True)
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
@@ -276,6 +349,158 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
 
             reply_text = ai_response.get("confirmation", "Got it! I'll remind you.")
             log_interaction(phone_number, incoming_msg, reply_text, "reminder", True)
+
+        # ==========================================
+        # LIST ACTION HANDLERS
+        # ==========================================
+        elif ai_response["action"] == "create_list":
+            list_name = ai_response.get("list_name")
+            # Check list limit
+            list_count = get_list_count(phone_number)
+            if list_count >= MAX_LISTS_PER_USER:
+                reply_text = f"You've reached the maximum of {MAX_LISTS_PER_USER} lists. Delete a list to create a new one."
+            elif get_list_by_name(phone_number, list_name):
+                reply_text = f"You already have a list called '{list_name}'."
+            else:
+                create_list(phone_number, list_name)
+                reply_text = ai_response.get("confirmation", f"Created your {list_name}!")
+            log_interaction(phone_number, incoming_msg, reply_text, "create_list", True)
+
+        elif ai_response["action"] == "add_to_list":
+            list_name = ai_response.get("list_name")
+            item_text = ai_response.get("item_text")
+            list_info = get_list_by_name(phone_number, list_name)
+            if list_info:
+                list_id = list_info[0]
+                item_count = get_item_count(list_id)
+                if item_count >= MAX_ITEMS_PER_LIST:
+                    reply_text = f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first."
+                else:
+                    add_list_item(list_id, phone_number, item_text)
+                    reply_text = ai_response.get("confirmation", f"Added {item_text} to your {list_name}")
+            else:
+                reply_text = f"I couldn't find a list called '{list_name}'. Would you like me to create it?"
+            log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
+
+        elif ai_response["action"] == "add_item_ask_list":
+            item_text = ai_response.get("item_text")
+            lists = get_lists(phone_number)
+            if len(lists) == 1:
+                # Only one list, add directly
+                list_id = lists[0][0]
+                list_name = lists[0][1]
+                item_count = get_item_count(list_id)
+                if item_count >= MAX_ITEMS_PER_LIST:
+                    reply_text = f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first."
+                else:
+                    add_list_item(list_id, phone_number, item_text)
+                    reply_text = f"Added {item_text} to your {list_name}"
+            elif len(lists) > 1:
+                # Multiple lists, ask which one
+                create_or_update_user(phone_number, pending_list_item=item_text)
+                list_options = "\n".join([f"{i+1}. {l[1]}" for i, l in enumerate(lists)])
+                reply_text = f"Which list would you like to add {item_text} to?\n\n{list_options}\n\nReply with a number:"
+            else:
+                reply_text = "You don't have any lists yet. Try 'Create a grocery list' first!"
+            log_interaction(phone_number, incoming_msg, reply_text, "add_item_ask_list", True)
+
+        elif ai_response["action"] == "show_list":
+            list_name = ai_response.get("list_name")
+            list_info = get_list_by_name(phone_number, list_name)
+            if list_info:
+                items = get_list_items(list_info[0])
+                if items:
+                    item_lines = []
+                    for i, (item_id, item_text, completed) in enumerate(items, 1):
+                        if completed:
+                            item_lines.append(f"{i}. [x] {item_text}")
+                        else:
+                            item_lines.append(f"{i}. {item_text}")
+                    reply_text = f"{list_info[1]}:\n\n" + "\n".join(item_lines)
+                else:
+                    reply_text = f"Your {list_info[1]} is empty."
+            else:
+                reply_text = f"I couldn't find a list called '{list_name}'."
+            log_interaction(phone_number, incoming_msg, reply_text, "show_list", True)
+
+        elif ai_response["action"] == "show_all_lists":
+            lists = get_lists(phone_number)
+            if lists:
+                list_lines = []
+                for i, (list_id, list_name, item_count, completed_count) in enumerate(lists, 1):
+                    list_lines.append(f"{i}. {list_name} ({item_count} items)")
+                reply_text = "Your lists:\n\n" + "\n".join(list_lines)
+            else:
+                reply_text = "You don't have any lists yet. Try 'Create a grocery list'!"
+            log_interaction(phone_number, incoming_msg, reply_text, "show_all_lists", True)
+
+        elif ai_response["action"] == "complete_item":
+            list_name = ai_response.get("list_name")
+            item_text = ai_response.get("item_text")
+            if mark_item_complete(phone_number, list_name, item_text):
+                reply_text = ai_response.get("confirmation", f"Checked off {item_text}")
+            else:
+                # Try to find item in any list
+                found = find_item_in_any_list(phone_number, item_text)
+                if len(found) == 1:
+                    list_name = found[0][1]
+                    if mark_item_complete(phone_number, list_name, item_text):
+                        reply_text = f"Checked off {item_text} from your {list_name}"
+                    else:
+                        reply_text = f"Couldn't find '{item_text}' in your lists."
+                elif len(found) > 1:
+                    reply_text = f"'{item_text}' is in multiple lists. Please specify which list."
+                else:
+                    reply_text = f"Couldn't find '{item_text}' in your lists."
+            log_interaction(phone_number, incoming_msg, reply_text, "complete_item", True)
+
+        elif ai_response["action"] == "uncomplete_item":
+            list_name = ai_response.get("list_name")
+            item_text = ai_response.get("item_text")
+            if mark_item_incomplete(phone_number, list_name, item_text):
+                reply_text = ai_response.get("confirmation", f"Unmarked {item_text}")
+            else:
+                reply_text = f"Couldn't find '{item_text}' to unmark."
+            log_interaction(phone_number, incoming_msg, reply_text, "uncomplete_item", True)
+
+        elif ai_response["action"] == "delete_item":
+            list_name = ai_response.get("list_name")
+            item_text = ai_response.get("item_text")
+            if delete_list_item(phone_number, list_name, item_text):
+                reply_text = ai_response.get("confirmation", f"Removed {item_text} from your {list_name}")
+            else:
+                reply_text = f"Couldn't find '{item_text}' to remove."
+            log_interaction(phone_number, incoming_msg, reply_text, "delete_item", True)
+
+        elif ai_response["action"] == "delete_list":
+            list_name = ai_response.get("list_name")
+            list_info = get_list_by_name(phone_number, list_name)
+            if list_info:
+                # Store pending delete for list
+                create_or_update_user(phone_number, pending_delete=True, pending_list_item=list_name)
+                reply_text = f"Are you sure you want to delete your {list_info[1]} and all its items?\n\nReply YES to confirm."
+            else:
+                reply_text = f"I couldn't find a list called '{list_name}'."
+            log_interaction(phone_number, incoming_msg, reply_text, "delete_list", True)
+
+        elif ai_response["action"] == "clear_list":
+            list_name = ai_response.get("list_name")
+            if clear_list(phone_number, list_name):
+                reply_text = ai_response.get("confirmation", f"Cleared all items from your {list_name}")
+            else:
+                reply_text = f"I couldn't find a list called '{list_name}'."
+            log_interaction(phone_number, incoming_msg, reply_text, "clear_list", True)
+
+        elif ai_response["action"] == "rename_list":
+            old_name = ai_response.get("old_name")
+            new_name = ai_response.get("new_name")
+            if get_list_by_name(phone_number, new_name):
+                reply_text = f"You already have a list called '{new_name}'."
+            elif rename_list(phone_number, old_name, new_name):
+                reply_text = ai_response.get("confirmation", f"Renamed {old_name} to {new_name}")
+            else:
+                reply_text = f"I couldn't find a list called '{old_name}'."
+            log_interaction(phone_number, incoming_msg, reply_text, "rename_list", True)
 
         else:  # help or error
             reply_text = ai_response.get("response", "Hi! Text me to remember things, set reminders, or ask me about stored info.")

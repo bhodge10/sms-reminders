@@ -12,6 +12,7 @@ from config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TEMPERATURE, OPENAI_MAX_
 from models.memory import get_memories
 from models.reminder import get_user_reminders
 from models.user import get_user_timezone
+from models.list_model import get_lists, get_list_items
 from utils.timezone import get_user_current_time
 
 def process_with_ai(message, phone_number, context):
@@ -103,6 +104,26 @@ def process_with_ai(message, phone_number, context):
         else:
             reminders_context = "No reminders set."
 
+        # Get and format lists
+        lists = get_lists(phone_number)
+        if lists:
+            formatted_lists = []
+            for list_id, list_name, item_count, completed_count in lists:
+                items = get_list_items(list_id)
+                if items:
+                    item_texts = []
+                    for item_id, item_text, completed in items:
+                        if completed:
+                            item_texts.append(f"  [x] {item_text}")
+                        else:
+                            item_texts.append(f"  [ ] {item_text}")
+                    formatted_lists.append(f"- {list_name} ({item_count} items):\n" + "\n".join(item_texts))
+                else:
+                    formatted_lists.append(f"- {list_name} (empty)")
+            lists_context = "\n".join(formatted_lists)
+        else:
+            lists_context = "No lists created yet."
+
         # Get current time in user's timezone
         user_time = get_user_current_time(phone_number)
         user_tz = get_user_timezone(phone_number)
@@ -127,6 +148,9 @@ USER'S STORED MEMORIES:
 USER'S REMINDERS:
 {reminders_context}
 
+USER'S LISTS:
+{lists_context}
+
 IMPORTANT: Each memory shows when it was recorded. Use these dates when answering questions about "when did I..."
 
 CAPABILITIES:
@@ -135,6 +159,11 @@ CAPABILITIES:
 3. SET REMINDERS for future tasks
 4. LIST REMINDERS when asked
 5. PROVIDE HELP when asked
+6. CREATE LISTS for organizing items (grocery list, medication list, etc.)
+7. ADD ITEMS to existing lists
+8. CHECK OFF items as complete
+9. SHOW LIST contents
+10. DELETE ITEMS from lists
 
 For reminder requests with SPECIFIC TIMES:
 - If time includes AM/PM in ANY format (like "9pm", "9 pm", "9PM", "9 PM", "3:30am", "3:30 a.m.", "3:30AM", "3:30 A.M."): Process normally
@@ -210,6 +239,89 @@ For HELP REQUESTS:
 {{
     "action": "show_help",
     "response": "User is asking how to use the service. Tell them to text INFO (or ? or GUIDE) for the full guide, or answer their specific question briefly."
+}}
+
+For CREATING A LIST:
+{{
+    "action": "create_list",
+    "list_name": "the name of the list to create",
+    "confirmation": "Created your [list name]!"
+}}
+
+For ADDING TO A SPECIFIC LIST:
+{{
+    "action": "add_to_list",
+    "list_name": "the name of the list",
+    "item_text": "the item to add",
+    "confirmation": "Added [item] to your [list name]"
+}}
+
+For ADDING ITEM BUT NO LIST SPECIFIED (user has multiple lists):
+{{
+    "action": "add_item_ask_list",
+    "item_text": "the item they want to add",
+    "response": "Which list would you like to add [item] to?"
+}}
+Note: Only use add_item_ask_list if user has multiple lists and didn't specify which one. If user has only one list, use add_to_list with that list's name.
+
+For SHOWING A SPECIFIC LIST:
+{{
+    "action": "show_list",
+    "list_name": "the name of the list",
+    "response": "Format the list contents from USER'S LISTS above"
+}}
+
+For SHOWING ALL LISTS:
+{{
+    "action": "show_all_lists",
+    "response": "List all the user's lists with item counts"
+}}
+
+For CHECKING OFF AN ITEM:
+{{
+    "action": "complete_item",
+    "list_name": "the list containing the item",
+    "item_text": "the item to check off",
+    "confirmation": "Checked off [item] from your [list name]"
+}}
+Note: If item exists in only one list, use that list. If item exists in multiple lists, ask which one.
+
+For UNCHECKING AN ITEM:
+{{
+    "action": "uncomplete_item",
+    "list_name": "the list containing the item",
+    "item_text": "the item to uncheck",
+    "confirmation": "Unmarked [item] in your [list name]"
+}}
+
+For DELETING AN ITEM FROM A LIST:
+{{
+    "action": "delete_item",
+    "list_name": "the list name",
+    "item_text": "the item to delete",
+    "confirmation": "Removed [item] from your [list name]"
+}}
+
+For DELETING AN ENTIRE LIST:
+{{
+    "action": "delete_list",
+    "list_name": "the list to delete",
+    "confirmation": "Are you sure you want to delete your [list name]? Reply YES to confirm."
+}}
+
+For CLEARING ALL ITEMS FROM A LIST:
+{{
+    "action": "clear_list",
+    "list_name": "the list to clear",
+    "confirmation": "Cleared all items from your [list name]"
+}}
+
+For RENAMING A LIST:
+{{
+    "action": "rename_list",
+    "old_name": "current list name",
+    "new_name": "new list name",
+    "confirmation": "Renamed [old name] to [new name]"
 }}
 
 CRITICAL RULES:

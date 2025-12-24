@@ -5,39 +5,44 @@ Helper functions for formatting text and data
 
 def get_help_text():
     """Return help guide for users"""
-    return """📖 How to Use This Service
+    return """How to Use This Service
 
-💾 STORING MEMORIES:
+STORING MEMORIES:
 Just text naturally!
-• "My Honda Accord is a 2018, VIN ABC123"
-• "Got new tires on March 15th"
-• "Dentist is Dr. Smith, 555-1234"
+- "My Honda Accord is a 2018, VIN ABC123"
+- "Dentist is Dr. Smith, 555-1234"
 
-🔍 FINDING MEMORIES:
+FINDING MEMORIES:
 Ask naturally:
-• "What's my VIN?"
-• "When did I get new tires?"
-• "What's my dentist's number?"
+- "What's my VIN?"
+- "What's my dentist's number?"
 
-⏰ SETTING REMINDERS:
-• "Remind me at 9pm to take meds"
-• "Remind me tomorrow at 2pm to call mom"
-• "Remind me Saturday at 8am to mow lawn"
-• "Remind me in 30 minutes to check laundry"
+SETTING REMINDERS:
+- "Remind me at 9pm to take meds"
+- "Remind me tomorrow at 2pm to call mom"
+- "Remind me in 30 minutes to check laundry"
 
-📋 COMMANDS:
-• LIST ALL - View all your memories
-• LIST REMINDERS - View all reminders
-• DELETE ALL - Clear all your data (asks for confirmation)
-• RESET ACCOUNT - Start over from scratch
-• INFO (or ? or GUIDE) - Show this guide
+MANAGING LISTS:
+- "Create a grocery list"
+- "Add milk to my grocery list"
+- "Show my grocery list"
+- "Check off milk"
+- "Remove eggs from grocery list"
 
-💡 TIPS:
-• For reminders, always include AM or PM
-• I understand natural language - just talk normally!
-• Your timezone is set from your ZIP code
+COMMANDS:
+- LIST ALL - View all your memories
+- LIST REMINDERS - View all reminders
+- MY LISTS - View all your lists
+- DELETE ALL - Clear all data (asks confirmation)
+- RESET ACCOUNT - Start over from scratch
+- INFO - Show this guide
 
-Need more help? Just ask me a question!"""
+TIPS:
+- For reminders, always include AM or PM
+- I understand natural language - just talk!
+- Your timezone is set from your ZIP code
+
+Need more help? Just ask!"""
 
 def get_onboarding_prompt(step):
     """Get the appropriate prompt for the current onboarding step"""

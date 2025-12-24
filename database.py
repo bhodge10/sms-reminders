@@ -80,6 +80,29 @@ def init_db():
             )
         ''')
 
+        # Lists table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS lists (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                list_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(phone_number, list_name)
+            )
+        ''')
+
+        # List items table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS list_items (
+                id SERIAL PRIMARY KEY,
+                list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+                phone_number TEXT NOT NULL,
+                item_text TEXT NOT NULL,
+                completed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Add new columns to existing tables (migrations)
         # These will silently fail if columns already exist
         migrations = [
@@ -92,6 +115,7 @@ def init_db():
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS delivery_status TEXT DEFAULT 'pending'",
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP",
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS error_message TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_list_item TEXT",
         ]
 
         for migration in migrations:
