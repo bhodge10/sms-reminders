@@ -267,7 +267,7 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
                 list_lines = []
                 for i, (list_id, list_name, item_count, completed_count) in enumerate(lists, 1):
                     list_lines.append(f"{i}. {list_name} ({item_count} items)")
-                reply = "Your lists:\n\n" + "\n".join(list_lines)
+                reply = "Your lists:\n\n" + "\n".join(list_lines) + "\n\nReply with a number to see that list:"
             else:
                 reply = "You don't have any lists yet. Try saying 'Create a grocery list'!"
 
@@ -275,6 +275,34 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
             resp.message(reply)
             log_interaction(phone_number, incoming_msg, reply, "show_lists", True)
             return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # NUMBER RESPONSE TO SHOW LIST
+        # ==========================================
+        # If user sends just a number and has lists (but no pending item), show that list
+        if incoming_msg.strip().isdigit() and not (user and len(user) > 17 and user[17]):
+            list_num = int(incoming_msg.strip())
+            lists = get_lists(phone_number)
+            if lists and 1 <= list_num <= len(lists):
+                selected_list = lists[list_num - 1]
+                list_id = selected_list[0]
+                list_name = selected_list[1]
+                items = get_list_items(list_id)
+                if items:
+                    item_lines = []
+                    for i, (item_id, item_text, completed) in enumerate(items, 1):
+                        if completed:
+                            item_lines.append(f"{i}. [x] {item_text}")
+                        else:
+                            item_lines.append(f"{i}. {item_text}")
+                    reply = f"{list_name}:\n\n" + "\n".join(item_lines)
+                else:
+                    reply = f"Your {list_name} is empty."
+
+                resp = MessagingResponse()
+                resp.message(reply)
+                log_interaction(phone_number, incoming_msg, reply, "show_list", True)
+                return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # INFO COMMAND (Help Guide)
