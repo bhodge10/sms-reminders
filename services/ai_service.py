@@ -240,7 +240,9 @@ CRITICAL RULES:
             "response": "Sorry, I had trouble processing that. Could you try again?"
         }
     except Exception as e:
-        logger.error(f"❌ OpenAI Error: {e}")
+        import traceback
+        logger.error(f"OpenAI Error: {e}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return {
             "action": "error",
             "response": "Sorry, I had trouble understanding that. Could you rephrase?"
