@@ -190,7 +190,7 @@ async def sms_reply(Body: str = Form(...), From: str = Form(...)):
         # ==========================================
         # LIST ALL COMMAND
         # ==========================================
-        if incoming_msg.upper() == "LIST ALL":
+        if incoming_msg.upper() in ["LIST ALL", "LIST MEMORIES", "SHOW MEMORIES", "MY MEMORIES"]:
             memories = get_memories(phone_number)
             if memories:
                 memory_list = "\n\n".join([f"{i+1}. {m[0]}" for i, m in enumerate(memories[:20])])
