@@ -4,7 +4,7 @@ Handles all OpenAI API interactions and natural language processing
 """
 
 import json
-import openai
+from openai import OpenAI
 from datetime import datetime, timedelta
 import pytz
 
@@ -14,8 +14,8 @@ from models.reminder import get_user_reminders
 from models.user import get_user_timezone
 from utils.timezone import get_user_current_time
 
-# Initialize OpenAI
-openai.api_key = OPENAI_API_KEY
+# Initialize OpenAI client (v1.x API)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 def process_with_ai(message, phone_number, context):
     """Process user message with OpenAI and determine action"""
@@ -220,7 +220,7 @@ CRITICAL RULES:
 - Always include the day of the week in reminder confirmations (e.g., "Saturday, December 21st at 8:00 AM")"""
 
         # Call OpenAI API
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
