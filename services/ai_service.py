@@ -255,14 +255,15 @@ For ADDING TO A SPECIFIC LIST:
     "item_text": "the item to add",
     "confirmation": "Added [item] to your [list name]"
 }}
+Note: ALWAYS use add_to_list when the user specifies a list name, even if that list doesn't exist yet. The system will auto-create it.
 
-For ADDING ITEM BUT NO LIST SPECIFIED (user has multiple lists):
+For ADDING ITEM BUT NO LIST SPECIFIED (user has lists but didn't say which):
 {{
     "action": "add_item_ask_list",
     "item_text": "the item they want to add",
     "response": "Which list would you like to add [item] to?"
 }}
-Note: Only use add_item_ask_list if user has multiple lists and didn't specify which one. If user has only one list, use add_to_list with that list's name.
+Note: Only use add_item_ask_list if user has multiple lists and didn't specify which one. If user specifies a list name like "grocery list", use add_to_list instead.
 
 For SHOWING A SPECIFIC LIST:
 {{
