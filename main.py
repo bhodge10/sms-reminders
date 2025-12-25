@@ -6,12 +6,13 @@ Entry point for the FastAPI application
 import re
 import pytz
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.request_validator import RequestValidator
 
 # Local imports
-from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST
+from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN
 from database import init_db, log_interaction
 from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone
 from models.memory import save_memory, get_memories
@@ -51,9 +52,29 @@ logger.info(f"✅ Application initialized in {ENVIRONMENT} mode")
 # =====================================================
 
 @app.post("/sms")
-async def sms_reply(Body: str = Form(...), From: str = Form(...)):
+async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(...)):
     """Handle incoming SMS from Twilio"""
     try:
+        # Validate Twilio signature (skip in development for testing)
+        if ENVIRONMENT != "development":
+            validator = RequestValidator(TWILIO_AUTH_TOKEN)
+
+            # Get the full URL and signature
+            signature = request.headers.get("X-Twilio-Signature", "")
+
+            # Build the full URL (Render uses HTTPS)
+            url = str(request.url)
+            if url.startswith("http://"):
+                url = url.replace("http://", "https://", 1)
+
+            # Get form data for validation
+            form_data = await request.form()
+            params = {key: form_data[key] for key in form_data}
+
+            if not validator.validate(url, params, signature):
+                logger.warning(f"Invalid Twilio signature from {request.client.host}")
+                raise HTTPException(status_code=403, detail="Invalid signature")
+
         incoming_msg = Body.strip()
         phone_number = From
 
