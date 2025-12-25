@@ -14,13 +14,19 @@ def get_user(phone_number):
         c = conn.cursor()
 
         if ENCRYPTION_ENABLED:
-            from utils.encryption import hash_phone, safe_decrypt
+            from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
+            # Try phone_hash first, fallback to phone_number for existing users
             c.execute('SELECT * FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                # Fallback for users created before encryption was enabled
+                c.execute('SELECT * FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
         else:
             c.execute('SELECT * FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
 
-        result = c.fetchone()
         return result
     except Exception as e:
         logger.error(f"Error getting user: {e}")
@@ -50,6 +56,7 @@ def create_or_update_user(phone_number, **kwargs):
         conn = get_db_connection()
         c = conn.cursor()
 
+        phone_hash = None
         # Encrypt sensitive fields if encryption is enabled
         if ENCRYPTION_ENABLED:
             from utils.encryption import encrypt_field, hash_phone
@@ -61,23 +68,26 @@ def create_or_update_user(phone_number, **kwargs):
                 if field in kwargs and kwargs[field]:
                     kwargs[f'{field}_encrypted'] = encrypt_field(kwargs[field])
 
-        # Check if user exists
-        if ENCRYPTION_ENABLED:
-            c.execute('SELECT phone_number FROM users WHERE phone_hash = %s', (phone_hash,))
-        else:
-            c.execute('SELECT phone_number FROM users WHERE phone_number = %s', (phone_number,))
+        # Check if user exists (always by phone_number for reliability)
+        c.execute('SELECT phone_number, phone_hash FROM users WHERE phone_number = %s', (phone_number,))
         exists = c.fetchone()
 
         if exists:
             # Update existing user
-            if kwargs:
-                update_fields = []
-                values = []
-                for key, value in kwargs.items():
-                    update_fields.append(f"{key} = %s")
-                    values.append(value)
-                values.append(phone_number)
+            update_fields = []
+            values = []
 
+            # Add phone_hash if encryption enabled and user doesn't have it yet
+            if ENCRYPTION_ENABLED and phone_hash and not exists[1]:
+                update_fields.append("phone_hash = %s")
+                values.append(phone_hash)
+
+            for key, value in kwargs.items():
+                update_fields.append(f"{key} = %s")
+                values.append(value)
+
+            if update_fields:
+                values.append(phone_number)
                 query = f"UPDATE users SET {', '.join(update_fields)} WHERE phone_number = %s"
                 c.execute(query, values)
         else:
@@ -86,7 +96,7 @@ def create_or_update_user(phone_number, **kwargs):
             values = [phone_number]
             placeholders = ['%s']
 
-            if ENCRYPTION_ENABLED:
+            if ENCRYPTION_ENABLED and phone_hash:
                 fields.append('phone_hash')
                 values.append(phone_hash)
                 placeholders.append('%s')

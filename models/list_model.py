@@ -59,6 +59,20 @@ def get_lists(phone_number):
                 GROUP BY l.id, l.list_name
                 ORDER BY l.created_at DESC
             ''', (phone_hash,))
+            results = c.fetchall()
+            if not results:
+                # Fallback for lists created before encryption
+                c.execute('''
+                    SELECT l.id, l.list_name,
+                           COUNT(li.id) as item_count,
+                           SUM(CASE WHEN li.completed THEN 1 ELSE 0 END) as completed_count
+                    FROM lists l
+                    LEFT JOIN list_items li ON l.id = li.list_id
+                    WHERE l.phone_number = %s
+                    GROUP BY l.id, l.list_name
+                    ORDER BY l.created_at DESC
+                ''', (phone_number,))
+                results = c.fetchall()
         else:
             c.execute('''
                 SELECT l.id, l.list_name,
@@ -70,8 +84,8 @@ def get_lists(phone_number):
                 GROUP BY l.id, l.list_name
                 ORDER BY l.created_at DESC
             ''', (phone_number,))
+            results = c.fetchall()
 
-        results = c.fetchall()
         return results
     except Exception as e:
         logger.error(f"Error getting lists: {e}")
@@ -95,13 +109,21 @@ def get_list_by_name(phone_number, list_name):
                 'SELECT id, list_name FROM lists WHERE phone_hash = %s AND LOWER(list_name) = LOWER(%s)',
                 (phone_hash, list_name)
             )
+            result = c.fetchone()
+            if not result:
+                # Fallback for lists created before encryption
+                c.execute(
+                    'SELECT id, list_name FROM lists WHERE phone_number = %s AND LOWER(list_name) = LOWER(%s)',
+                    (phone_number, list_name)
+                )
+                result = c.fetchone()
         else:
             c.execute(
                 'SELECT id, list_name FROM lists WHERE phone_number = %s AND LOWER(list_name) = LOWER(%s)',
                 (phone_number, list_name)
             )
+            result = c.fetchone()
 
-        result = c.fetchone()
         return result
     except Exception as e:
         logger.error(f"Error getting list by name: {e}")
@@ -468,7 +490,8 @@ def get_list_count(phone_number):
         if ENCRYPTION_ENABLED:
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
-            c.execute('SELECT COUNT(*) FROM lists WHERE phone_hash = %s', (phone_hash,))
+            # Count from both phone_hash and phone_number to include pre-encryption lists
+            c.execute('SELECT COUNT(*) FROM lists WHERE phone_hash = %s OR phone_number = %s', (phone_hash, phone_number))
         else:
             c.execute('SELECT COUNT(*) FROM lists WHERE phone_number = %s', (phone_number,))
 

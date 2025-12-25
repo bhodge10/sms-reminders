@@ -85,13 +85,21 @@ def get_user_reminders(phone_number):
                 'SELECT reminder_text, reminder_date, sent FROM reminders WHERE phone_hash = %s ORDER BY reminder_date',
                 (phone_hash,)
             )
+            results = c.fetchall()
+            if not results:
+                # Fallback for reminders created before encryption
+                c.execute(
+                    'SELECT reminder_text, reminder_date, sent FROM reminders WHERE phone_number = %s ORDER BY reminder_date',
+                    (phone_number,)
+                )
+                results = c.fetchall()
         else:
             c.execute(
                 'SELECT reminder_text, reminder_date, sent FROM reminders WHERE phone_number = %s ORDER BY reminder_date',
                 (phone_number,)
             )
+            results = c.fetchall()
 
-        results = c.fetchall()
         return results
     except Exception as e:
         logger.error(f"Error getting user reminders: {e}")

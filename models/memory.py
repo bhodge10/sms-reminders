@@ -51,13 +51,21 @@ def get_memories(phone_number):
                 'SELECT memory_text, parsed_data, created_at FROM memories WHERE phone_hash = %s ORDER BY created_at DESC',
                 (phone_hash,)
             )
+            results = c.fetchall()
+            if not results:
+                # Fallback for data created before encryption
+                c.execute(
+                    'SELECT memory_text, parsed_data, created_at FROM memories WHERE phone_number = %s ORDER BY created_at DESC',
+                    (phone_number,)
+                )
+                results = c.fetchall()
         else:
             c.execute(
                 'SELECT memory_text, parsed_data, created_at FROM memories WHERE phone_number = %s ORDER BY created_at DESC',
                 (phone_number,)
             )
+            results = c.fetchall()
 
-        results = c.fetchall()
         return results
     except Exception as e:
         logger.error(f"Error getting memories: {e}")
@@ -73,10 +81,11 @@ def delete_all_memories(phone_number):
         conn = get_db_connection()
         c = conn.cursor()
 
+        # Delete by both phone_hash and phone_number to catch all records
         if ENCRYPTION_ENABLED:
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
-            c.execute('DELETE FROM memories WHERE phone_hash = %s', (phone_hash,))
+            c.execute('DELETE FROM memories WHERE phone_hash = %s OR phone_number = %s', (phone_hash, phone_number))
         else:
             c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
 
