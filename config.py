@@ -69,3 +69,7 @@ MAX_COMPLETED_REMINDERS_DISPLAY = 5
 # List Configuration
 MAX_LISTS_PER_USER = 5
 MAX_ITEMS_PER_LIST = 15
+
+# Admin Authentication
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")

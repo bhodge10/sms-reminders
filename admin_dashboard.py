@@ -3,15 +3,37 @@ Admin Dashboard
 HTML dashboard for viewing metrics
 """
 
-from fastapi import APIRouter
+import secrets
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from services.metrics_service import get_all_metrics
+from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 
 router = APIRouter()
+security = HTTPBasic()
+
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify admin credentials for protected endpoints"""
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=500, detail="Admin password not configured")
+
+    correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+
+    if not (correct_username and correct_password):
+        logger.warning(f"Failed admin login attempt: {credentials.username}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 
 @router.get("/admin/dashboard", response_class=HTMLResponse)
-async def admin_dashboard():
+async def admin_dashboard(admin: str = Depends(verify_admin)):
     """Render HTML admin dashboard"""
     metrics = get_all_metrics()
 

@@ -12,7 +12,10 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
 # Local imports
-from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN
+import secrets
+from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN, ADMIN_USERNAME, ADMIN_PASSWORD
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends
 from database import init_db, log_interaction
 from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone
 from models.memory import save_memory, get_memories
@@ -35,6 +38,26 @@ from admin_dashboard import router as dashboard_router
 # Initialize application
 logger.info("🚀 SMS Memory Service starting...")
 app = FastAPI()
+
+# HTTP Basic Auth for admin endpoints
+security = HTTPBasic()
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify admin credentials for protected endpoints"""
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=500, detail="Admin password not configured")
+
+    correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+
+    if not (correct_username and correct_password):
+        logger.warning(f"Failed admin login attempt: {credentials.username}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 # Include admin dashboard router
 app.include_router(dashboard_router)
@@ -592,7 +615,7 @@ async def health_check():
     }
 
 @app.get("/memories/{phone_number}")
-async def view_memories(phone_number: str):
+async def view_memories(phone_number: str, admin: str = Depends(verify_admin)):
     """View all memories for a phone number - for testing/admin"""
     import json
     memories = get_memories(phone_number)
@@ -609,7 +632,7 @@ async def view_memories(phone_number: str):
     }
 
 @app.get("/reminders/{phone_number}")
-async def view_reminders(phone_number: str):
+async def view_reminders(phone_number: str, admin: str = Depends(verify_admin)):
     """View all reminders for a phone number - for testing/admin"""
     reminders = get_user_reminders(phone_number)
     return {
@@ -625,7 +648,7 @@ async def view_reminders(phone_number: str):
     }
 
 @app.get("/admin/stats")
-async def admin_stats():
+async def admin_stats(admin: str = Depends(verify_admin)):
     """Admin dashboard showing key metrics"""
     from database import get_db_connection
     conn = get_db_connection()
