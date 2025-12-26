@@ -31,7 +31,7 @@ from models.list_model import (
     find_item_in_any_list, get_list_count, get_item_count
 )
 from services.sms_service import send_sms
-from services.ai_service import process_with_ai
+from services.ai_service import process_with_ai, parse_list_items
 from services.onboarding_service import handle_onboarding
 from services.reminder_service import start_reminder_checker
 from services.metrics_service import track_user_activity, increment_message_count
@@ -287,20 +287,36 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     list_id = selected_list[0]
                     list_name = selected_list[1]
 
+                    # Parse multiple items from the pending item
+                    items_to_add = parse_list_items(pending_item)
+
                     # Check item limit
                     item_count = get_item_count(list_id)
-                    if item_count >= MAX_ITEMS_PER_LIST:
+                    available_slots = MAX_ITEMS_PER_LIST - item_count
+
+                    if available_slots <= 0:
                         resp = MessagingResponse()
                         resp.message(f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first.")
                         create_or_update_user(phone_number, pending_list_item=None)
                         return Response(content=str(resp), media_type="application/xml")
 
-                    add_list_item(list_id, phone_number, pending_item)
+                    # Add items up to the limit
+                    added_items = []
+                    for item in items_to_add:
+                        if len(added_items) < available_slots:
+                            add_list_item(list_id, phone_number, item)
+                            added_items.append(item)
+
                     create_or_update_user(phone_number, pending_list_item=None)
 
                     resp = MessagingResponse()
-                    resp.message(f"Added {pending_item} to your {list_name}")
-                    log_interaction(phone_number, incoming_msg, f"Added {pending_item} to {list_name}", "add_to_list", True)
+                    if len(added_items) == 1:
+                        resp.message(f"Added {added_items[0]} to your {list_name}")
+                    elif len(added_items) < len(items_to_add):
+                        resp.message(f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}. ({len(items_to_add) - len(added_items)} items skipped - list full)")
+                    else:
+                        resp.message(f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}")
+                    log_interaction(phone_number, incoming_msg, f"Added {len(added_items)} items to {list_name}", "add_to_list", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
                     resp = MessagingResponse()
@@ -537,6 +553,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             else:
                 list_name = name_result  # Sanitized
                 item_text = item_result  # Sanitized
+
+                # Parse multiple items from the text
+                items_to_add = parse_list_items(item_text)
+
                 list_info = get_list_by_name(phone_number, list_name)
 
                 # Auto-create list if it doesn't exist
@@ -546,36 +566,74 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         reply_text = f"You've reached the maximum of {MAX_LISTS_PER_USER} lists. Delete a list first."
                     else:
                         list_id = create_list(phone_number, list_name)
-                        add_list_item(list_id, phone_number, item_text)
-                        reply_text = f"Created your {list_name} and added {item_text}!"
+                        # Add all parsed items
+                        added_items = []
+                        for item in items_to_add:
+                            if len(added_items) < MAX_ITEMS_PER_LIST:
+                                add_list_item(list_id, phone_number, item)
+                                added_items.append(item)
+                        if len(added_items) == 1:
+                            reply_text = f"Created your {list_name} and added {added_items[0]}!"
+                        else:
+                            reply_text = f"Created your {list_name} and added {len(added_items)} items: {', '.join(added_items)}"
                 else:
                     list_id = list_info[0]
                     item_count = get_item_count(list_id)
-                    if item_count >= MAX_ITEMS_PER_LIST:
+                    available_slots = MAX_ITEMS_PER_LIST - item_count
+
+                    if available_slots <= 0:
                         reply_text = f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first."
                     else:
-                        add_list_item(list_id, phone_number, item_text)
-                        reply_text = ai_response.get("confirmation", f"Added {item_text} to your {list_name}")
+                        # Add items up to the limit
+                        added_items = []
+                        for item in items_to_add:
+                            if len(added_items) < available_slots:
+                                add_list_item(list_id, phone_number, item)
+                                added_items.append(item)
+
+                        if len(added_items) == 1:
+                            reply_text = ai_response.get("confirmation", f"Added {added_items[0]} to your {list_name}")
+                        elif len(added_items) < len(items_to_add):
+                            reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}. ({len(items_to_add) - len(added_items)} items skipped - list full)"
+                        else:
+                            reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}"
                 log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
 
         elif ai_response["action"] == "add_item_ask_list":
             item_text = ai_response.get("item_text")
             lists = get_lists(phone_number)
             if len(lists) == 1:
-                # Only one list, add directly
+                # Only one list, add directly with multi-item parsing
                 list_id = lists[0][0]
                 list_name = lists[0][1]
+
+                # Parse multiple items
+                items_to_add = parse_list_items(item_text)
+
                 item_count = get_item_count(list_id)
-                if item_count >= MAX_ITEMS_PER_LIST:
+                available_slots = MAX_ITEMS_PER_LIST - item_count
+
+                if available_slots <= 0:
                     reply_text = f"Your {list_name} is full ({MAX_ITEMS_PER_LIST} items max). Remove some items first."
                 else:
-                    add_list_item(list_id, phone_number, item_text)
-                    reply_text = f"Added {item_text} to your {list_name}"
+                    # Add items up to the limit
+                    added_items = []
+                    for item in items_to_add:
+                        if len(added_items) < available_slots:
+                            add_list_item(list_id, phone_number, item)
+                            added_items.append(item)
+
+                    if len(added_items) == 1:
+                        reply_text = f"Added {added_items[0]} to your {list_name}"
+                    elif len(added_items) < len(items_to_add):
+                        reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}. ({len(items_to_add) - len(added_items)} items skipped - list full)"
+                    else:
+                        reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}"
             elif len(lists) > 1:
-                # Multiple lists, ask which one
+                # Multiple lists, ask which one (store original text for parsing later)
                 create_or_update_user(phone_number, pending_list_item=item_text)
                 list_options = "\n".join([f"{i+1}. {l[1]}" for i, l in enumerate(lists)])
-                reply_text = f"Which list would you like to add {item_text} to?\n\n{list_options}\n\nReply with a number:"
+                reply_text = f"Which list would you like to add these to?\n\n{list_options}\n\nReply with a number:"
             else:
                 reply_text = "You don't have any lists yet. Try 'Create a grocery list' first!"
             log_interaction(phone_number, incoming_msg, reply_text, "add_item_ask_list", True)

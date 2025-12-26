@@ -366,3 +366,73 @@ CRITICAL RULES:
             "action": "error",
             "response": "Sorry, I had trouble understanding that. Could you rephrase?"
         }
+
+
+def parse_list_items(item_text):
+    """
+    Parse a string of items into individual list items using AI.
+    Keeps compound items together (e.g., 'ham and cheese sandwich' stays as one item).
+
+    Returns a list of individual items.
+    """
+    try:
+        # If it looks like a single simple item, skip AI parsing
+        if ',' not in item_text and ' and ' not in item_text:
+            return [item_text.strip()]
+
+        # Check for simple comma-only list without 'and'
+        if ',' in item_text and ' and ' not in item_text:
+            return [item.strip() for item in item_text.split(',') if item.strip()]
+
+        system_prompt = """You are a list item parser. Your job is to separate a user's input into individual list items.
+
+RULES:
+1. Separate items by commas
+2. Keep compound items together - these are items that naturally go together:
+   - Food combinations: "ham and cheese sandwich", "peanut butter and jelly", "mac and cheese", "fish and chips", "bread and butter", "salt and pepper"
+   - Paired items: "washer and dryer", "table and chairs", "pen and paper"
+3. When "and" connects the LAST item in a list, it's a separator (like a comma)
+4. When "and" is INSIDE an item name, keep it together
+
+EXAMPLES:
+- "milk, eggs, bread" → ["milk", "eggs", "bread"]
+- "ham and cheese sandwich" → ["ham and cheese sandwich"]
+- "peanut butter and jelly, milk, ham and cheese sandwich" → ["peanut butter and jelly", "milk", "ham and cheese sandwich"]
+- "mac and cheese, bread and butter, eggs" → ["mac and cheese", "bread and butter", "eggs"]
+- "apples, oranges and bananas" → ["apples", "oranges", "bananas"]
+- "chips and salsa" → ["chips and salsa"]
+- "milk and eggs" → ["milk", "eggs"]
+- "soap, shampoo and conditioner" → ["soap", "shampoo", "conditioner"]
+
+Return ONLY a JSON array of strings. No explanation, just the array.
+Example output: ["item1", "item2", "item3"]"""
+
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": item_text}
+            ],
+            temperature=0.1,  # Low temperature for consistent parsing
+            max_tokens=200
+        )
+
+        result = json.loads(response.choices[0].message.content)
+
+        # Validate result is a list of strings
+        if isinstance(result, list) and all(isinstance(item, str) for item in result):
+            logger.info(f"Parsed '{item_text}' into {len(result)} items: {result}")
+            return [item.strip() for item in result if item.strip()]
+        else:
+            logger.warning(f"Unexpected parse result format: {result}")
+            return [item_text.strip()]
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse error in parse_list_items: {e}")
+        # Fallback: simple comma split
+        return [item.strip() for item in item_text.split(',') if item.strip()]
+    except Exception as e:
+        logger.error(f"Error parsing list items: {e}")
+        # Fallback: return as single item
+        return [item_text.strip()]
