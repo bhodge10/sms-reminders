@@ -488,7 +488,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Delete all - show options menu
         if msg_upper == "DELETE ALL":
             resp = MessagingResponse()
-            resp.message("What would you like to delete?\n\n• DELETE ALL MEMORIES\n• DELETE ALL REMINDERS\n• DELETE ALL LISTS\n• DELETE ALL DATA (deletes everything)\n\nText one of the above to continue.")
+            resp.message("What would you like to delete?\n\n• DELETE ALL MEMORIES\n\n• DELETE ALL REMINDERS\n\n• DELETE ALL LISTS\n\n• DELETE ALL DATA (deletes everything)\n\nText one of the above to continue.")
             log_interaction(phone_number, incoming_msg, "Showing delete options", "delete_all_options", True)
             return Response(content=str(resp), media_type="application/xml")
 
