@@ -197,7 +197,7 @@ async def get_broadcast_status(broadcast_id: int, admin: str = Depends(verify_ad
             return_db_connection(conn)
 
 
-BROADCAST_PREFIX = "[Remyndrs] "
+BROADCAST_PREFIX = "[Remyndrs System Message] "
 
 def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str):
     """Background task to send broadcast messages with rate limiting"""
@@ -752,7 +752,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <div class="preview-box">
             <div><strong>Preview (what users will receive):</strong></div>
             <div style="margin: 10px 0; padding: 10px; background: white; border-radius: 4px;">
-                <span style="color: #7f8c8d;">[Remyndrs] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
+                <span style="color: #7f8c8d;">[Remyndrs System Message] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
             </div>
             <div>
                 <span style="color: #27ae60; font-weight: bold;"><span id="recipientCount" class="count">0</span></span> users within 8am-8pm window
@@ -905,7 +905,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             const inWindowCount = audienceStats[audience + '_in_window'] || 0;
 
             document.getElementById('modalCount').textContent = inWindowCount;
-            document.getElementById('modalMessage').textContent = '[Remyndrs] ' + message;
+            document.getElementById('modalMessage').textContent = '[Remyndrs System Message] ' + message;
             document.getElementById('confirmModal').classList.add('active');
         }}
 
