@@ -485,8 +485,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             log_interaction(phone_number, incoming_msg, "Asking for delete lists confirmation", "delete_lists_request", True)
             return Response(content=str(resp), media_type="application/xml")
 
-        # Delete everything (all data)
-        if msg_upper in ["DELETE ALL DATA", "DELETE ALL MY DATA", "DELETE EVERYTHING", "FORGET EVERYTHING", "DELETE ALL"]:
+        # Delete all - show options menu
+        if msg_upper == "DELETE ALL":
+            resp = MessagingResponse()
+            resp.message("What would you like to delete?\n\n• DELETE ALL MEMORIES\n• DELETE ALL REMINDERS\n• DELETE ALL LISTS\n• DELETE ALL DATA (deletes everything)\n\nText one of the above to continue.")
+            log_interaction(phone_number, incoming_msg, "Showing delete options", "delete_all_options", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Delete everything (all data) - requires explicit "DELETE ALL DATA"
+        if msg_upper in ["DELETE ALL DATA", "DELETE ALL MY DATA", "DELETE EVERYTHING", "FORGET EVERYTHING"]:
             resp = MessagingResponse()
             resp.message("⚠️ WARNING: This will permanently delete ALL your data (memories, reminders, and lists).\n\nReply YES to confirm or anything else to cancel.")
             create_or_update_user(phone_number, pending_delete=True, pending_list_item="__DELETE_ALL_DATA__")
