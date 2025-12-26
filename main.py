@@ -559,7 +559,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 snooze_minutes = parse_snooze_duration(snooze_text)
 
                 # Create new reminder with snoozed time
-                from datetime import timedelta
                 user_tz = get_user_timezone(phone_number)
                 new_reminder_time = datetime.utcnow() + timedelta(minutes=snooze_minutes)
 
