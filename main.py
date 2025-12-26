@@ -463,6 +463,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             feedback_message = incoming_msg[9:].strip()  # Extract everything after "feedback:"
             if feedback_message:
                 # Save feedback to database
+                from database import get_db_connection, return_db_connection
                 conn = None
                 try:
                     conn = get_db_connection()
