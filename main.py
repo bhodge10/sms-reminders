@@ -615,7 +615,9 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         # Handle AI response based on action
         if ai_response["action"] == "store":
-            save_memory(phone_number, incoming_msg, ai_response)
+            # Use memory_text if AI provided date-converted version, otherwise use original
+            memory_text = ai_response.get("memory_text", incoming_msg)
+            save_memory(phone_number, memory_text, ai_response)
             reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
             log_interaction(phone_number, incoming_msg, reply_text, "store", True)
 

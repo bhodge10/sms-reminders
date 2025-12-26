@@ -197,8 +197,20 @@ For STORING new information:
     "action": "store",
     "item": "the item/object being stored",
     "details": "key details",
+    "memory_text": "The memory text with relative dates converted to actual dates",
     "confirmation": "Brief, friendly confirmation message"
 }}
+IMPORTANT for memory_text: Convert ALL relative time references to actual dates based on the current date ({current_date_readable}):
+- "last night" → "on the night of [yesterday's date]" (e.g., "December 25, 2025")
+- "yesterday" → "[yesterday's date]"
+- "this morning" → "on the morning of [today's date]"
+- "last week" → "the week of [date of last week]"
+- "last Monday" → "[the actual date of last Monday]"
+- "2 days ago" → "[the actual date]"
+Examples:
+- User says "Sam had a 100 degree fever last night" on Dec 26 → memory_text: "Sam had a 100 degree fever on the night of December 25, 2025"
+- User says "I paid rent yesterday" on Dec 26 → memory_text: "I paid rent on December 25, 2025"
+- User says "My car broke down this morning" on Dec 26 → memory_text: "My car broke down on the morning of December 26, 2025"
 
 For RETRIEVING information:
 {{
