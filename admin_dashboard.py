@@ -6,6 +6,7 @@ HTML dashboard for viewing metrics and broadcast messaging
 import secrets
 import asyncio
 from datetime import datetime
+import pytz
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -16,6 +17,22 @@ from services.sms_service import send_sms
 from database import get_db_connection, return_db_connection
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 from utils.validation import log_security_event
+
+# Broadcast time window (8am - 8pm in user's local timezone)
+BROADCAST_START_HOUR = 8
+BROADCAST_END_HOUR = 20  # 8pm
+DEFAULT_TIMEZONE = 'America/New_York'
+
+
+def is_within_broadcast_window(timezone_str: str) -> bool:
+    """Check if current time is within 8am-8pm for the given timezone"""
+    try:
+        tz = pytz.timezone(timezone_str or DEFAULT_TIMEZONE)
+    except pytz.UnknownTimezoneError:
+        tz = pytz.timezone(DEFAULT_TIMEZONE)
+
+    local_time = datetime.now(tz)
+    return BROADCAST_START_HOUR <= local_time.hour < BROADCAST_END_HOUR
 
 router = APIRouter()
 security = HTTPBasic()
@@ -50,30 +67,44 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
 
 @router.get("/admin/broadcast/stats")
 async def get_broadcast_stats(admin: str = Depends(verify_admin)):
-    """Get user counts by plan type for broadcast targeting"""
+    """Get user counts by plan type for broadcast targeting, including timezone-aware counts"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
 
-        # Get counts by plan type
+        # Get users with their timezones and plan types
         c.execute('''
             SELECT
+                phone_number,
                 COALESCE(premium_status, 'free') as plan,
-                COUNT(*) as count
+                timezone
             FROM users
             WHERE onboarding_complete = TRUE
-            GROUP BY COALESCE(premium_status, 'free')
         ''')
         results = c.fetchall()
 
-        stats = {"all": 0, "free": 0, "premium": 0}
-        for plan, count in results:
+        # Total counts and in-window counts
+        stats = {
+            "all": 0, "free": 0, "premium": 0,
+            "all_in_window": 0, "free_in_window": 0, "premium_in_window": 0
+        }
+
+        for phone, plan, timezone in results:
+            in_window = is_within_broadcast_window(timezone)
+
             if plan == 'free':
-                stats['free'] = count
+                stats['free'] += 1
+                if in_window:
+                    stats['free_in_window'] += 1
             elif plan == 'premium':
-                stats['premium'] = count
-            stats['all'] += count
+                stats['premium'] += 1
+                if in_window:
+                    stats['premium_in_window'] += 1
+
+            stats['all'] += 1
+            if in_window:
+                stats['all_in_window'] += 1
 
         return JSONResponse(content=stats)
     except Exception as e:
@@ -235,27 +266,27 @@ def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str
 
 @router.post("/admin/broadcast/send")
 async def send_broadcast(request: BroadcastRequest, background_tasks: BackgroundTasks, admin: str = Depends(verify_admin)):
-    """Send a broadcast message to selected audience"""
+    """Send a broadcast message to selected audience (only users within 8am-8pm local time)"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
 
-        # Build query based on audience
+        # Build query based on audience - include timezone for filtering
         if request.audience == "all":
             c.execute('''
-                SELECT phone_number FROM users
+                SELECT phone_number, timezone FROM users
                 WHERE onboarding_complete = TRUE
             ''')
         elif request.audience == "free":
             c.execute('''
-                SELECT phone_number FROM users
+                SELECT phone_number, timezone FROM users
                 WHERE onboarding_complete = TRUE
                 AND (premium_status = 'free' OR premium_status IS NULL)
             ''')
         elif request.audience == "premium":
             c.execute('''
-                SELECT phone_number FROM users
+                SELECT phone_number, timezone FROM users
                 WHERE onboarding_complete = TRUE
                 AND premium_status = 'premium'
             ''')
@@ -263,10 +294,21 @@ async def send_broadcast(request: BroadcastRequest, background_tasks: Background
             raise HTTPException(status_code=400, detail="Invalid audience")
 
         results = c.fetchall()
-        phone_numbers = [r[0] for r in results]
+
+        # Filter to only users within the 8am-8pm window in their timezone
+        phone_numbers = [
+            r[0] for r in results
+            if is_within_broadcast_window(r[1])
+        ]
+
+        total_audience = len(results)
+        skipped_count = total_audience - len(phone_numbers)
 
         if not phone_numbers:
-            raise HTTPException(status_code=400, detail="No recipients found")
+            raise HTTPException(
+                status_code=400,
+                detail=f"No recipients currently in the 8am-8pm window. {total_audience} users are outside the allowed time."
+            )
 
         # Create broadcast log entry
         c.execute('''
@@ -280,13 +322,14 @@ async def send_broadcast(request: BroadcastRequest, background_tasks: Background
         # Start background task to send messages
         background_tasks.add_task(send_broadcast_messages, broadcast_id, phone_numbers, request.message)
 
-        logger.info(f"Broadcast {broadcast_id} started by {admin}: {len(phone_numbers)} recipients")
+        logger.info(f"Broadcast {broadcast_id} started by {admin}: {len(phone_numbers)} recipients ({skipped_count} skipped - outside time window)")
 
         return JSONResponse(content={
             "broadcast_id": broadcast_id,
             "recipient_count": len(phone_numbers),
+            "skipped_count": skipped_count,
             "status": "started",
-            "message": f"Sending to {len(phone_numbers)} recipients..."
+            "message": f"Sending to {len(phone_numbers)} recipients..." + (f" ({skipped_count} skipped - outside 8am-8pm)" if skipped_count > 0 else "")
         })
 
     except HTTPException:
@@ -711,7 +754,13 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div style="margin: 10px 0; padding: 10px; background: white; border-radius: 4px;">
                 <span style="color: #7f8c8d;">[Remyndrs] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
             </div>
-            <div>This will send to <span id="recipientCount" class="count">0</span> users</div>
+            <div>
+                <span style="color: #27ae60; font-weight: bold;"><span id="recipientCount" class="count">0</span></span> users within 8am-8pm window
+                <span id="outsideWindowInfo" style="color: #95a5a6; margin-left: 10px;"></span>
+            </div>
+            <div style="margin-top: 8px; font-size: 0.85em; color: #7f8c8d;">
+                <em>Broadcasts only send to users between 8:00 AM and 8:00 PM in their local timezone</em>
+            </div>
         </div>
 
         <div class="progress-info" id="progressInfo">
@@ -830,22 +879,33 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 preview.style.fontStyle = 'italic';
             }}
 
-            // Update recipient count
-            const count = audienceStats[audience] || 0;
-            document.getElementById('recipientCount').textContent = count;
+            // Update recipient count (use timezone-aware counts)
+            const inWindowCount = audienceStats[audience + '_in_window'] || 0;
+            const totalCount = audienceStats[audience] || 0;
+            const outsideCount = totalCount - inWindowCount;
 
-            // Enable/disable send button
+            document.getElementById('recipientCount').textContent = inWindowCount;
+
+            // Show outside window info
+            const outsideInfo = document.getElementById('outsideWindowInfo');
+            if (outsideCount > 0) {{
+                outsideInfo.textContent = `(${{outsideCount}} outside window, won't receive)`;
+            }} else {{
+                outsideInfo.textContent = '';
+            }}
+
+            // Enable/disable send button (based on in-window count)
             const sendBtn = document.getElementById('sendBtn');
-            sendBtn.disabled = !message.trim() || count === 0;
+            sendBtn.disabled = !message.trim() || inWindowCount === 0;
         }}
 
         function showConfirmModal() {{
             const audience = document.getElementById('audience').value;
             const message = document.getElementById('message').value;
-            const count = audienceStats[audience] || 0;
+            const inWindowCount = audienceStats[audience + '_in_window'] || 0;
 
-            document.getElementById('modalCount').textContent = count;
-            document.getElementById('modalMessage').textContent = message;
+            document.getElementById('modalCount').textContent = inWindowCount;
+            document.getElementById('modalMessage').textContent = '[Remyndrs] ' + message;
             document.getElementById('confirmModal').classList.add('active');
         }}
 
