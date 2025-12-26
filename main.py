@@ -325,6 +325,38 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # LIST SELECTION BY NUMBER
+        # ==========================================
+        # If user sends just a number and has lists, show that list
+        if incoming_msg.strip().isdigit():
+            list_num = int(incoming_msg.strip())
+            lists = get_lists(phone_number)
+            if lists and 1 <= list_num <= len(lists):
+                selected_list = lists[list_num - 1]
+                list_id = selected_list[0]
+                list_name = selected_list[1]
+
+                # Track last active list
+                create_or_update_user(phone_number, last_active_list=list_name)
+
+                items = get_list_items(list_id)
+                if items:
+                    item_lines = []
+                    for i, (item_id, item_text, completed) in enumerate(items, 1):
+                        if completed:
+                            item_lines.append(f"{i}. [x] {item_text}")
+                        else:
+                            item_lines.append(f"{i}. {item_text}")
+                    reply_msg = f"{list_name}:\n\n" + "\n".join(item_lines)
+                else:
+                    reply_msg = f"Your {list_name} is empty."
+
+                resp = MessagingResponse()
+                resp.message(reply_msg)
+                log_interaction(phone_number, incoming_msg, reply_msg, "show_list", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # DELETE ALL COMMAND
         # ==========================================
         if incoming_msg.upper() == "DELETE ALL":
@@ -691,7 +723,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     lists = get_lists(phone_number)
                     if lists:
                         list_lines = [f"{i+1}. {l[1]} ({l[2]} items)" for i, l in enumerate(lists)]
-                        reply_text = "Your lists:\n\n" + "\n".join(list_lines)
+                        reply_text = "Your lists:\n\n" + "\n".join(list_lines) + "\n\nReply with a number to see that list."
                     else:
                         reply_text = "You don't have any lists yet. Try 'Create a grocery list'!"
             else:
@@ -699,7 +731,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 lists = get_lists(phone_number)
                 if lists:
                     list_lines = [f"{i+1}. {l[1]} ({l[2]} items)" for i, l in enumerate(lists)]
-                    reply_text = "Your lists:\n\n" + "\n".join(list_lines)
+                    reply_text = "Your lists:\n\n" + "\n".join(list_lines) + "\n\nReply with a number to see that list."
                 else:
                     reply_text = "You don't have any lists yet. Try 'Create a grocery list'!"
             log_interaction(phone_number, incoming_msg, reply_text, "show_current_list", True)
@@ -710,7 +742,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 list_lines = []
                 for i, (list_id, list_name, item_count, completed_count) in enumerate(lists, 1):
                     list_lines.append(f"{i}. {list_name} ({item_count} items)")
-                reply_text = "Your lists:\n\n" + "\n".join(list_lines)
+                reply_text = "Your lists:\n\n" + "\n".join(list_lines) + "\n\nReply with a number to see that list."
             else:
                 reply_text = "You don't have any lists yet. Try 'Create a grocery list'!"
             log_interaction(phone_number, incoming_msg, reply_text, "show_all_lists", True)
