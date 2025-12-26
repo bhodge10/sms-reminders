@@ -878,15 +878,28 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         elif ai_response["action"] == "reminder_relative":
             # Handle relative time reminders (e.g., "in 30 minutes", "in 2 hours")
             # Server calculates the actual time to avoid AI arithmetic errors
-            reminder_text = ai_response.get("reminder_text")
-            offset_minutes = ai_response.get("offset_minutes", 15)  # Default to 15 minutes
+            reminder_text = ai_response.get("reminder_text", "your reminder")
+            offset_minutes_raw = ai_response.get("offset_minutes", 15)
+
+            logger.info(f"reminder_relative: offset_minutes_raw={offset_minutes_raw}, type={type(offset_minutes_raw)}, reminder_text={reminder_text}")
 
             try:
-                # Ensure offset_minutes is an integer
-                offset_minutes = int(offset_minutes)
+                # Parse offset_minutes - handle both int and string formats
+                if isinstance(offset_minutes_raw, int):
+                    offset_minutes = offset_minutes_raw
+                elif isinstance(offset_minutes_raw, str):
+                    # Try to extract number from string like "30" or "30 minutes"
+                    import re
+                    match = re.search(r'(\d+)', str(offset_minutes_raw))
+                    offset_minutes = int(match.group(1)) if match else 15
+                else:
+                    offset_minutes = int(offset_minutes_raw)
+
                 # Cap at 24 hours (1440 minutes)
                 offset_minutes = min(offset_minutes, 1440)
                 offset_minutes = max(offset_minutes, 1)  # Minimum 1 minute
+
+                logger.info(f"reminder_relative: parsed offset_minutes={offset_minutes}")
 
                 # Calculate reminder time from current UTC
                 reminder_dt_utc = datetime.utcnow() + timedelta(minutes=offset_minutes)
@@ -908,7 +921,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", True)
 
             except Exception as e:
-                logger.error(f"Error setting relative reminder: {e}")
+                logger.error(f"Error setting relative reminder: {e}, ai_response={ai_response}")
                 reply_text = "Sorry, I couldn't set that reminder. Please try again."
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", False)
 
