@@ -252,18 +252,20 @@ For ADDING TO A SPECIFIC LIST:
 {{
     "action": "add_to_list",
     "list_name": "the name of the list",
-    "item_text": "the item to add",
+    "item_text": "ALL items exactly as the user said them (e.g., 'milk, eggs, bread' or 'chips and salsa, mac and cheese')",
     "confirmation": "Added [item] to your [list name]"
 }}
 Note: ALWAYS use add_to_list when the user specifies a list name, even if that list doesn't exist yet. The system will auto-create it.
+IMPORTANT: Keep ALL items in item_text exactly as the user said them. Do NOT extract just one item. If user says "add milk, eggs, bread", item_text should be "milk, eggs, bread".
 
 For ADDING ITEM BUT NO LIST SPECIFIED (user has lists but didn't say which):
 {{
     "action": "add_item_ask_list",
-    "item_text": "the item they want to add",
-    "response": "Which list would you like to add [item] to?"
+    "item_text": "ALL items exactly as the user said them",
+    "response": "Which list would you like to add these to?"
 }}
 Note: Only use add_item_ask_list if user has multiple lists and didn't specify which one. If user specifies a list name like "grocery list", use add_to_list instead.
+IMPORTANT: Keep ALL items in item_text exactly as the user said them. Do NOT extract just one item.
 
 For SHOWING A SPECIFIC LIST:
 {{
