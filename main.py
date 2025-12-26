@@ -491,6 +491,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         normalized_msg = re.sub(r'\b(\d+):?(\d*)\s*(p\.?m\.?)\b', r'\1:\2PM', normalized_msg, flags=re.IGNORECASE)
 
         ai_response = process_with_ai(normalized_msg, phone_number, None)
+        logger.info(f"AI action: {ai_response.get('action')}")
 
         # Handle AI response based on action
         if ai_response["action"] == "store":
@@ -704,6 +705,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         elif ai_response["action"] == "show_current_list":
             # Show the last active list or fall back to showing all lists
             last_active = get_last_active_list(phone_number)
+            logger.info(f"show_current_list: last_active={last_active}")
             if last_active:
                 list_info = get_list_by_name(phone_number, last_active)
                 if list_info:
@@ -768,6 +770,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         elif ai_response["action"] == "show_all_lists":
             lists = get_lists(phone_number)
+            logger.info(f"show_all_lists: found {len(lists)} lists")
             if len(lists) == 1:
                 # Only one list, show it directly
                 list_id = lists[0][0]
