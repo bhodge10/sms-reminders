@@ -183,6 +183,20 @@ def init_db():
             )
         ''')
 
+        # API usage tracking table for cost analytics
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                model TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Add new columns to existing tables (migrations)
         # These will silently fail if columns already exist
         migrations = [
@@ -224,6 +238,17 @@ def init_db():
                 message TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 resolved BOOLEAN DEFAULT FALSE
+            )""",
+            # API usage tracking table for cost analytics
+            """CREATE TABLE IF NOT EXISTS api_usage (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                model TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
         ]
 
@@ -283,6 +308,25 @@ def log_interaction(phone_number, message_in, message_out, intent, success):
         conn.commit()
     except Exception as e:
         logger.error(f"Error logging interaction: {e}")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def log_api_usage(phone_number, request_type, prompt_tokens, completion_tokens, total_tokens, model):
+    """Log API token usage for cost tracking"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO api_usage (phone_number, request_type, prompt_tokens, completion_tokens, total_tokens, model)
+               VALUES (%s, %s, %s, %s, %s, %s)''',
+            (phone_number, request_type, prompt_tokens, completion_tokens, total_tokens, model)
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error logging API usage: {e}")
     finally:
         if conn:
             return_db_connection(conn)

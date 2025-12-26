@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
-from services.metrics_service import get_all_metrics
+from services.metrics_service import get_all_metrics, get_cost_analytics
 from services.sms_service import send_sms
 from database import get_db_connection, return_db_connection
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
@@ -415,6 +415,21 @@ async def toggle_feedback_resolved(feedback_id: int, admin: str = Depends(verify
 
 
 # =====================================================
+# COST ANALYTICS API ENDPOINT
+# =====================================================
+
+@router.get("/admin/costs")
+async def get_costs(admin: str = Depends(verify_admin)):
+    """Get cost analytics broken down by plan tier and time period"""
+    try:
+        costs = get_cost_analytics()
+        return JSONResponse(content=costs)
+    except Exception as e:
+        logger.error(f"Error getting cost analytics: {e}")
+        raise HTTPException(status_code=500, detail="Error getting cost analytics")
+
+
+# =====================================================
 # DASHBOARD UI
 # =====================================================
 
@@ -753,6 +768,78 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             height: 18px;
             cursor: pointer;
         }}
+
+        /* Cost Analytics Styles */
+        .cost-section {{
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }}
+        .cost-section h2 {{
+            margin-top: 0;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #27ae60;
+        }}
+        .cost-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }}
+        .cost-table th, .cost-table td {{
+            padding: 10px 12px;
+            text-align: right;
+            border-bottom: 1px solid #ecf0f1;
+        }}
+        .cost-table th {{
+            background: #34495e;
+            color: white;
+            font-weight: 500;
+        }}
+        .cost-table th:first-child,
+        .cost-table td:first-child {{
+            text-align: left;
+        }}
+        .cost-table tr:hover {{
+            background: #f8f9fa;
+        }}
+        .cost-table .plan-row {{
+            font-weight: 500;
+        }}
+        .cost-table .total-row {{
+            background: #f8f9fa;
+            font-weight: 600;
+            border-top: 2px solid #34495e;
+        }}
+        .cost-table .money {{
+            color: #27ae60;
+        }}
+        .cost-table .cost-header {{
+            background: #2c3e50;
+        }}
+        .period-tabs {{
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }}
+        .period-tab {{
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            background: white;
+            transition: all 0.2s;
+        }}
+        .period-tab:hover {{
+            background: #f8f9fa;
+        }}
+        .period-tab.active {{
+            background: #27ae60;
+            color: white;
+            border-color: #27ae60;
+        }}
     </style>
 </head>
 <body>
@@ -927,6 +1014,38 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </table>
     </div>
 
+    <!-- Cost Analytics Section -->
+    <div class="cost-section">
+        <h2>💰 Cost Analytics</h2>
+
+        <div class="period-tabs">
+            <button class="period-tab active" onclick="showCostPeriod('day')">Today</button>
+            <button class="period-tab" onclick="showCostPeriod('week')">This Week</button>
+            <button class="period-tab" onclick="showCostPeriod('month')">This Month</button>
+            <button class="period-tab" onclick="showCostPeriod('hour')">Last Hour</button>
+        </div>
+
+        <table class="cost-table" id="costTable">
+            <tr class="cost-header">
+                <th>Plan Tier</th>
+                <th>Users</th>
+                <th>Messages</th>
+                <th>SMS Cost</th>
+                <th>AI Tokens</th>
+                <th>AI Cost</th>
+                <th>Total Cost</th>
+                <th>Cost/User</th>
+            </tr>
+            <tr id="costLoading">
+                <td colspan="8" style="color: #95a5a6; text-align: center;">Loading cost data...</td>
+            </tr>
+        </table>
+
+        <div style="margin-top: 15px; font-size: 0.85em; color: #7f8c8d;">
+            <em>SMS: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing</em>
+        </div>
+    </div>
+
     <!-- Confirmation Modal -->
     <div class="modal" id="confirmModal">
         <div class="modal-content">
@@ -1061,6 +1180,93 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 const checkbox = document.querySelector(`#feedback-row-${{feedbackId}} .resolve-checkbox`);
                 checkbox.checked = !isChecked;
             }}
+        }}
+
+        // Cost Analytics
+        let costData = {{}};
+        let currentPeriod = 'day';
+
+        async function loadCostData() {{
+            try {{
+                const response = await fetch('/admin/costs');
+                costData = await response.json();
+                renderCostTable(currentPeriod);
+            }} catch (e) {{
+                console.error('Error loading cost data:', e);
+                const loadingRow = document.getElementById('costLoading');
+                if (loadingRow) {{
+                    loadingRow.innerHTML = '<td colspan="8" style="color: #e74c3c; text-align: center;">Error loading cost data</td>';
+                }}
+            }}
+        }}
+
+        function showCostPeriod(period) {{
+            currentPeriod = period;
+            // Update tab styles
+            document.querySelectorAll('.period-tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            renderCostTable(period);
+        }}
+
+        function renderCostTable(period) {{
+            const table = document.getElementById('costTable');
+            const loadingRow = document.getElementById('costLoading');
+            if (loadingRow) loadingRow.remove();
+
+            // Remove existing data rows (keep header)
+            while (table.rows.length > 1) {{
+                table.deleteRow(1);
+            }}
+
+            const periodData = costData[period];
+            if (!periodData) {{
+                const row = table.insertRow(-1);
+                row.innerHTML = '<td colspan="8" style="color: #95a5a6; text-align: center;">No cost data available</td>';
+                return;
+            }}
+
+            // Add rows for each plan
+            ['free', 'premium'].forEach(plan => {{
+                const data = periodData[plan];
+                if (data) {{
+                    const row = table.insertRow(-1);
+                    row.className = 'plan-row';
+                    const totalTokens = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
+                    row.innerHTML = `
+                        <td>${{plan.charAt(0).toUpperCase() + plan.slice(1)}}</td>
+                        <td>${{data.user_count}}</td>
+                        <td>${{data.message_count * 2}}</td>
+                        <td class="money">${{formatCurrency(data.sms_cost)}}</td>
+                        <td>${{totalTokens.toLocaleString()}}</td>
+                        <td class="money">${{formatCurrency(data.ai_cost)}}</td>
+                        <td class="money">${{formatCurrency(data.total_cost)}}</td>
+                        <td class="money">${{formatCurrency(data.cost_per_user)}}</td>
+                    `;
+                }}
+            }});
+
+            // Add total row
+            const total = periodData['total'];
+            if (total) {{
+                const row = table.insertRow(-1);
+                row.className = 'total-row';
+                row.innerHTML = `
+                    <td><strong>Total</strong></td>
+                    <td><strong>${{total.user_count}}</strong></td>
+                    <td><strong>-</strong></td>
+                    <td class="money"><strong>${{formatCurrency(total.sms_cost)}}</strong></td>
+                    <td><strong>-</strong></td>
+                    <td class="money"><strong>${{formatCurrency(total.ai_cost)}}</strong></td>
+                    <td class="money"><strong>${{formatCurrency(total.total_cost)}}</strong></td>
+                    <td class="money"><strong>${{formatCurrency(total.cost_per_user)}}</strong></td>
+                `;
+            }}
+        }}
+
+        function formatCurrency(value) {{
+            if (value === 0) return '$0.00';
+            if (value < 0.01) return '<$0.01';
+            return '$' + value.toFixed(2);
         }}
 
         function updatePreview() {{
@@ -1201,6 +1407,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         loadStats();
         loadHistory();
         loadFeedback();
+        loadCostData();
     </script>
 </body>
 </html>

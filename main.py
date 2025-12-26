@@ -388,7 +388,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     list_name = selected_list[1]
 
                     # Parse multiple items from the pending item
-                    items_to_add = parse_list_items(pending_item)
+                    items_to_add = parse_list_items(pending_item, phone_number)
 
                     # Check item limit
                     item_count = get_item_count(list_id)
@@ -816,7 +816,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 item_text = item_result  # Sanitized
 
                 # Parse multiple items from the text
-                items_to_add = parse_list_items(item_text)
+                items_to_add = parse_list_items(item_text, phone_number)
 
                 list_info = get_list_by_name(phone_number, list_name)
 
@@ -875,7 +875,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 list_name = lists[0][1]
 
                 # Parse multiple items
-                items_to_add = parse_list_items(item_text)
+                items_to_add = parse_list_items(item_text, phone_number)
 
                 item_count = get_item_count(list_id)
                 available_slots = MAX_ITEMS_PER_LIST - item_count

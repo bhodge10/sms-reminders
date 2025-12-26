@@ -7,6 +7,12 @@ from datetime import datetime
 from database import get_db_connection, return_db_connection
 from config import logger
 
+# Cost constants
+SMS_COST_PER_MESSAGE = 0.0079  # $0.0079 per inbound/outbound SMS
+# OpenAI pricing (per 1K tokens) - GPT-4o-mini
+OPENAI_INPUT_COST_PER_1K = 0.00015   # $0.00015 per 1K input tokens
+OPENAI_OUTPUT_COST_PER_1K = 0.0006   # $0.0006 per 1K output tokens
+
 
 # =============================================================================
 # TRACKING FUNCTIONS
@@ -330,6 +336,114 @@ def get_referral_breakdown():
     except Exception as e:
         logger.error(f"Error getting referral breakdown: {e}")
         return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_cost_analytics():
+    """Get cost analytics broken down by plan tier and time period"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Time period intervals
+        periods = {
+            'hour': '1 hour',
+            'day': '1 day',
+            'week': '7 days',
+            'month': '30 days'
+        }
+
+        # Get user counts by plan
+        c.execute('''
+            SELECT
+                COALESCE(premium_status, 'free') as plan,
+                COUNT(*) as count
+            FROM users
+            WHERE onboarding_complete = TRUE
+            GROUP BY COALESCE(premium_status, 'free')
+        ''')
+        user_counts = {row[0]: row[1] for row in c.fetchall()}
+
+        results = {}
+
+        for period_name, interval in periods.items():
+            period_data = {}
+
+            # Get SMS costs by plan (count messages from logs table)
+            # Each log entry = 1 inbound + 1 outbound message
+            c.execute(f'''
+                SELECT
+                    COALESCE(u.premium_status, 'free') as plan,
+                    COUNT(*) as message_count
+                FROM logs l
+                JOIN users u ON l.phone_number = u.phone_number
+                WHERE l.created_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY COALESCE(u.premium_status, 'free')
+            ''')
+            sms_by_plan = {row[0]: row[1] for row in c.fetchall()}
+
+            # Get AI costs by plan (from api_usage table)
+            c.execute(f'''
+                SELECT
+                    COALESCE(u.premium_status, 'free') as plan,
+                    SUM(a.prompt_tokens) as prompt_tokens,
+                    SUM(a.completion_tokens) as completion_tokens
+                FROM api_usage a
+                JOIN users u ON a.phone_number = u.phone_number
+                WHERE a.created_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY COALESCE(u.premium_status, 'free')
+            ''')
+            ai_by_plan = {row[0]: {'prompt': row[1] or 0, 'completion': row[2] or 0} for row in c.fetchall()}
+
+            # Calculate costs for each plan tier
+            for plan in ['free', 'premium']:
+                message_count = sms_by_plan.get(plan, 0)
+                # Each interaction = 1 inbound + 1 outbound
+                sms_cost = message_count * 2 * SMS_COST_PER_MESSAGE
+
+                ai_tokens = ai_by_plan.get(plan, {'prompt': 0, 'completion': 0})
+                ai_cost = (
+                    (ai_tokens['prompt'] / 1000) * OPENAI_INPUT_COST_PER_1K +
+                    (ai_tokens['completion'] / 1000) * OPENAI_OUTPUT_COST_PER_1K
+                )
+
+                total_cost = sms_cost + ai_cost
+                user_count = user_counts.get(plan, 0)
+                cost_per_user = total_cost / user_count if user_count > 0 else 0
+
+                period_data[plan] = {
+                    'sms_cost': round(sms_cost, 4),
+                    'ai_cost': round(ai_cost, 4),
+                    'total_cost': round(total_cost, 4),
+                    'user_count': user_count,
+                    'cost_per_user': round(cost_per_user, 4),
+                    'message_count': message_count,
+                    'prompt_tokens': ai_tokens['prompt'],
+                    'completion_tokens': ai_tokens['completion']
+                }
+
+            # Add totals
+            total_sms = sum(p.get('sms_cost', 0) for p in period_data.values())
+            total_ai = sum(p.get('ai_cost', 0) for p in period_data.values())
+            total_users = sum(user_counts.values())
+            period_data['total'] = {
+                'sms_cost': round(total_sms, 4),
+                'ai_cost': round(total_ai, 4),
+                'total_cost': round(total_sms + total_ai, 4),
+                'user_count': total_users,
+                'cost_per_user': round((total_sms + total_ai) / total_users, 4) if total_users > 0 else 0
+            }
+
+            results[period_name] = period_data
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error getting cost analytics: {e}")
+        return {}
     finally:
         if conn:
             return_db_connection(conn)

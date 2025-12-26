@@ -14,6 +14,7 @@ from models.reminder import get_user_reminders
 from models.user import get_user_timezone
 from models.list_model import get_lists, get_list_items
 from utils.timezone import get_user_current_time
+from database import log_api_usage
 
 def process_with_ai(message, phone_number, context):
     """Process user message with OpenAI and determine action"""
@@ -404,6 +405,17 @@ CRITICAL RULES:
             max_tokens=OPENAI_MAX_TOKENS
         )
 
+        # Log API usage for cost tracking
+        if response.usage:
+            log_api_usage(
+                phone_number,
+                'process_message',
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
+                OPENAI_MODEL
+            )
+
         result = json.loads(response.choices[0].message.content)
         logger.info(f"✅ AI processed successfully: {result.get('action')}")
         return result
@@ -425,7 +437,7 @@ CRITICAL RULES:
         }
 
 
-def parse_list_items(item_text):
+def parse_list_items(item_text, phone_number='system'):
     """
     Parse a string of items into individual list items using AI.
     Keeps compound items together (e.g., 'ham and cheese sandwich' stays as one item).
@@ -474,6 +486,17 @@ Example output: ["item1", "item2", "item3"]"""
             temperature=0.1,  # Low temperature for consistent parsing
             max_tokens=200
         )
+
+        # Log API usage for cost tracking
+        if response.usage:
+            log_api_usage(
+                phone_number,
+                'parse_list_items',
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
+                OPENAI_MODEL
+            )
 
         result = json.loads(response.choices[0].message.content)
 
