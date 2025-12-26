@@ -884,15 +884,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             logger.info(f"reminder_relative: offset_minutes_raw={offset_minutes_raw}, type={type(offset_minutes_raw)}, reminder_text={reminder_text}")
 
             try:
-                # Parse offset_minutes - handle both int and string formats
-                if isinstance(offset_minutes_raw, int):
-                    offset_minutes = offset_minutes_raw
-                elif isinstance(offset_minutes_raw, str):
+                # Parse offset_minutes - handle int, float, and string formats
+                if isinstance(offset_minutes_raw, (int, float)):
+                    offset_minutes = int(offset_minutes_raw)
+                else:
                     # Try to extract number from string like "30" or "30 minutes"
                     match = re.search(r'(\d+)', str(offset_minutes_raw))
                     offset_minutes = int(match.group(1)) if match else 15
-                else:
-                    offset_minutes = int(offset_minutes_raw)
 
                 # Cap at 24 hours (1440 minutes)
                 offset_minutes = min(offset_minutes, 1440)
