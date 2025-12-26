@@ -107,3 +107,127 @@ def get_user_reminders(phone_number):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def get_pending_reminders(phone_number):
+    """Get all pending (not yet sent) reminders for a user with IDs"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                'SELECT id, reminder_text, reminder_date FROM reminders WHERE phone_hash = %s AND sent = FALSE ORDER BY reminder_date',
+                (phone_hash,)
+            )
+            results = c.fetchall()
+            if not results:
+                # Fallback for reminders created before encryption
+                c.execute(
+                    'SELECT id, reminder_text, reminder_date FROM reminders WHERE phone_number = %s AND sent = FALSE ORDER BY reminder_date',
+                    (phone_number,)
+                )
+                results = c.fetchall()
+        else:
+            c.execute(
+                'SELECT id, reminder_text, reminder_date FROM reminders WHERE phone_number = %s AND sent = FALSE ORDER BY reminder_date',
+                (phone_number,)
+            )
+            results = c.fetchall()
+
+        return results
+    except Exception as e:
+        logger.error(f"Error getting pending reminders: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def search_pending_reminders(phone_number, search_term):
+    """Search pending reminders by keyword (case-insensitive)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        search_pattern = f'%{search_term}%'
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                '''SELECT id, reminder_text, reminder_date FROM reminders
+                   WHERE phone_hash = %s AND sent = FALSE AND LOWER(reminder_text) LIKE LOWER(%s)
+                   ORDER BY reminder_date''',
+                (phone_hash, search_pattern)
+            )
+            results = c.fetchall()
+            if not results:
+                # Fallback for reminders created before encryption
+                c.execute(
+                    '''SELECT id, reminder_text, reminder_date FROM reminders
+                       WHERE phone_number = %s AND sent = FALSE AND LOWER(reminder_text) LIKE LOWER(%s)
+                       ORDER BY reminder_date''',
+                    (phone_number, search_pattern)
+                )
+                results = c.fetchall()
+        else:
+            c.execute(
+                '''SELECT id, reminder_text, reminder_date FROM reminders
+                   WHERE phone_number = %s AND sent = FALSE AND LOWER(reminder_text) LIKE LOWER(%s)
+                   ORDER BY reminder_date''',
+                (phone_number, search_pattern)
+            )
+            results = c.fetchall()
+
+        return results
+    except Exception as e:
+        logger.error(f"Error searching pending reminders: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def delete_reminder(phone_number, reminder_id):
+    """Delete a specific pending reminder by ID (only if not sent)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            # Only delete if it belongs to this user and hasn't been sent
+            c.execute(
+                'DELETE FROM reminders WHERE id = %s AND phone_hash = %s AND sent = FALSE',
+                (reminder_id, phone_hash)
+            )
+            if c.rowcount == 0:
+                # Fallback for reminders created before encryption
+                c.execute(
+                    'DELETE FROM reminders WHERE id = %s AND phone_number = %s AND sent = FALSE',
+                    (reminder_id, phone_number)
+                )
+        else:
+            c.execute(
+                'DELETE FROM reminders WHERE id = %s AND phone_number = %s AND sent = FALSE',
+                (reminder_id, phone_number)
+            )
+
+        deleted = c.rowcount > 0
+        conn.commit()
+        if deleted:
+            logger.info(f"Deleted reminder {reminder_id}")
+        return deleted
+    except Exception as e:
+        logger.error(f"Error deleting reminder: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)

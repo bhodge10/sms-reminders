@@ -213,6 +213,15 @@ For LISTING REMINDERS:
     "response": "List all reminders from the USER'S REMINDERS section above, showing scheduled and sent reminders with their times."
 }}
 
+For DELETING/CANCELING A REMINDER:
+{{
+    "action": "delete_reminder",
+    "search_term": "keyword(s) to search for in reminder text (e.g., 'dentist', 'team meeting', '3pm')",
+    "confirmation": "Deleted your reminder about [topic]"
+}}
+Note: Use this when user says "delete reminder about...", "cancel reminder for...", "remove my ... reminder", etc.
+Extract the key search term(s) from their request. The system will search pending reminders and handle matches.
+
 For SETTING REMINDERS WITH CLEAR TIME:
 {{
     "action": "reminder",

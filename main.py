@@ -21,9 +21,9 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete
 from models.memory import save_memory, get_memories
-from models.reminder import save_reminder, get_user_reminders
+from models.reminder import save_reminder, get_user_reminders, search_pending_reminders, delete_reminder
 from models.list_model import (
     create_list, get_lists, get_list_by_name, get_list_items,
     add_list_item, mark_item_complete, mark_item_incomplete,
@@ -272,6 +272,41 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 resp = MessagingResponse()
                 resp.message("Sorry, I had trouble setting that reminder. Please try again.")
                 return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # PENDING REMINDER DELETE SELECTION
+        # ==========================================
+        # Check if user has pending reminder deletion and sent a number
+        pending_reminder_data = get_pending_reminder_delete(phone_number)
+        if pending_reminder_data and incoming_msg.strip().isdigit():
+            import json
+            try:
+                reminder_options = json.loads(pending_reminder_data)
+                selection = int(incoming_msg.strip())
+                if 1 <= selection <= len(reminder_options):
+                    selected_reminder = reminder_options[selection - 1]
+                    reminder_id = selected_reminder['id']
+                    reminder_text = selected_reminder['text']
+
+                    if delete_reminder(phone_number, reminder_id):
+                        reply_msg = f"Deleted your reminder: {reminder_text}"
+                    else:
+                        reply_msg = "Couldn't delete that reminder."
+
+                    # Clear pending delete
+                    create_or_update_user(phone_number, pending_reminder_delete=None)
+
+                    resp = MessagingResponse()
+                    resp.message(reply_msg)
+                    log_interaction(phone_number, incoming_msg, reply_msg, "delete_reminder_selected", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Please reply with a number between 1 and {len(reminder_options)}")
+                    return Response(content=str(resp), media_type="application/xml")
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Error parsing pending reminder delete data: {e}")
+                create_or_update_user(phone_number, pending_reminder_delete=None)
 
         # ==========================================
         # PENDING LIST ITEM SELECTION
@@ -883,6 +918,48 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             else:
                 reply_text = f"I couldn't find a list called '{old_name}'."
             log_interaction(phone_number, incoming_msg, reply_text, "rename_list", True)
+
+        elif ai_response["action"] == "delete_reminder":
+            import json
+            search_term = ai_response.get("search_term", "")
+            user_tz = get_user_timezone(phone_number)
+            tz = pytz.timezone(user_tz)
+
+            # Search for matching pending reminders
+            matching_reminders = search_pending_reminders(phone_number, search_term)
+
+            if len(matching_reminders) == 0:
+                reply_text = f"No pending reminders found matching '{search_term}'."
+            elif len(matching_reminders) == 1:
+                # Single match - delete directly
+                reminder_id, reminder_text, reminder_date = matching_reminders[0]
+                if delete_reminder(phone_number, reminder_id):
+                    reply_text = f"Deleted your reminder: {reminder_text}"
+                else:
+                    reply_text = "Couldn't delete that reminder."
+            else:
+                # Multiple matches - ask user to choose
+                reminder_options = []
+                lines = ["Found multiple reminders:"]
+                for i, (reminder_id, reminder_text, reminder_date) in enumerate(matching_reminders, 1):
+                    # Convert UTC to user timezone for display
+                    if isinstance(reminder_date, str):
+                        utc_dt = datetime.strptime(reminder_date, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        utc_dt = reminder_date
+                    utc_dt = pytz.UTC.localize(utc_dt)
+                    local_dt = utc_dt.astimezone(tz)
+                    formatted_date = local_dt.strftime('%b %d at %I:%M %p')
+                    lines.append(f"{i}. {reminder_text} ({formatted_date})")
+                    reminder_options.append({'id': reminder_id, 'text': reminder_text})
+
+                lines.append("\nReply with a number to delete that reminder:")
+                reply_text = "\n".join(lines)
+
+                # Store options for number selection
+                create_or_update_user(phone_number, pending_reminder_delete=json.dumps(reminder_options))
+
+            log_interaction(phone_number, incoming_msg, reply_text, "delete_reminder", True)
 
         else:  # help or error
             reply_text = ai_response.get("response", "Hi! Text me to remember things, set reminders, or ask me about stored info.")

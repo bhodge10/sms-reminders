@@ -186,6 +186,8 @@ def init_db():
             "ALTER TABLE logs ADD COLUMN IF NOT EXISTS message_in_encrypted TEXT",
             "ALTER TABLE logs ADD COLUMN IF NOT EXISTS message_out_encrypted TEXT",
             "ALTER TABLE list_items ADD COLUMN IF NOT EXISTS item_text_encrypted TEXT",
+            # Delete reminder feature: stores search results when multiple matches found
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_delete TEXT",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
