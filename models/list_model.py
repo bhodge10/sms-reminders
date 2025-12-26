@@ -383,9 +383,12 @@ def delete_list(phone_number, list_name):
         conn = get_db_connection()
         c = conn.cursor()
 
+        logger.info(f"delete_list called: phone={phone_number[-4:]}, list_name={list_name}, encryption={ENCRYPTION_ENABLED}")
+
         if ENCRYPTION_ENABLED:
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
+            logger.info(f"Using phone_hash for delete")
             c.execute(
                 'DELETE FROM lists WHERE phone_hash = %s AND LOWER(list_name) = LOWER(%s)',
                 (phone_hash, list_name)
@@ -397,6 +400,7 @@ def delete_list(phone_number, list_name):
             )
 
         deleted = c.rowcount > 0
+        logger.info(f"Delete rowcount: {c.rowcount}, deleted={deleted}")
         conn.commit()
         if deleted:
             logger.info(f"Deleted list '{list_name}'")

@@ -374,9 +374,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if user and user[9]:  # pending_delete flag
                 # Check if this is a list deletion
                 pending_list_name = get_pending_list_item(phone_number)
+                logger.info(f"Delete confirmation: pending_list_name={pending_list_name}")
                 if pending_list_name:
                     # Delete specific list
-                    if delete_list(phone_number, pending_list_name):
+                    logger.info(f"Attempting to delete list: {pending_list_name}")
+                    delete_result = delete_list(phone_number, pending_list_name)
+                    logger.info(f"Delete result: {delete_result}")
+                    if delete_result:
                         reply_msg = f"Deleted your {pending_list_name} and all its items."
                     else:
                         reply_msg = "Couldn't delete that list."
