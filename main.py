@@ -875,6 +875,43 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             reply_text = ai_response.get("confirmation", "Got it! I'll remind you.")
             log_interaction(phone_number, incoming_msg, reply_text, "reminder", True)
 
+        elif ai_response["action"] == "reminder_relative":
+            # Handle relative time reminders (e.g., "in 30 minutes", "in 2 hours")
+            # Server calculates the actual time to avoid AI arithmetic errors
+            reminder_text = ai_response.get("reminder_text")
+            offset_minutes = ai_response.get("offset_minutes", 15)  # Default to 15 minutes
+
+            try:
+                # Ensure offset_minutes is an integer
+                offset_minutes = int(offset_minutes)
+                # Cap at 24 hours (1440 minutes)
+                offset_minutes = min(offset_minutes, 1440)
+                offset_minutes = max(offset_minutes, 1)  # Minimum 1 minute
+
+                # Calculate reminder time from current UTC
+                reminder_dt_utc = datetime.utcnow() + timedelta(minutes=offset_minutes)
+                reminder_date_utc = reminder_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+
+                # Save the reminder
+                save_reminder(phone_number, reminder_text, reminder_date_utc)
+
+                # Generate confirmation in user's timezone
+                user_tz_str = get_user_timezone(phone_number)
+                tz = pytz.timezone(user_tz_str)
+                reminder_dt_local = pytz.UTC.localize(reminder_dt_utc).astimezone(tz)
+
+                # Format the time nicely
+                time_str = reminder_dt_local.strftime('%I:%M %p').lstrip('0')
+                date_str = reminder_dt_local.strftime('%A, %B %d')
+
+                reply_text = f"Got it! I'll remind you on {date_str} at {time_str} to {reminder_text}."
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", True)
+
+            except Exception as e:
+                logger.error(f"Error setting relative reminder: {e}")
+                reply_text = "Sorry, I couldn't set that reminder. Please try again."
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", False)
+
         # ==========================================
         # LIST ACTION HANDLERS
         # ==========================================

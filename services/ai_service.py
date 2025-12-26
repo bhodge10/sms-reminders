@@ -171,9 +171,14 @@ For reminder requests with SPECIFIC TIMES:
 - If time does NOT include AM/PM (like "9:00" or "4:35"): Ask for clarification - respond with action "clarify_time"
 - Accept all variations: pm, PM, p.m., P.M., am, AM, a.m., A.M.
 
-For reminder requests with RELATIVE TIMES:
-- "in 30 minutes" = add 30 minutes to {current_datetime}
-- "in 2 hours" = add 2 hours to {current_datetime}
+For reminder requests with RELATIVE TIMES (use action "reminder_relative"):
+- "in 30 minutes" → Use reminder_relative with offset_minutes: 30
+- "in 2 hours" → Use reminder_relative with offset_minutes: 120
+- "in 1 minute" → Use reminder_relative with offset_minutes: 1
+- "in an hour" → Use reminder_relative with offset_minutes: 60
+IMPORTANT: For ANY "in X minutes/hours" format, you MUST use action "reminder_relative" and provide offset_minutes (total minutes to add).
+
+For SPECIFIC TIME reminders (use action "reminder"):
 - "tomorrow at 9am" = tomorrow's date at 09:00:00
 - "Saturday at 8am" = next Saturday at 08:00:00
 
@@ -184,12 +189,14 @@ For reminder requests with DAYS OF THE WEEK:
 - "next Monday" = Monday of next week
 
 Examples:
-- "Remind me at 9pm to take meds" → Process normally (has PM)
-- "Remind me at 4:22 pm to call wife" → Process normally (has pm in lowercase)
-- "Remind me at 3:30 AM to wake up" → Process normally (has AM)
-- "Remind me at 4:35 to call wife" → Ask "Do you mean 4:35 AM or 4:35 PM?"
-- "Remind me in 30 minutes" → Add 30 minutes to {current_datetime}
-- "Remind me tomorrow at 2pm" → Tomorrow's date at 14:00:00
+- "Remind me at 9pm to take meds" → action: "reminder" (has PM)
+- "Remind me at 4:22 pm to call wife" → action: "reminder" (has pm in lowercase)
+- "Remind me at 3:30 AM to wake up" → action: "reminder" (has AM)
+- "Remind me at 4:35 to call wife" → action: "clarify_time" (no AM/PM)
+- "Remind me in 30 minutes" → action: "reminder_relative" with offset_minutes: 30
+- "Remind me in 1 minute" → action: "reminder_relative" with offset_minutes: 1
+- "Remind me in 2 hours" → action: "reminder_relative" with offset_minutes: 120
+- "Remind me tomorrow at 2pm" → action: "reminder" with tomorrow's date at 14:00:00
 
 RESPONSE FORMAT (must be valid JSON):
 
@@ -254,13 +261,21 @@ WHEN TO USE delete_memory:
 - "delete 1" or "delete memory 1" (when they want to delete memory #1 from their list) → search_term: the actual text of memory #1 from USER'S STORED MEMORIES above
 IMPORTANT: Use delete_memory when user wants to remove stored information/facts (from USER'S STORED MEMORIES section), not reminders or list items.
 
-For SETTING REMINDERS WITH CLEAR TIME:
+For SETTING REMINDERS WITH CLEAR TIME (specific time given):
 {{
     "action": "reminder",
     "reminder_text": "what to remind them about",
     "reminder_date": "YYYY-MM-DD HH:MM:SS format (this will be in {user_tz} timezone)",
     "confirmation": "I'll remind you on [readable date/time including day of week] to [action]"
 }}
+
+For SETTING REMINDERS WITH RELATIVE TIME ("in X minutes/hours"):
+{{
+    "action": "reminder_relative",
+    "reminder_text": "what to remind them about",
+    "offset_minutes": number (total minutes from now - e.g., 30 for "30 minutes", 120 for "2 hours", 1 for "1 minute")
+}}
+IMPORTANT: Use this action for ANY "in X minutes", "in X hours", "in X minute" request. The server will calculate the exact time.
 
 For ASKING TIME CLARIFICATION:
 {{
