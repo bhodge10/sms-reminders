@@ -21,8 +21,8 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete
-from models.memory import save_memory, get_memories
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete
+from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import save_reminder, get_user_reminders, search_pending_reminders, delete_reminder
 from models.list_model import (
     create_list, get_lists, get_list_by_name, get_list_items,
@@ -307,6 +307,71 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             except (json.JSONDecodeError, KeyError) as e:
                 logger.error(f"Error parsing pending reminder delete data: {e}")
                 create_or_update_user(phone_number, pending_reminder_delete=None)
+
+        # ==========================================
+        # PENDING MEMORY DELETE SELECTION/CONFIRMATION
+        # ==========================================
+        # Check if user has pending memory deletion
+        pending_memory_data = get_pending_memory_delete(phone_number)
+        if pending_memory_data:
+            import json
+            try:
+                memory_data = json.loads(pending_memory_data)
+
+                # Check if this is a confirmation (single memory awaiting YES)
+                if memory_data.get('awaiting_confirmation'):
+                    if incoming_msg.upper() == "YES":
+                        memory_id = memory_data['id']
+                        memory_text = memory_data['text']
+                        if delete_memory(phone_number, memory_id):
+                            reply_msg = f"Deleted memory: {memory_text[:100]}{'...' if len(memory_text) > 100 else ''}"
+                        else:
+                            reply_msg = "Couldn't delete that memory."
+                        create_or_update_user(phone_number, pending_memory_delete=None)
+                        resp = MessagingResponse()
+                        resp.message(reply_msg)
+                        log_interaction(phone_number, incoming_msg, reply_msg, "delete_memory_confirmed", True)
+                        return Response(content=str(resp), media_type="application/xml")
+                    elif incoming_msg.upper() in ["NO", "CANCEL"]:
+                        create_or_update_user(phone_number, pending_memory_delete=None)
+                        resp = MessagingResponse()
+                        resp.message("Cancelled. Your memory is safe!")
+                        log_interaction(phone_number, incoming_msg, "Delete cancelled", "delete_memory_cancelled", True)
+                        return Response(content=str(resp), media_type="application/xml")
+
+                # Check if this is a number selection (multiple memories)
+                elif memory_data.get('options') and incoming_msg.strip().isdigit():
+                    memory_options = memory_data['options']
+                    selection = int(incoming_msg.strip())
+                    if 1 <= selection <= len(memory_options):
+                        selected_memory = memory_options[selection - 1]
+                        memory_id = selected_memory['id']
+                        memory_text = selected_memory['text']
+
+                        # Ask for confirmation before deleting
+                        confirm_data = json.dumps({
+                            'awaiting_confirmation': True,
+                            'id': memory_id,
+                            'text': memory_text
+                        })
+                        create_or_update_user(phone_number, pending_memory_delete=confirm_data)
+
+                        # Truncate long memory text for display
+                        display_text = memory_text[:100] + ('...' if len(memory_text) > 100 else '')
+                        reply_msg = f"Delete memory: '{display_text}'?\n\nReply YES to confirm or NO to cancel."
+
+                        resp = MessagingResponse()
+                        resp.message(reply_msg)
+                        log_interaction(phone_number, incoming_msg, reply_msg, "delete_memory_confirm_request", True)
+                        return Response(content=str(resp), media_type="application/xml")
+                    else:
+                        resp = MessagingResponse()
+                        resp.message(f"Please reply with a number between 1 and {len(memory_options)}")
+                        return Response(content=str(resp), media_type="application/xml")
+
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Error parsing pending memory delete data: {e}")
+                create_or_update_user(phone_number, pending_memory_delete=None)
 
         # ==========================================
         # PENDING LIST ITEM SELECTION
@@ -960,6 +1025,48 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 create_or_update_user(phone_number, pending_reminder_delete=json.dumps(reminder_options))
 
             log_interaction(phone_number, incoming_msg, reply_text, "delete_reminder", True)
+
+        elif ai_response["action"] == "delete_memory":
+            import json
+            search_term = ai_response.get("search_term", "")
+
+            # Search for matching memories
+            matching_memories = search_memories(phone_number, search_term)
+
+            if len(matching_memories) == 0:
+                reply_text = f"No memories found matching '{search_term}'."
+            elif len(matching_memories) == 1:
+                # Single match - ask for confirmation before deleting
+                memory_id, memory_text, created_at = matching_memories[0]
+
+                # Store pending delete with confirmation flag
+                confirm_data = json.dumps({
+                    'awaiting_confirmation': True,
+                    'id': memory_id,
+                    'text': memory_text
+                })
+                create_or_update_user(phone_number, pending_memory_delete=confirm_data)
+
+                # Truncate long memory text for display
+                display_text = memory_text[:100] + ('...' if len(memory_text) > 100 else '')
+                reply_text = f"Delete memory: '{display_text}'?\n\nReply YES to confirm or NO to cancel."
+            else:
+                # Multiple matches - ask user to choose
+                memory_options = []
+                lines = ["Found multiple memories:"]
+                for i, (memory_id, memory_text, created_at) in enumerate(matching_memories, 1):
+                    # Truncate long memory text for display
+                    display_text = memory_text[:80] + ('...' if len(memory_text) > 80 else '')
+                    lines.append(f"{i}. {display_text}")
+                    memory_options.append({'id': memory_id, 'text': memory_text})
+
+                lines.append("\nReply with a number to select:")
+                reply_text = "\n".join(lines)
+
+                # Store options for number selection
+                create_or_update_user(phone_number, pending_memory_delete=json.dumps({'options': memory_options}))
+
+            log_interaction(phone_number, incoming_msg, reply_text, "delete_memory", True)
 
         else:  # help or error
             reply_text = ai_response.get("response", "Hi! Text me to remember things, set reminders, or ask me about stored info.")

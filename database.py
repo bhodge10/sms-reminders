@@ -188,6 +188,8 @@ def init_db():
             "ALTER TABLE list_items ADD COLUMN IF NOT EXISTS item_text_encrypted TEXT",
             # Delete reminder feature: stores search results when multiple matches found
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_delete TEXT",
+            # Delete memory feature: stores search results when multiple matches or confirmation needed
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_memory_delete TEXT",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups

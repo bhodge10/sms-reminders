@@ -227,6 +227,20 @@ WHEN TO USE delete_reminder:
 - "remove the break reminder" → search_term: "break"
 IMPORTANT: If user says "delete [keyword]" and the keyword matches something in their SCHEDULED reminders (not lists), use delete_reminder.
 
+For DELETING/FORGETTING A MEMORY:
+{{
+    "action": "delete_memory",
+    "search_term": "keyword(s) to search for in memory text",
+    "confirmation": "Looking for memories about [topic]..."
+}}
+WHEN TO USE delete_memory:
+- "delete memory about my car" → search_term: "car"
+- "forget my wifi password" → search_term: "wifi password"
+- "remove the memory about my VIN" → search_term: "VIN"
+- "forget my doctor's number" → search_term: "doctor"
+- "delete 1" or "delete memory 1" (when they want to delete memory #1 from their list) → search_term: the actual text of memory #1 from USER'S STORED MEMORIES above
+IMPORTANT: Use delete_memory when user wants to remove stored information/facts (from USER'S STORED MEMORIES section), not reminders or list items.
+
 For SETTING REMINDERS WITH CLEAR TIME:
 {{
     "action": "reminder",

@@ -212,3 +212,33 @@ def get_pending_reminder_delete(phone_number):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def get_pending_memory_delete(phone_number):
+    """Get user's pending memory delete data (stores matching memory IDs when multiple found or awaiting confirmation)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('SELECT pending_memory_delete FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('SELECT pending_memory_delete FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('SELECT pending_memory_delete FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
+
+        if result and result[0]:
+            return result[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error getting pending memory delete: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
