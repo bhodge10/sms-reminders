@@ -227,6 +227,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         incoming_msg = Body.strip()
         phone_number = From
 
+        # Staging environment: Only allow specific phone numbers for testing
+        if ENVIRONMENT == "staging":
+            STAGING_ALLOWED_NUMBERS = ["+18593935374"]  # Add allowed test numbers here
+            if phone_number not in STAGING_ALLOWED_NUMBERS:
+                resp = MessagingResponse()
+                resp.message("Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up.")
+                logger.info(f"Staging: Blocked non-test number {mask_phone_number(phone_number)}")
+                return Response(content=str(resp), media_type="application/xml")
+
         # Check rate limit
         if not check_rate_limit(phone_number):
             resp = MessagingResponse()
