@@ -166,6 +166,8 @@ async def get_broadcast_status(broadcast_id: int, admin: str = Depends(verify_ad
             return_db_connection(conn)
 
 
+BROADCAST_PREFIX = "[Remyndrs] "
+
 def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str):
     """Background task to send broadcast messages with rate limiting"""
     import time
@@ -173,6 +175,9 @@ def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str
     conn = None
     success_count = 0
     fail_count = 0
+
+    # Prepend the broadcast prefix to the message
+    full_message = BROADCAST_PREFIX + message
 
     try:
         conn = get_db_connection()
@@ -187,7 +192,7 @@ def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str
 
         for i, phone in enumerate(phone_numbers):
             try:
-                send_sms(phone, message)
+                send_sms(phone, full_message)
                 success_count += 1
             except Exception as e:
                 logger.error(f"Failed to send broadcast to {phone}: {e}")
@@ -702,9 +707,9 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
 
         <div class="preview-box">
-            <div><strong>Preview:</strong></div>
+            <div><strong>Preview (what users will receive):</strong></div>
             <div style="margin: 10px 0; padding: 10px; background: white; border-radius: 4px;">
-                <span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
+                <span style="color: #7f8c8d;">[Remyndrs] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
             </div>
             <div>This will send to <span id="recipientCount" class="count">0</span> users</div>
         </div>
