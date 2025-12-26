@@ -457,13 +457,40 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # DELETE ALL COMMAND
+        # DELETE ALL COMMANDS (separated by type)
         # ==========================================
-        if incoming_msg.upper() in ["DELETE ALL", "DELETE ALL MEMORIES", "DELETE ALL MY MEMORIES", "FORGET EVERYTHING"]:
+        msg_upper = incoming_msg.upper()
+
+        # Delete all memories only
+        if msg_upper in ["DELETE ALL MEMORIES", "DELETE ALL MY MEMORIES", "FORGET ALL MEMORIES", "FORGET ALL MY MEMORIES"]:
             resp = MessagingResponse()
-            resp.message("⚠️ WARNING: This will permanently delete ALL your memories and reminders.\n\nReply YES to confirm or anything else to cancel.")
-            create_or_update_user(phone_number, pending_delete=True)
-            log_interaction(phone_number, incoming_msg, "Asking for delete confirmation", "delete_request", True)
+            resp.message("⚠️ WARNING: This will permanently delete ALL your memories.\n\nReply YES to confirm or anything else to cancel.")
+            create_or_update_user(phone_number, pending_delete=True, pending_list_item="__DELETE_ALL_MEMORIES__")
+            log_interaction(phone_number, incoming_msg, "Asking for delete memories confirmation", "delete_memories_request", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Delete all reminders only
+        if msg_upper in ["DELETE ALL REMINDERS", "DELETE ALL MY REMINDERS", "CANCEL ALL REMINDERS", "CANCEL ALL MY REMINDERS"]:
+            resp = MessagingResponse()
+            resp.message("⚠️ WARNING: This will permanently delete ALL your reminders.\n\nReply YES to confirm or anything else to cancel.")
+            create_or_update_user(phone_number, pending_delete=True, pending_list_item="__DELETE_ALL_REMINDERS__")
+            log_interaction(phone_number, incoming_msg, "Asking for delete reminders confirmation", "delete_reminders_request", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Delete all lists only
+        if msg_upper in ["DELETE ALL LISTS", "DELETE ALL MY LISTS", "FORGET ALL LISTS", "FORGET ALL MY LISTS"]:
+            resp = MessagingResponse()
+            resp.message("⚠️ WARNING: This will permanently delete ALL your lists and their items.\n\nReply YES to confirm or anything else to cancel.")
+            create_or_update_user(phone_number, pending_delete=True, pending_list_item="__DELETE_ALL_LISTS__")
+            log_interaction(phone_number, incoming_msg, "Asking for delete lists confirmation", "delete_lists_request", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Delete everything (all data)
+        if msg_upper in ["DELETE ALL DATA", "DELETE ALL MY DATA", "DELETE EVERYTHING", "FORGET EVERYTHING", "DELETE ALL"]:
+            resp = MessagingResponse()
+            resp.message("⚠️ WARNING: This will permanently delete ALL your data (memories, reminders, and lists).\n\nReply YES to confirm or anything else to cancel.")
+            create_or_update_user(phone_number, pending_delete=True, pending_list_item="__DELETE_ALL_DATA__")
+            log_interaction(phone_number, incoming_msg, "Asking for delete all data confirmation", "delete_all_request", True)
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
@@ -472,38 +499,75 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if incoming_msg.upper() == "YES":
             user = get_user(phone_number)
             if user and user[9]:  # pending_delete flag
-                # Check if this is a list deletion
-                pending_list_name = get_pending_list_item(phone_number)
-                logger.info(f"Delete confirmation: pending_list_name={pending_list_name}")
-                if pending_list_name:
-                    # Delete specific list
-                    logger.info(f"Attempting to delete list: {pending_list_name}")
-                    delete_result = delete_list(phone_number, pending_list_name)
+                pending_action = get_pending_list_item(phone_number)
+                logger.info(f"Delete confirmation: pending_action={pending_action}")
+
+                from database import get_db_connection, return_db_connection
+
+                # Handle bulk deletion types
+                if pending_action == "__DELETE_ALL_MEMORIES__":
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
+                    conn.commit()
+                    return_db_connection(conn)
+                    create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
+                    resp = MessagingResponse()
+                    resp.message("All your memories have been permanently deleted.")
+                    log_interaction(phone_number, incoming_msg, "All memories deleted", "delete_memories_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+
+                elif pending_action == "__DELETE_ALL_REMINDERS__":
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('DELETE FROM reminders WHERE phone_number = %s', (phone_number,))
+                    conn.commit()
+                    return_db_connection(conn)
+                    create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
+                    resp = MessagingResponse()
+                    resp.message("All your reminders have been permanently deleted.")
+                    log_interaction(phone_number, incoming_msg, "All reminders deleted", "delete_reminders_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+
+                elif pending_action == "__DELETE_ALL_LISTS__":
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('DELETE FROM lists WHERE phone_number = %s', (phone_number,))
+                    conn.commit()
+                    return_db_connection(conn)
+                    create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
+                    resp = MessagingResponse()
+                    resp.message("All your lists have been permanently deleted.")
+                    log_interaction(phone_number, incoming_msg, "All lists deleted", "delete_lists_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+
+                elif pending_action == "__DELETE_ALL_DATA__":
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
+                    c.execute('DELETE FROM reminders WHERE phone_number = %s', (phone_number,))
+                    c.execute('DELETE FROM lists WHERE phone_number = %s', (phone_number,))
+                    conn.commit()
+                    return_db_connection(conn)
+                    create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
+                    resp = MessagingResponse()
+                    resp.message("All your data (memories, reminders, and lists) has been permanently deleted.")
+                    log_interaction(phone_number, incoming_msg, "All data deleted", "delete_all_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+
+                elif pending_action:
+                    # Delete specific list (original behavior)
+                    logger.info(f"Attempting to delete list: {pending_action}")
+                    delete_result = delete_list(phone_number, pending_action)
                     logger.info(f"Delete result: {delete_result}")
                     if delete_result:
-                        reply_msg = f"Deleted your {pending_list_name} and all its items."
+                        reply_msg = f"Deleted your {pending_action} and all its items."
                     else:
                         reply_msg = "Couldn't delete that list."
                     create_or_update_user(phone_number, pending_delete=False, pending_list_item=None)
                     resp = MessagingResponse()
                     resp.message(reply_msg)
                     log_interaction(phone_number, incoming_msg, reply_msg, "delete_list_confirmed", True)
-                    return Response(content=str(resp), media_type="application/xml")
-                else:
-                    # Delete all memories and reminders
-                    from database import get_db_connection
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute('DELETE FROM memories WHERE phone_number = %s', (phone_number,))
-                    c.execute('DELETE FROM reminders WHERE phone_number = %s', (phone_number,))
-                    conn.commit()
-                    conn.close()
-
-                    create_or_update_user(phone_number, pending_delete=False)
-
-                    resp = MessagingResponse()
-                    resp.message("All your data has been permanently deleted.")
-                    log_interaction(phone_number, incoming_msg, "All data deleted", "delete_confirmed", True)
                     return Response(content=str(resp), media_type="application/xml")
 
         if incoming_msg.upper() in ["NO", "CANCEL"]:
