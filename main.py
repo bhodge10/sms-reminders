@@ -459,7 +459,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # DELETE ALL COMMAND
         # ==========================================
-        if incoming_msg.upper() == "DELETE ALL":
+        if incoming_msg.upper() in ["DELETE ALL", "DELETE ALL MEMORIES", "DELETE ALL MY MEMORIES", "FORGET EVERYTHING"]:
             resp = MessagingResponse()
             resp.message("⚠️ WARNING: This will permanently delete ALL your memories and reminders.\n\nReply YES to confirm or anything else to cancel.")
             create_or_update_user(phone_number, pending_delete=True)
