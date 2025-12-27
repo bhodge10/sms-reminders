@@ -259,7 +259,9 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # RESET ACCOUNT COMMAND (works for everyone)
         # ==========================================
+        logger.info(f"Checking reset: '{incoming_msg.upper()}' in ['RESET ACCOUNT', 'RESTART'] = {incoming_msg.upper() in ['RESET ACCOUNT', 'RESTART']}")
         if incoming_msg.upper() in ["RESET ACCOUNT", "RESTART"]:
+            logger.info("RESET ACCOUNT matched - resetting user")
             create_or_update_user(
                 phone_number,
                 first_name=None,
