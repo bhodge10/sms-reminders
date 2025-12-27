@@ -402,9 +402,9 @@ MULTI-COMMAND SUPPORT:
 If the user's message contains MULTIPLE distinct commands, return an array of actions instead of a single action.
 
 Examples of multi-command messages:
-- "Remove hockey tape and add ice skates to the hockey list" → 2 actions: delete_item + add_to_list
+- "Remove tape and add skates to hockey list" → 2 actions: delete_item(item_text="tape") + add_to_list(item_text="skates")
 - "Add milk to grocery list and remind me at 5pm to go shopping" → 2 actions: add_to_list + reminder
-- "Check off eggs and add butter to grocery list" → 2 actions: complete_item + add_to_list
+- "Check off eggs and add butter to grocery list" → 2 actions: complete_item(item_text="eggs") + add_to_list(item_text="butter")
 - "Delete my dentist reminder and set a new one for tomorrow at 9am" → 2 actions: delete_reminder + reminder
 
 For MULTIPLE COMMANDS, return:
@@ -416,11 +416,14 @@ For MULTIPLE COMMANDS, return:
     ]
 }}
 
-IMPORTANT:
-- Only use multiple actions when there are CLEARLY separate commands (usually connected by "and", "then", "also")
-- Each action in the array should be a complete action object with all required fields
-- Process them in the order the user mentioned them
-- Do NOT split a single command into multiple actions (e.g., "add milk and eggs" is ONE add_to_list action, not two)
+CRITICAL MULTI-COMMAND RULES:
+- Look for command verbs: "remove", "delete", "add", "check off", "remind", etc.
+- When you see "[verb1] X and [verb2] Y", split into TWO actions where X belongs to verb1 and Y belongs to verb2
+- Example: "Remove tape and add skates" = delete_item(item_text="tape") + add_to_list(item_text="skates")
+- Example: "Remove pants and add elbow pads" = delete_item(item_text="pants") + add_to_list(item_text="elbow pads")
+- Do NOT include words after "and [verb]" in the first action's parameters
+- Each action gets ONLY its own parameters, not words from the next command
+- Do NOT split a single command into multiple actions (e.g., "add milk and eggs" is ONE add_to_list with item_text="milk and eggs")
 
 CRITICAL RULES:
 - All times are in user's timezone: {user_tz}
@@ -542,6 +545,9 @@ EXAMPLES:
 - "chips and salsa" → ["chips and salsa"]
 - "milk and eggs" → ["milk", "eggs"]
 - "soap, shampoo and conditioner" → ["soap", "shampoo", "conditioner"]
+- "tape and stick" → ["tape", "stick"] (separate sports equipment)
+- "gloves and helmet" → ["gloves", "helmet"] (separate items)
+- "pants and jersey" → ["pants", "jersey"] (separate clothing items)
 
 Return ONLY a JSON array of strings. No explanation, just the array.
 Example output: ["item1", "item2", "item3"]"""
