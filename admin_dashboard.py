@@ -197,7 +197,7 @@ async def get_broadcast_status(broadcast_id: int, admin: str = Depends(verify_ad
             return_db_connection(conn)
 
 
-BROADCAST_PREFIX = "[Remynders System Message] "
+BROADCAST_PREFIX = "[Remyndrs System Message] "
 
 def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str):
     """Background task to send broadcast messages with rate limiting"""
@@ -492,7 +492,7 @@ async def delete_incomplete_users(admin: str = Depends(verify_admin)):
 # MAINTENANCE MESSAGE SETTINGS
 # =====================================================
 
-DEFAULT_MAINTENANCE_MESSAGE = "Remynders is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
+DEFAULT_MAINTENANCE_MESSAGE = "Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
 
 @router.get("/admin/settings/maintenance-message")
 async def get_maintenance_message(admin: str = Depends(verify_admin)):
@@ -553,7 +553,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Remynders Admin Dashboard</title>
+    <title>Remyndrs Admin Dashboard</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -947,7 +947,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
     </style>
 </head>
 <body>
-    <h1>Remynders Dashboard</h1>
+    <h1>Remyndrs Dashboard</h1>
 
     <div class="cards">
         <div class="card">
@@ -1085,7 +1085,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <div class="preview-box">
             <div><strong>Preview (what users will receive):</strong></div>
             <div style="margin: 10px 0; padding: 10px; background: white; border-radius: 4px; white-space: pre-wrap;">
-                <span style="color: #7f8c8d;">[Remynders System Message] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
+                <span style="color: #7f8c8d;">[Remyndrs System Message] </span><span id="messagePreview" style="color: #7f8c8d; font-style: italic;">Your message will appear here...</span>
             </div>
             <div>
                 <span style="color: #27ae60; font-weight: bold;"><span id="recipientCount" class="count">0</span></span> users within 8am-8pm window
@@ -1540,7 +1540,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             const inWindowCount = audienceStats[audience + '_in_window'] || 0;
 
             document.getElementById('modalCount').textContent = inWindowCount;
-            document.getElementById('modalMessage').textContent = '[Remynders System Message] ' + message;
+            document.getElementById('modalMessage').textContent = '[Remyndrs System Message] ' + message;
             document.getElementById('confirmModal').classList.add('active');
         }}
 

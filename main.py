@@ -241,7 +241,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if phone_number not in STAGING_ALLOWED_NUMBERS:
                 resp = MessagingResponse()
                 # Get maintenance message from database (or use default)
-                default_msg = "Remynders is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
+                default_msg = "Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
                 maintenance_msg = get_setting("maintenance_message", default_msg)
                 resp.message(maintenance_msg)
                 logger.info(f"Staging: Blocked non-test number {mask_phone_number(phone_number)}")
@@ -1417,7 +1417,7 @@ async def consent_page():
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Remynders - SMS Consent & Opt-In Policy</title>
+    <title>Remyndrs - SMS Consent & Opt-In Policy</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
@@ -1438,11 +1438,11 @@ async def consent_page():
     </style>
 </head>
 <body>
-    <h1>Remynders SMS Consent & Opt-In Policy</h1>
+    <h1>Remyndrs SMS Consent & Opt-In Policy</h1>
 
     <div class="section">
         <h2>Service Description</h2>
-        <p>Remynders is an SMS-based personal assistant service that helps users:</p>
+        <p>Remyndrs is an SMS-based personal assistant service that helps users:</p>
         <ul>
             <li>Store and recall personal information and memories</li>
             <li>Set and receive SMS reminders</li>
@@ -1453,7 +1453,7 @@ async def consent_page():
     <h2>How Users Opt-In</h2>
     <div class="highlight">
         <p><strong>Users initiate contact by texting our phone number first.</strong></p>
-        <p>When a user sends their first SMS message to Remynders, they begin an onboarding process where they:</p>
+        <p>When a user sends their first SMS message to Remyndrs, they begin an onboarding process where they:</p>
         <ol>
             <li>Receive a welcome message explaining the service</li>
             <li>Provide their first name</li>
@@ -1462,7 +1462,7 @@ async def consent_page():
             <li>Provide their ZIP code (for timezone detection)</li>
             <li>Optionally share how they heard about us</li>
         </ol>
-        <p>By completing this onboarding process, users explicitly consent to receive SMS messages from Remynders.</p>
+        <p>By completing this onboarding process, users explicitly consent to receive SMS messages from Remyndrs.</p>
     </div>
 
     <h2>Types of Messages Sent</h2>
@@ -1493,14 +1493,14 @@ async def consent_page():
     </ul>
 
     <h2>Privacy & Data</h2>
-    <p>User data is stored securely and used solely to provide the Remynders service. We do not sell or share user information with third parties.</p>
+    <p>User data is stored securely and used solely to provide the Remyndrs service. We do not sell or share user information with third parties.</p>
 
     <h2>Contact Information</h2>
     <p>For questions about this service or to request data deletion, users can text <strong>FEEDBACK</strong> followed by their message, or contact us at our support channels.</p>
 
     <div class="footer">
         <p>Last updated: December 2024</p>
-        <p>&copy; 2024 Remynders. All rights reserved.</p>
+        <p>&copy; 2024 Remyndrs. All rights reserved.</p>
     </div>
 </body>
 </html>

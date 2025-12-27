@@ -33,7 +33,7 @@ You're on step {step} of 4. Let's finish quickly:
         if step == 0:
             # Welcome message - ask for first name
             create_or_update_user(phone_number, onboarding_step=1)
-            resp.message("""Welcome to Remynders! 👋
+            resp.message("""Welcome to Remyndrs! 👋
 
 Thank you for being part of our beta test!
 
