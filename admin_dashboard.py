@@ -851,6 +851,11 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div class="card-value">{metrics.get('total_users', 0)}</div>
             <div class="card-subtitle">completed onboarding</div>
         </div>
+        <div class="card orange">
+            <div class="card-title">Pending Onboarding</div>
+            <div class="card-value">{metrics.get('pending_onboarding', 0)}</div>
+            <div class="card-subtitle">started but not finished</div>
+        </div>
         <div class="card green">
             <div class="card-title">Active (7 days)</div>
             <div class="card-value">{metrics.get('active_7d', 0)}</div>

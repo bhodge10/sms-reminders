@@ -456,12 +456,17 @@ def get_all_metrics():
         conn = get_db_connection()
         c = conn.cursor()
 
-        # Total users
+        # Total users (completed onboarding)
         c.execute('SELECT COUNT(*) FROM users WHERE onboarding_complete = TRUE')
         total_users = c.fetchone()[0]
 
+        # Pending onboarding (started but not completed)
+        c.execute('SELECT COUNT(*) FROM users WHERE onboarding_complete = FALSE AND onboarding_step > 0')
+        pending_onboarding = c.fetchone()[0]
+
         return {
             'total_users': total_users,
+            'pending_onboarding': pending_onboarding,
             'active_7d': get_active_users(7),
             'active_30d': get_active_users(30),
             'new_users': get_new_user_counts(),
