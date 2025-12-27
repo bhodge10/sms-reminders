@@ -20,7 +20,7 @@ from collections import defaultdict
 import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
-from database import init_db, log_interaction
+from database import init_db, log_interaction, get_setting
 from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import save_reminder, get_user_reminders, search_pending_reminders, delete_reminder, get_last_sent_reminder, mark_reminder_snoozed
@@ -240,7 +240,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             STAGING_ALLOWED_NUMBERS = ["+18593935374"]  # Add allowed test numbers here
             if phone_number not in STAGING_ALLOWED_NUMBERS:
                 resp = MessagingResponse()
-                resp.message("Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up.")
+                # Get maintenance message from database (or use default)
+                default_msg = "Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
+                maintenance_msg = get_setting("maintenance_message", default_msg)
+                resp.message(maintenance_msg)
                 logger.info(f"Staging: Blocked non-test number {mask_phone_number(phone_number)}")
                 return Response(content=str(resp), media_type="application/xml")
 

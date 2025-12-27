@@ -255,6 +255,12 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_sent_reminder_at TIMESTAMP",
             # Track if a reminder was snoozed (to avoid showing duplicates)
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS snoozed BOOLEAN DEFAULT FALSE",
+            # Settings table for app configuration
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -332,6 +338,44 @@ def log_api_usage(phone_number, request_type, prompt_tokens, completion_tokens, 
         conn.commit()
     except Exception as e:
         logger.error(f"Error logging API usage: {e}")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_setting(key, default=None):
+    """Get a setting value from the database"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('SELECT value FROM settings WHERE key = %s', (key,))
+        result = c.fetchone()
+        return result[0] if result else default
+    except Exception as e:
+        logger.error(f"Error getting setting {key}: {e}")
+        return default
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def set_setting(key, value):
+    """Set a setting value in the database"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP
+        ''', (key, value, value))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error setting {key}: {e}")
+        return False
     finally:
         if conn:
             return_db_connection(conn)

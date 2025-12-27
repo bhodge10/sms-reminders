@@ -7,14 +7,14 @@ import secrets
 import asyncio
 from datetime import datetime
 import pytz
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
 from services.metrics_service import get_all_metrics, get_cost_analytics
 from services.sms_service import send_sms
-from database import get_db_connection, return_db_connection
+from database import get_db_connection, return_db_connection, get_setting, set_setting
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 from utils.validation import log_security_event
 
@@ -485,6 +485,38 @@ async def delete_incomplete_users(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error deleting incomplete users: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# MAINTENANCE MESSAGE SETTINGS
+# =====================================================
+
+DEFAULT_MAINTENANCE_MESSAGE = "Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
+
+@router.get("/admin/settings/maintenance-message")
+async def get_maintenance_message(admin: str = Depends(verify_admin)):
+    """Get the current maintenance message"""
+    message = get_setting("maintenance_message", DEFAULT_MAINTENANCE_MESSAGE)
+    return JSONResponse(content={"message": message, "is_default": message == DEFAULT_MAINTENANCE_MESSAGE})
+
+
+@router.post("/admin/settings/maintenance-message")
+async def update_maintenance_message(request: Request, admin: str = Depends(verify_admin)):
+    """Update the maintenance message"""
+    try:
+        data = await request.json()
+        message = data.get("message", "").strip()
+
+        if not message:
+            # Reset to default
+            set_setting("maintenance_message", DEFAULT_MAINTENANCE_MESSAGE)
+            return JSONResponse(content={"success": True, "message": DEFAULT_MAINTENANCE_MESSAGE, "reset_to_default": True})
+
+        set_setting("maintenance_message", message)
+        return JSONResponse(content={"success": True, "message": message})
+    except Exception as e:
+        logger.error(f"Error updating maintenance message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1014,6 +1046,23 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </table>
     </div>
 
+    <!-- Maintenance Message Section (Staging Only) -->
+    <div class="section" id="maintenanceSection">
+        <h2>🔧 Staging Maintenance Message</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px;">This message is shown to non-test users when they text the staging number.</p>
+
+        <div class="form-group">
+            <label for="maintenanceMessage">Maintenance Message</label>
+            <textarea id="maintenanceMessage" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;" placeholder="Enter maintenance message..."></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-primary" onclick="saveMaintenanceMessage()">Save Message</button>
+            <button class="btn" style="background: #95a5a6;" onclick="resetMaintenanceMessage()">Reset to Default</button>
+        </div>
+        <div id="maintenanceStatus" style="margin-top: 10px; color: #27ae60;"></div>
+    </div>
+
     <!-- Broadcast Section -->
     <div class="broadcast-section">
         <h2>📢 Broadcast Message</h2>
@@ -1481,11 +1530,77 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
         }}
 
+        // Maintenance Message Functions
+        async function loadMaintenanceMessage() {{
+            try {{
+                const response = await fetch('/admin/settings/maintenance-message');
+                const data = await response.json();
+                document.getElementById('maintenanceMessage').value = data.message;
+                if (data.is_default) {{
+                    document.getElementById('maintenanceStatus').innerHTML = '<span style="color: #7f8c8d;">Using default message</span>';
+                }} else {{
+                    document.getElementById('maintenanceStatus').innerHTML = '<span style="color: #27ae60;">Custom message saved</span>';
+                }}
+            }} catch (e) {{
+                console.error('Error loading maintenance message:', e);
+            }}
+        }}
+
+        async function saveMaintenanceMessage() {{
+            const message = document.getElementById('maintenanceMessage').value.trim();
+            const statusDiv = document.getElementById('maintenanceStatus');
+
+            try {{
+                const response = await fetch('/admin/settings/maintenance-message', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ message }})
+                }});
+
+                const data = await response.json();
+                if (data.success) {{
+                    if (data.reset_to_default) {{
+                        statusDiv.innerHTML = '<span style="color: #27ae60;">Reset to default message</span>';
+                    }} else {{
+                        statusDiv.innerHTML = '<span style="color: #27ae60;">Message saved successfully!</span>';
+                    }}
+                }} else {{
+                    statusDiv.innerHTML = '<span style="color: #e74c3c;">Error saving message</span>';
+                }}
+            }} catch (e) {{
+                console.error('Error saving maintenance message:', e);
+                statusDiv.innerHTML = '<span style="color: #e74c3c;">Error: ' + e.message + '</span>';
+            }}
+        }}
+
+        async function resetMaintenanceMessage() {{
+            if (!confirm('Reset to the default maintenance message?')) return;
+
+            const statusDiv = document.getElementById('maintenanceStatus');
+            try {{
+                const response = await fetch('/admin/settings/maintenance-message', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ message: '' }})
+                }});
+
+                const data = await response.json();
+                if (data.success) {{
+                    document.getElementById('maintenanceMessage').value = data.message;
+                    statusDiv.innerHTML = '<span style="color: #27ae60;">Reset to default message</span>';
+                }}
+            }} catch (e) {{
+                console.error('Error resetting maintenance message:', e);
+                statusDiv.innerHTML = '<span style="color: #e74c3c;">Error: ' + e.message + '</span>';
+            }}
+        }}
+
         // Initialize
         loadStats();
         loadHistory();
         loadFeedback();
         loadCostData();
+        loadMaintenanceMessage();
 
         async function cleanupIncomplete() {{
             if (!confirm('Delete all users who have not completed onboarding?')) return;
