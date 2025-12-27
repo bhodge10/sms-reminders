@@ -1,0 +1,97 @@
+name: Merge to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      delay:
+        description: 'Delay before merge (e.g., "0" for immediate, "30m", "2h", "4h")'
+        required: false
+        default: '0'
+        type: string
+      confirm:
+        description: 'Type "merge" to confirm'
+        required: true
+        type: string
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'merge'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Parse and wait for scheduled time
+        run: |
+          DELAY="${{ github.event.inputs.delay }}"
+
+          if [ "$DELAY" = "0" ] || [ -z "$DELAY" ]; then
+            echo "No delay - merging immediately"
+            exit 0
+          fi
+
+          # Parse delay format (e.g., 30m, 2h, 4h)
+          if [[ "$DELAY" =~ ^([0-9]+)m$ ]]; then
+            MINUTES="${BASH_REMATCH[1]}"
+            SECONDS=$((MINUTES * 60))
+          elif [[ "$DELAY" =~ ^([0-9]+)h$ ]]; then
+            HOURS="${BASH_REMATCH[1]}"
+            SECONDS=$((HOURS * 3600))
+          else
+            echo "Invalid delay format. Use '30m' or '2h' format."
+            exit 1
+          fi
+
+          echo "Waiting $DELAY before merge..."
+          echo "Merge will happen at approximately $(date -d "+$SECONDS seconds" '+%Y-%m-%d %H:%M:%S %Z')"
+          sleep $SECONDS
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Check for differences
+        id: diff-check
+        run: |
+          git fetch origin main staging
+          DIFF=$(git rev-list --count origin/main..origin/staging)
+          echo "commits_ahead=$DIFF" >> $GITHUB_OUTPUT
+          if [ "$DIFF" -eq "0" ]; then
+            echo "No new commits to merge from staging to main"
+          else
+            echo "Found $DIFF commit(s) to merge"
+          fi
+
+      - name: Merge staging to main
+        if: steps.diff-check.outputs.commits_ahead != '0'
+        run: |
+          git checkout main
+          git merge origin/staging --no-edit
+          git push origin main
+          echo "Successfully merged staging into main!"
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.diff-check.outputs.commits_ahead }}" = "0" ]; then
+            echo "## No Changes" >> $GITHUB_STEP_SUMMARY
+            echo "Staging and main are already in sync. No merge needed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Merge Complete" >> $GITHUB_STEP_SUMMARY
+            echo "Successfully merged **${{ steps.diff-check.outputs.commits_ahead }}** commit(s) from staging to main." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Production deployment should begin automatically on Render." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  invalid-confirmation:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm != 'merge'
+    steps:
+      - name: Invalid confirmation
+        run: |
+          echo "::error::Merge cancelled - you must type 'merge' to confirm"
+          exit 1
