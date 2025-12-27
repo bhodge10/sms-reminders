@@ -8,7 +8,7 @@ import pytz
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Form, Request, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
@@ -1372,6 +1372,104 @@ async def health_check():
         "environment": ENVIRONMENT,
         "features": ["memory_storage", "reminders", "onboarding", "timezone_support"]
     }
+
+@app.get("/consent", response_class=HTMLResponse)
+async def consent_page():
+    """Public page showing SMS opt-in consent information for Twilio verification"""
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Remyndrs - SMS Consent & Opt-In Policy</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; }
+        .section { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .highlight { background: #e8f6ff; border-left: 4px solid #3498db; padding: 15px; margin: 15px 0; }
+        ul { padding-left: 20px; }
+        li { margin: 10px 0; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #7f8c8d; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <h1>Remyndrs SMS Consent & Opt-In Policy</h1>
+
+    <div class="section">
+        <h2>Service Description</h2>
+        <p>Remyndrs is an SMS-based personal assistant service that helps users:</p>
+        <ul>
+            <li>Store and recall personal information and memories</li>
+            <li>Set and receive SMS reminders</li>
+            <li>Create and manage lists</li>
+        </ul>
+    </div>
+
+    <h2>How Users Opt-In</h2>
+    <div class="highlight">
+        <p><strong>Users initiate contact by texting our phone number first.</strong></p>
+        <p>When a user sends their first SMS message to Remyndrs, they begin an onboarding process where they:</p>
+        <ol>
+            <li>Receive a welcome message explaining the service</li>
+            <li>Provide their first name</li>
+            <li>Provide their last name</li>
+            <li>Provide their email address</li>
+            <li>Provide their ZIP code (for timezone detection)</li>
+            <li>Optionally share how they heard about us</li>
+        </ol>
+        <p>By completing this onboarding process, users explicitly consent to receive SMS messages from Remyndrs.</p>
+    </div>
+
+    <h2>Types of Messages Sent</h2>
+    <div class="section">
+        <ul>
+            <li><strong>Conversational responses:</strong> Direct replies to user queries about their stored information</li>
+            <li><strong>Reminder notifications:</strong> Scheduled reminders that users explicitly request</li>
+            <li><strong>System messages:</strong> Occasional service announcements (users can opt-out)</li>
+        </ul>
+    </div>
+
+    <h2>Opt-Out Instructions</h2>
+    <div class="highlight">
+        <p>Users can opt-out at any time by:</p>
+        <ul>
+            <li>Texting <strong>STOP</strong> to unsubscribe from all messages</li>
+            <li>Texting <strong>DELETE ALL</strong> to remove all their stored data</li>
+            <li>Texting <strong>RESET ACCOUNT</strong> to restart their account</li>
+        </ul>
+    </div>
+
+    <h2>Message Frequency</h2>
+    <p>Message frequency varies based on user interaction. Users only receive messages when:</p>
+    <ul>
+        <li>They send a message and receive a response</li>
+        <li>A reminder they scheduled is triggered</li>
+        <li>Occasional system announcements (limited to reasonable hours 8am-8pm local time)</li>
+    </ul>
+
+    <h2>Privacy & Data</h2>
+    <p>User data is stored securely and used solely to provide the Remyndrs service. We do not sell or share user information with third parties.</p>
+
+    <h2>Contact Information</h2>
+    <p>For questions about this service or to request data deletion, users can text <strong>FEEDBACK</strong> followed by their message, or contact us at our support channels.</p>
+
+    <div class="footer">
+        <p>Last updated: December 2024</p>
+        <p>&copy; 2024 Remyndrs. All rights reserved.</p>
+    </div>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
 
 @app.get("/memories/{phone_number}")
 async def view_memories(phone_number: str, admin: str = Depends(verify_admin)):
