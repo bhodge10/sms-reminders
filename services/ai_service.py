@@ -398,6 +398,30 @@ For RENAMING A LIST:
     "confirmation": "Renamed [old name] to [new name]"
 }}
 
+MULTI-COMMAND SUPPORT:
+If the user's message contains MULTIPLE distinct commands, return an array of actions instead of a single action.
+
+Examples of multi-command messages:
+- "Remove hockey tape and add ice skates to the hockey list" → 2 actions: delete_item + add_to_list
+- "Add milk to grocery list and remind me at 5pm to go shopping" → 2 actions: add_to_list + reminder
+- "Check off eggs and add butter to grocery list" → 2 actions: complete_item + add_to_list
+- "Delete my dentist reminder and set a new one for tomorrow at 9am" → 2 actions: delete_reminder + reminder
+
+For MULTIPLE COMMANDS, return:
+{{
+    "multiple": true,
+    "actions": [
+        {{ "action": "first_action", ... }},
+        {{ "action": "second_action", ... }}
+    ]
+}}
+
+IMPORTANT:
+- Only use multiple actions when there are CLEARLY separate commands (usually connected by "and", "then", "also")
+- Each action in the array should be a complete action object with all required fields
+- Process them in the order the user mentioned them
+- Do NOT split a single command into multiple actions (e.g., "add milk and eggs" is ONE add_to_list action, not two)
+
 CRITICAL RULES:
 - All times are in user's timezone: {user_tz}
 - Check for AM/PM in a case-insensitive way: "pm", "PM", "p.m.", "P.M.", "am", "AM", "a.m.", "A.M." are ALL valid

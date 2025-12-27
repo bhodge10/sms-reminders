@@ -837,8 +837,49 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         normalized_msg = re.sub(r'\b(\d+):?(\d*)\s*(p\.?m\.?)\b', r'\1:\2PM', normalized_msg, flags=re.IGNORECASE)
 
         ai_response = process_with_ai(normalized_msg, phone_number, None)
-        logger.info(f"AI action: {ai_response.get('action')}")
+        logger.info(f"AI response: {ai_response}")
 
+        # Check for multi-command response
+        if ai_response.get("multiple") and isinstance(ai_response.get("actions"), list):
+            actions_to_process = ai_response["actions"]
+            logger.info(f"Processing {len(actions_to_process)} actions")
+        else:
+            actions_to_process = [ai_response]
+
+        # Process each action and collect replies
+        all_replies = []
+        for action_index, current_action in enumerate(actions_to_process):
+            action_type = current_action.get("action", "error")
+            logger.info(f"Processing action {action_index + 1}/{len(actions_to_process)}: {action_type}")
+
+            # Handle each action and get reply
+            reply_text = process_single_action(current_action, phone_number, incoming_msg)
+            if reply_text:
+                all_replies.append(reply_text)
+
+        # Combine all replies
+        if len(all_replies) > 1:
+            reply_text = "\n\n".join(all_replies)
+        elif len(all_replies) == 1:
+            reply_text = all_replies[0]
+        else:
+            reply_text = "I processed your request."
+
+        # Send response
+        resp = MessagingResponse()
+        resp.message(staging_prefix(reply_text))
+        return Response(content=str(resp), media_type="application/xml")
+
+    except Exception as e:
+        logger.error(f"❌ CRITICAL ERROR in webhook: {e}", exc_info=True)
+        resp = MessagingResponse()
+        resp.message(staging_prefix("Sorry, something went wrong. Please try again in a moment."))
+        return Response(content=str(resp), media_type="application/xml")
+
+
+def process_single_action(ai_response, phone_number, incoming_msg):
+    """Process a single AI action and return the reply text"""
+    try:
         # Handle AI response based on action
         if ai_response["action"] == "store":
             # Use memory_text if AI provided date-converted version, otherwise use original
@@ -1347,16 +1388,12 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             reply_text = ai_response.get("response", "Hi! Text me to remember things, set reminders, or ask me about stored info.")
             log_interaction(phone_number, incoming_msg, reply_text, "help", True)
 
-        # Send response
-        resp = MessagingResponse()
-        resp.message(staging_prefix(reply_text))
-        return Response(content=str(resp), media_type="application/xml")
+        return reply_text
 
     except Exception as e:
-        logger.error(f"❌ CRITICAL ERROR in webhook: {e}", exc_info=True)
-        resp = MessagingResponse()
-        resp.message(staging_prefix("Sorry, something went wrong. Please try again in a moment."))
-        return Response(content=str(resp), media_type="application/xml")
+        logger.error(f"Error processing action: {e}", exc_info=True)
+        return "Sorry, I couldn't complete that action."
+
 
 # =====================================================
 # ADMIN & UTILITY ENDPOINTS
