@@ -408,43 +408,74 @@ CRITICAL RULES:
 - When retrieving information, ONLY use the memories listed above
 - Always include the day of the week in reminder confirmations (e.g., "Saturday, December 21st at 8:00 AM")"""
 
-        # Call OpenAI API with timeout
+        # Call OpenAI API with timeout and retry logic
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT)
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
-            ],
-            temperature=OPENAI_TEMPERATURE,
-            max_tokens=OPENAI_MAX_TOKENS
-        )
 
-        # Log API usage for cost tracking
-        if response.usage:
-            log_api_usage(
-                phone_number,
-                'process_message',
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-                response.usage.total_tokens,
-                OPENAI_MODEL
-            )
+        max_retries = 2
+        last_error = None
 
-        result = json.loads(response.choices[0].message.content)
-        logger.info(f"✅ AI processed successfully: {result.get('action')}")
-        return result
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message}
+                    ],
+                    temperature=OPENAI_TEMPERATURE,
+                    max_tokens=OPENAI_MAX_TOKENS,
+                    response_format={"type": "json_object"}  # Force JSON output
+                )
 
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON Parse Error: {e}")
-        logger.error(f"OpenAI Response: {response.choices[0].message.content}")
+                # Log API usage for cost tracking
+                if response.usage:
+                    log_api_usage(
+                        phone_number,
+                        'process_message',
+                        response.usage.prompt_tokens,
+                        response.usage.completion_tokens,
+                        response.usage.total_tokens,
+                        OPENAI_MODEL
+                    )
+
+                raw_content = response.choices[0].message.content
+                result = json.loads(raw_content)
+
+                # Validate result has required fields
+                if "action" not in result:
+                    logger.warning(f"AI response missing 'action' field: {raw_content[:200]}")
+                    result["action"] = "error"
+                    result["response"] = "I'm not sure how to help with that. Could you rephrase?"
+
+                logger.info(f"✅ AI processed successfully: {result.get('action')}")
+                return result
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.error(f"JSON Parse Error (attempt {attempt + 1}): {e}")
+                logger.error(f"OpenAI Response: {response.choices[0].message.content[:500]}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying AI call...")
+                    continue
+            except Exception as e:
+                last_error = e
+                import traceback
+                logger.error(f"OpenAI Error (attempt {attempt + 1}): {e}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying AI call...")
+                    continue
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+
+        # All retries failed
+        logger.error(f"All AI retries failed. Last error: {last_error}")
         return {
             "action": "error",
             "response": "Sorry, I had trouble processing that. Could you try again?"
         }
+
     except Exception as e:
         import traceback
-        logger.error(f"OpenAI Error: {e}")
+        logger.error(f"OpenAI Setup Error: {e}")
         logger.error(f"Full traceback: {traceback.format_exc()}")
         return {
             "action": "error",
