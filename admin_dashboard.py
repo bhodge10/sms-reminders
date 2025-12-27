@@ -1127,18 +1127,38 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
     <!-- User Feedback Section -->
     <div class="section">
-        <h2>User Feedback</h2>
-        <table class="feedback-table" id="feedbackTable">
+        <h2>User Feedback <span id="feedbackCount" style="font-size: 0.7em; color: #7f8c8d;"></span></h2>
+
+        <!-- Open Feedback -->
+        <h3 style="margin: 15px 0 10px; font-size: 1em; color: #e67e22;">Open Feedback <span id="openFeedbackCount" style="font-weight: normal;"></span></h3>
+        <table class="feedback-table" id="openFeedbackTable">
             <tr>
                 <th>Date</th>
                 <th>Phone</th>
                 <th>Message</th>
                 <th style="width: 80px; text-align: center;">Resolved</th>
             </tr>
-            <tr id="feedbackLoading">
+            <tr id="openFeedbackLoading">
                 <td colspan="4" style="color: #95a5a6; text-align: center;">Loading feedback...</td>
             </tr>
         </table>
+
+        <!-- Resolved Feedback (Collapsible) -->
+        <div style="margin-top: 20px;">
+            <h3 style="margin: 0 0 10px; font-size: 1em; color: #27ae60; cursor: pointer;" onclick="toggleResolvedSection()">
+                <span id="resolvedToggleIcon">▶</span> Resolved Feedback <span id="resolvedFeedbackCount" style="font-weight: normal;"></span>
+            </h3>
+            <div id="resolvedFeedbackSection" style="display: none;">
+                <table class="feedback-table" id="resolvedFeedbackTable">
+                    <tr>
+                        <th>Date</th>
+                        <th>Phone</th>
+                        <th>Message</th>
+                        <th style="width: 80px; text-align: center;">Resolved</th>
+                    </tr>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Cost Analytics Section -->
@@ -1247,36 +1267,77 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 const response = await fetch('/admin/feedback');
                 const feedback = await response.json();
 
-                const table = document.getElementById('feedbackTable');
-                const loadingRow = document.getElementById('feedbackLoading');
+                const openTable = document.getElementById('openFeedbackTable');
+                const resolvedTable = document.getElementById('resolvedFeedbackTable');
+                const loadingRow = document.getElementById('openFeedbackLoading');
                 if (loadingRow) loadingRow.remove();
 
-                if (feedback.length === 0) {{
-                    const row = table.insertRow(-1);
-                    row.innerHTML = '<td colspan="4" style="color: #95a5a6; text-align: center;">No feedback yet</td>';
-                    return;
+                // Separate into open and resolved
+                const openFeedback = feedback.filter(f => !f.resolved);
+                const resolvedFeedback = feedback.filter(f => f.resolved);
+
+                // Update counts
+                document.getElementById('openFeedbackCount').textContent = `(${{openFeedback.length}})`;
+                document.getElementById('resolvedFeedbackCount').textContent = `(${{resolvedFeedback.length}})`;
+
+                // Render open feedback
+                if (openFeedback.length === 0) {{
+                    const row = openTable.insertRow(-1);
+                    row.id = 'noOpenFeedback';
+                    row.innerHTML = '<td colspan="4" style="color: #95a5a6; text-align: center;">No open feedback</td>';
+                }} else {{
+                    openFeedback.forEach(f => {{
+                        const row = openTable.insertRow(-1);
+                        renderFeedbackRow(row, f);
+                    }});
                 }}
 
-                feedback.forEach(f => {{
-                    const row = table.insertRow(-1);
-                    const date = new Date(f.created_at).toLocaleString();
-                    const resolvedClass = f.resolved ? '' : 'unresolved';
-                    const checkedAttr = f.resolved ? 'checked' : '';
-                    row.className = resolvedClass;
-                    row.id = `feedback-row-${{f.id}}`;
-                    row.innerHTML = `
-                        <td>${{date}}</td>
-                        <td>${{f.user_phone}}</td>
-                        <td class="feedback-message">${{f.message}}</td>
-                        <td style="text-align: center;">
-                            <input type="checkbox" class="resolve-checkbox" ${{checkedAttr}}
-                                   onchange="toggleResolved(${{f.id}}, this.checked)"
-                                   title="${{f.resolved ? 'Mark as unresolved' : 'Mark as resolved'}}">
-                        </td>
-                    `;
-                }});
+                // Render resolved feedback
+                if (resolvedFeedback.length === 0) {{
+                    const row = resolvedTable.insertRow(-1);
+                    row.id = 'noResolvedFeedback';
+                    row.innerHTML = '<td colspan="4" style="color: #95a5a6; text-align: center;">No resolved feedback</td>';
+                }} else {{
+                    resolvedFeedback.forEach(f => {{
+                        const row = resolvedTable.insertRow(-1);
+                        renderFeedbackRow(row, f);
+                    }});
+                }}
             }} catch (e) {{
                 console.error('Error loading feedback:', e);
+            }}
+        }}
+
+        function renderFeedbackRow(row, f) {{
+            const date = new Date(f.created_at).toLocaleString();
+            const resolvedClass = f.resolved ? '' : 'unresolved';
+            const checkedAttr = f.resolved ? 'checked' : '';
+            row.className = resolvedClass;
+            row.id = `feedback-row-${{f.id}}`;
+            row.setAttribute('data-id', f.id);
+            row.setAttribute('data-resolved', f.resolved);
+            row.innerHTML = `
+                <td>${{date}}</td>
+                <td>${{f.user_phone}}</td>
+                <td class="feedback-message">${{f.message}}</td>
+                <td style="text-align: center;">
+                    <input type="checkbox" class="resolve-checkbox" ${{checkedAttr}}
+                           onchange="toggleResolved(${{f.id}}, this.checked)"
+                           title="${{f.resolved ? 'Mark as unresolved' : 'Mark as resolved'}}">
+                </td>
+            `;
+        }}
+
+        // Toggle resolved section visibility
+        function toggleResolvedSection() {{
+            const section = document.getElementById('resolvedFeedbackSection');
+            const icon = document.getElementById('resolvedToggleIcon');
+            if (section.style.display === 'none') {{
+                section.style.display = 'block';
+                icon.textContent = '▼';
+            }} else {{
+                section.style.display = 'none';
+                icon.textContent = '▶';
             }}
         }}
 
@@ -1290,11 +1351,49 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 if (response.ok) {{
                     const result = await response.json();
                     const row = document.getElementById(`feedback-row-${{feedbackId}}`);
+
+                    // Move row to appropriate table
+                    const openTable = document.getElementById('openFeedbackTable');
+                    const resolvedTable = document.getElementById('resolvedFeedbackTable');
+
+                    // Remove "no feedback" placeholders if they exist
+                    const noOpen = document.getElementById('noOpenFeedback');
+                    const noResolved = document.getElementById('noResolvedFeedback');
+
                     if (result.resolved) {{
+                        // Move to resolved table
                         row.classList.remove('unresolved');
+                        row.setAttribute('data-resolved', 'true');
+                        if (noResolved) noResolved.remove();
+                        resolvedTable.appendChild(row);
+
+                        // Check if open table is now empty (excluding header)
+                        if (openTable.rows.length === 1) {{
+                            const emptyRow = openTable.insertRow(-1);
+                            emptyRow.id = 'noOpenFeedback';
+                            emptyRow.innerHTML = '<td colspan="4" style="color: #95a5a6; text-align: center;">No open feedback</td>';
+                        }}
                     }} else {{
+                        // Move to open table
                         row.classList.add('unresolved');
+                        row.setAttribute('data-resolved', 'false');
+                        if (noOpen) noOpen.remove();
+                        openTable.appendChild(row);
+
+                        // Check if resolved table is now empty (excluding header)
+                        if (resolvedTable.rows.length === 1) {{
+                            const emptyRow = resolvedTable.insertRow(-1);
+                            emptyRow.id = 'noResolvedFeedback';
+                            emptyRow.innerHTML = '<td colspan="4" style="color: #95a5a6; text-align: center;">No resolved feedback</td>';
+                        }}
                     }}
+
+                    // Update counts
+                    const openCount = openTable.querySelectorAll('tr[data-id]').length;
+                    const resolvedCount = resolvedTable.querySelectorAll('tr[data-id]').length;
+                    document.getElementById('openFeedbackCount').textContent = `(${{openCount}})`;
+                    document.getElementById('resolvedFeedbackCount').textContent = `(${{resolvedCount}})`;
+
                 }} else {{
                     // Revert checkbox on error
                     const checkbox = document.querySelector(`#feedback-row-${{feedbackId}} .resolve-checkbox`);
