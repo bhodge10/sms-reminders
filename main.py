@@ -38,7 +38,7 @@ from services.metrics_service import track_user_activity, increment_message_coun
 from utils.timezone import get_user_current_time
 from utils.formatting import get_help_text, format_reminders_list
 from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning
-from admin_dashboard import router as dashboard_router
+from admin_dashboard import router as dashboard_router, start_broadcast_checker
 
 
 def staging_prefix(message):
@@ -201,6 +201,9 @@ init_db()
 
 # Start background reminder checker
 start_reminder_checker()
+
+# Start scheduled broadcast checker
+start_broadcast_checker()
 
 logger.info(f"✅ Application initialized in {ENVIRONMENT} mode")
 

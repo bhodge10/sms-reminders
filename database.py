@@ -172,6 +172,23 @@ def init_db():
             )
         ''')
 
+        # Scheduled broadcasts table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
+                id SERIAL PRIMARY KEY,
+                sender TEXT NOT NULL,
+                message TEXT NOT NULL,
+                audience TEXT NOT NULL,
+                scheduled_date TIMESTAMP NOT NULL,
+                status TEXT DEFAULT 'scheduled',
+                recipient_count INTEGER DEFAULT 0,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                sent_at TIMESTAMP
+            )
+        ''')
+
         # User feedback table
         c.execute('''
             CREATE TABLE IF NOT EXISTS feedback (

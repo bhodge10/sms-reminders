@@ -5,6 +5,8 @@ HTML dashboard for viewing metrics and broadcast messaging
 
 import secrets
 import asyncio
+import threading
+import time
 from datetime import datetime
 import pytz
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
@@ -340,6 +342,310 @@ async def send_broadcast(request: BroadcastRequest, background_tasks: Background
     finally:
         if conn:
             return_db_connection(conn)
+
+
+# =====================================================
+# SCHEDULED BROADCAST API ENDPOINTS
+# =====================================================
+
+class ScheduleBroadcastRequest(BaseModel):
+    message: str
+    audience: str
+    scheduled_date: str  # ISO format datetime string
+
+
+@router.post("/admin/broadcast/schedule")
+async def schedule_broadcast(request: ScheduleBroadcastRequest, admin: str = Depends(verify_admin)):
+    """Schedule a broadcast for future delivery"""
+    conn = None
+    try:
+        if request.audience not in ["all", "free", "premium"]:
+            raise HTTPException(status_code=400, detail="Invalid audience type")
+
+        if not request.message.strip():
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        # Parse the scheduled date
+        from datetime import datetime
+        try:
+            scheduled_dt = datetime.fromisoformat(request.scheduled_date.replace('Z', '+00:00'))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+
+        # Ensure scheduled time is in the future
+        if scheduled_dt <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
+
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Insert scheduled broadcast
+        c.execute('''
+            INSERT INTO scheduled_broadcasts (sender, message, audience, scheduled_date, status)
+            VALUES (%s, %s, %s, %s, 'scheduled')
+            RETURNING id
+        ''', (admin, request.message.strip(), request.audience, scheduled_dt))
+
+        broadcast_id = c.fetchone()[0]
+        conn.commit()
+
+        return JSONResponse(content={
+            "broadcast_id": broadcast_id,
+            "status": "scheduled",
+            "scheduled_date": scheduled_dt.isoformat(),
+            "message": f"Broadcast scheduled for {scheduled_dt.strftime('%B %d, %Y at %I:%M %p')} UTC"
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error scheduling broadcast: {e}")
+        raise HTTPException(status_code=500, detail="Error scheduling broadcast")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/broadcast/scheduled")
+async def get_scheduled_broadcasts(admin: str = Depends(verify_admin)):
+    """Get all scheduled broadcasts"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT id, sender, message, audience, scheduled_date, status,
+                   recipient_count, success_count, fail_count, created_at, sent_at
+            FROM scheduled_broadcasts
+            WHERE status IN ('scheduled', 'sending')
+            ORDER BY scheduled_date ASC
+        ''')
+        results = c.fetchall()
+
+        broadcasts = []
+        for row in results:
+            broadcasts.append({
+                "id": row[0],
+                "sender": row[1],
+                "message": row[2][:100] + "..." if len(row[2]) > 100 else row[2],
+                "full_message": row[2],
+                "audience": row[3],
+                "scheduled_date": row[4].isoformat() if row[4] else None,
+                "status": row[5],
+                "recipient_count": row[6],
+                "success_count": row[7],
+                "fail_count": row[8],
+                "created_at": row[9].isoformat() if row[9] else None,
+                "sent_at": row[10].isoformat() if row[10] else None
+            })
+
+        return JSONResponse(content=broadcasts)
+
+    except Exception as e:
+        logger.error(f"Error getting scheduled broadcasts: {e}")
+        raise HTTPException(status_code=500, detail="Error getting scheduled broadcasts")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.delete("/admin/broadcast/scheduled/{broadcast_id}/cancel")
+async def cancel_scheduled_broadcast(broadcast_id: int, admin: str = Depends(verify_admin)):
+    """Cancel a scheduled broadcast"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Check if broadcast exists and is still scheduled
+        c.execute('SELECT status FROM scheduled_broadcasts WHERE id = %s', (broadcast_id,))
+        result = c.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+
+        if result[0] != 'scheduled':
+            raise HTTPException(status_code=400, detail=f"Cannot cancel broadcast with status '{result[0]}'")
+
+        # Update status to cancelled
+        c.execute('''
+            UPDATE scheduled_broadcasts
+            SET status = 'cancelled'
+            WHERE id = %s
+        ''', (broadcast_id,))
+        conn.commit()
+
+        return JSONResponse(content={
+            "success": True,
+            "message": "Broadcast cancelled"
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling broadcast: {e}")
+        raise HTTPException(status_code=500, detail="Error cancelling broadcast")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# SCHEDULED BROADCAST CHECKER
+# =====================================================
+
+def send_scheduled_broadcast(broadcast_id: int, message: str, audience: str):
+    """Send a scheduled broadcast - filters recipients and sends messages"""
+    conn = None
+    success_count = 0
+    fail_count = 0
+
+    full_message = BROADCAST_PREFIX + message
+
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Update status to sending
+        c.execute(
+            "UPDATE scheduled_broadcasts SET status = 'sending' WHERE id = %s",
+            (broadcast_id,)
+        )
+        conn.commit()
+
+        # Get recipients based on audience
+        if audience == "all":
+            c.execute('''
+                SELECT phone_number, timezone FROM users
+                WHERE onboarding_complete = TRUE
+            ''')
+        elif audience == "free":
+            c.execute('''
+                SELECT phone_number, timezone FROM users
+                WHERE onboarding_complete = TRUE
+                AND (premium_status = 'free' OR premium_status IS NULL)
+            ''')
+        elif audience == "premium":
+            c.execute('''
+                SELECT phone_number, timezone FROM users
+                WHERE onboarding_complete = TRUE
+                AND premium_status = 'premium'
+            ''')
+        else:
+            logger.error(f"Invalid audience for scheduled broadcast {broadcast_id}: {audience}")
+            return
+
+        results = c.fetchall()
+
+        # Filter to only users within the 8am-8pm window
+        phone_numbers = [r[0] for r in results if is_within_broadcast_window(r[1])]
+
+        if not phone_numbers:
+            logger.info(f"Scheduled broadcast {broadcast_id}: No recipients in time window")
+            c.execute('''
+                UPDATE scheduled_broadcasts
+                SET status = 'completed', recipient_count = 0, sent_at = NOW()
+                WHERE id = %s
+            ''', (broadcast_id,))
+            conn.commit()
+            return
+
+        # Update recipient count
+        c.execute(
+            "UPDATE scheduled_broadcasts SET recipient_count = %s WHERE id = %s",
+            (len(phone_numbers), broadcast_id)
+        )
+        conn.commit()
+
+        # Send messages with rate limiting
+        for i, phone in enumerate(phone_numbers):
+            try:
+                send_sms(phone, full_message)
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send scheduled broadcast to {phone}: {e}")
+                fail_count += 1
+
+            # Update progress every 10 messages
+            if (i + 1) % 10 == 0:
+                c.execute(
+                    "UPDATE scheduled_broadcasts SET success_count = %s, fail_count = %s WHERE id = %s",
+                    (success_count, fail_count, broadcast_id)
+                )
+                conn.commit()
+
+            # Rate limit: 100ms delay
+            time.sleep(0.1)
+
+        # Final update
+        c.execute('''
+            UPDATE scheduled_broadcasts
+            SET success_count = %s, fail_count = %s, status = 'completed', sent_at = NOW()
+            WHERE id = %s
+        ''', (success_count, fail_count, broadcast_id))
+        conn.commit()
+
+        logger.info(f"Scheduled broadcast {broadcast_id} completed: {success_count} success, {fail_count} failed")
+
+    except Exception as e:
+        logger.error(f"Scheduled broadcast {broadcast_id} error: {e}")
+        if conn:
+            try:
+                c = conn.cursor()
+                c.execute(
+                    "UPDATE scheduled_broadcasts SET status = 'failed', sent_at = NOW() WHERE id = %s",
+                    (broadcast_id,)
+                )
+                conn.commit()
+            except:
+                pass
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def check_scheduled_broadcasts():
+    """Background thread that checks for due scheduled broadcasts"""
+    logger.info("Starting scheduled broadcast checker")
+
+    while True:
+        try:
+            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"Checking for scheduled broadcasts at {now}")
+
+            conn = get_db_connection()
+            c = conn.cursor()
+
+            # Find broadcasts that are due
+            c.execute('''
+                SELECT id, message, audience
+                FROM scheduled_broadcasts
+                WHERE scheduled_date <= %s AND status = 'scheduled'
+            ''', (now,))
+
+            due_broadcasts = c.fetchall()
+            return_db_connection(conn)
+
+            if due_broadcasts:
+                logger.info(f"Found {len(due_broadcasts)} scheduled broadcasts to send")
+
+            for broadcast_id, message, audience in due_broadcasts:
+                logger.info(f"Sending scheduled broadcast {broadcast_id}")
+                send_scheduled_broadcast(broadcast_id, message, audience)
+
+        except Exception as e:
+            logger.error(f"Error in scheduled broadcast checker: {e}")
+
+        # Check every 60 seconds
+        time.sleep(60)
+
+
+def start_broadcast_checker():
+    """Start the scheduled broadcast checker in a daemon thread"""
+    thread = threading.Thread(target=check_scheduled_broadcasts, daemon=True)
+    thread.start()
+    logger.info("Scheduled broadcast checker thread started")
 
 
 # =====================================================
@@ -1082,6 +1388,19 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <small style="color: #7f8c8d;">Character count: <span id="charCount">0</span>/160 (SMS segment)</small>
         </div>
 
+        <div class="form-group" style="margin-top: 15px;">
+            <label style="display: flex; align-items: center; cursor: pointer;">
+                <input type="checkbox" id="scheduleCheckbox" onchange="toggleScheduleMode()" style="margin-right: 8px; width: 18px; height: 18px;">
+                <span>Schedule for later</span>
+            </label>
+        </div>
+
+        <div class="form-group" id="scheduleDateGroup" style="display: none;">
+            <label for="scheduleDate">Scheduled Date & Time (your local time)</label>
+            <input type="datetime-local" id="scheduleDate" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em;">
+            <small style="color: #7f8c8d;">The broadcast will be sent at this time to users within their 8am-8pm window</small>
+        </div>
+
         <div class="preview-box">
             <div><strong>Preview (what users will receive):</strong></div>
             <div style="margin: 10px 0; padding: 10px; background: white; border-radius: 4px; white-space: pre-wrap;">
@@ -1102,8 +1421,25 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
 
         <button class="btn btn-primary" id="sendBtn" onclick="showConfirmModal()" disabled>
-            Send Broadcast
+            Send Now
         </button>
+    </div>
+
+    <!-- Scheduled Broadcasts -->
+    <div class="section" id="scheduledSection">
+        <h2>Scheduled Broadcasts</h2>
+        <table class="history-table" id="scheduledTable">
+            <tr>
+                <th>Scheduled For</th>
+                <th>Audience</th>
+                <th>Message</th>
+                <th>Status</th>
+                <th style="width: 100px;">Actions</th>
+            </tr>
+            <tr id="scheduledLoading">
+                <td colspan="5" style="color: #95a5a6; text-align: center;">Loading...</td>
+            </tr>
+        </table>
     </div>
 
     <!-- Broadcast History -->
@@ -1196,15 +1532,18 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
     <!-- Confirmation Modal -->
     <div class="modal" id="confirmModal">
         <div class="modal-content">
-            <h3>⚠️ Confirm Broadcast</h3>
-            <p>You are about to send the following message to <strong id="modalCount">0</strong> users:</p>
+            <h3 id="modalTitle">⚠️ Confirm Broadcast</h3>
+            <p id="modalSubtitle">You are about to send the following message to <strong id="modalCount">0</strong> users:</p>
+            <div id="modalScheduleInfo" style="display: none; background: #e8f4fd; padding: 10px; border-radius: 4px; margin-bottom: 10px; color: #2980b9;">
+                📅 Scheduled for: <strong id="modalScheduleTime"></strong>
+            </div>
             <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 15px 0; white-space: pre-wrap;">
                 <em id="modalMessage"></em>
             </div>
             <p style="color: #e74c3c;"><strong>This action cannot be undone.</strong></p>
             <div class="modal-buttons">
                 <button class="btn btn-secondary" onclick="hideConfirmModal()">Cancel</button>
-                <button class="btn btn-danger" onclick="sendBroadcast()">Send Now</button>
+                <button class="btn btn-danger" id="modalConfirmBtn" onclick="handleBroadcastSubmit()">Send Now</button>
             </div>
         </div>
     </div>
@@ -1538,9 +1877,33 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             const audience = document.getElementById('audience').value;
             const message = document.getElementById('message').value;
             const inWindowCount = audienceStats[audience + '_in_window'] || 0;
+            const isScheduled = document.getElementById('scheduleCheckbox').checked;
+            const scheduleDate = document.getElementById('scheduleDate').value;
 
             document.getElementById('modalCount').textContent = inWindowCount;
             document.getElementById('modalMessage').textContent = '[Remyndrs System Message] ' + message;
+
+            const scheduleInfo = document.getElementById('modalScheduleInfo');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalSubtitle = document.getElementById('modalSubtitle');
+            const confirmBtn = document.getElementById('modalConfirmBtn');
+
+            if (isScheduled && scheduleDate) {{
+                const scheduledTime = new Date(scheduleDate).toLocaleString();
+                scheduleInfo.style.display = 'block';
+                document.getElementById('modalScheduleTime').textContent = scheduledTime;
+                modalTitle.textContent = '📅 Confirm Scheduled Broadcast';
+                modalSubtitle.innerHTML = 'This message will be sent to users in the 8am-8pm window at the scheduled time:';
+                confirmBtn.textContent = 'Schedule';
+                confirmBtn.style.background = '#3498db';
+            }} else {{
+                scheduleInfo.style.display = 'none';
+                modalTitle.textContent = '⚠️ Confirm Broadcast';
+                modalSubtitle.innerHTML = 'You are about to send the following message to <strong id="modalCount">' + inWindowCount + '</strong> users:';
+                confirmBtn.textContent = 'Send Now';
+                confirmBtn.style.background = '#e74c3c';
+            }}
+
             document.getElementById('confirmModal').classList.add('active');
         }}
 
@@ -1694,12 +2057,167 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
         }}
 
+        // Scheduled Broadcast Functions
+        function toggleScheduleMode() {{
+            const checkbox = document.getElementById('scheduleCheckbox');
+            const dateGroup = document.getElementById('scheduleDateGroup');
+            const sendBtn = document.getElementById('sendBtn');
+
+            if (checkbox.checked) {{
+                dateGroup.style.display = 'block';
+                sendBtn.textContent = 'Schedule';
+                // Set default to tomorrow at 10am
+                const tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                tomorrow.setHours(10, 0, 0, 0);
+                document.getElementById('scheduleDate').value = tomorrow.toISOString().slice(0, 16);
+            }} else {{
+                dateGroup.style.display = 'none';
+                sendBtn.textContent = 'Send Now';
+            }}
+        }}
+
+        async function loadScheduledBroadcasts() {{
+            try {{
+                const response = await fetch('/admin/broadcast/scheduled');
+                const broadcasts = await response.json();
+                const table = document.getElementById('scheduledTable');
+                const loadingRow = document.getElementById('scheduledLoading');
+
+                if (loadingRow) loadingRow.remove();
+
+                // Remove existing rows except header
+                while (table.rows.length > 1) {{
+                    table.deleteRow(1);
+                }}
+
+                if (broadcasts.length === 0) {{
+                    const row = table.insertRow();
+                    row.innerHTML = '<td colspan="5" style="color: #95a5a6; text-align: center;">No scheduled broadcasts</td>';
+                    return;
+                }}
+
+                broadcasts.forEach(b => {{
+                    const row = table.insertRow();
+                    const scheduledDate = new Date(b.scheduled_date).toLocaleString();
+                    const statusBadge = b.status === 'scheduled'
+                        ? '<span class="status-badge status-pending">Scheduled</span>'
+                        : '<span class="status-badge status-sending">Sending</span>';
+                    const cancelBtn = b.status === 'scheduled'
+                        ? `<button onclick="cancelScheduledBroadcast(${{b.id}})" style="background: #e74c3c; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">Cancel</button>`
+                        : '-';
+
+                    row.innerHTML = `
+                        <td>${{scheduledDate}}</td>
+                        <td style="text-transform: capitalize;">${{b.audience}}</td>
+                        <td title="${{b.full_message}}">${{b.message}}</td>
+                        <td>${{statusBadge}}</td>
+                        <td style="text-align: center;">${{cancelBtn}}</td>
+                    `;
+                }});
+            }} catch (e) {{
+                console.error('Error loading scheduled broadcasts:', e);
+            }}
+        }}
+
+        async function cancelScheduledBroadcast(id) {{
+            if (!confirm('Are you sure you want to cancel this scheduled broadcast?')) return;
+
+            try {{
+                const response = await fetch(`/admin/broadcast/scheduled/${{id}}/cancel`, {{
+                    method: 'DELETE'
+                }});
+
+                if (response.ok) {{
+                    alert('Broadcast cancelled');
+                    loadScheduledBroadcasts();
+                }} else {{
+                    const data = await response.json();
+                    alert('Error: ' + (data.detail || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function handleBroadcastSubmit() {{
+            const isScheduled = document.getElementById('scheduleCheckbox').checked;
+
+            if (isScheduled) {{
+                await scheduleBroadcast();
+            }} else {{
+                await sendBroadcast();
+            }}
+        }}
+
+        async function scheduleBroadcast() {{
+            hideConfirmModal();
+
+            const audience = document.getElementById('audience').value;
+            const message = document.getElementById('message').value;
+            const scheduledDate = document.getElementById('scheduleDate').value;
+            const sendBtn = document.getElementById('sendBtn');
+            const progressInfo = document.getElementById('progressInfo');
+            const progressText = document.getElementById('progressText');
+
+            if (!scheduledDate) {{
+                alert('Please select a date and time for the scheduled broadcast');
+                return;
+            }}
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Scheduling...';
+            progressInfo.classList.add('active');
+            progressText.textContent = 'Scheduling broadcast...';
+
+            try {{
+                // Convert local datetime to UTC ISO string
+                const localDate = new Date(scheduledDate);
+                const utcDate = localDate.toISOString();
+
+                const response = await fetch('/admin/broadcast/schedule', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json'
+                    }},
+                    body: JSON.stringify({{
+                        message: message,
+                        audience: audience,
+                        scheduled_date: utcDate
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    progressText.innerHTML = `<span style="color: #27ae60;">✅ Broadcast scheduled for ${{new Date(scheduledDate).toLocaleString()}}</span>`;
+                    document.getElementById('message').value = '';
+                    document.getElementById('scheduleCheckbox').checked = false;
+                    toggleScheduleMode();
+                    updatePreview();
+                    loadScheduledBroadcasts();
+
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Send Now';
+                }} else {{
+                    progressText.textContent = `Error: ${{result.detail || 'Unknown error'}}`;
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Schedule';
+                }}
+            }} catch (e) {{
+                progressText.textContent = `Error: ${{e.message}}`;
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Schedule';
+            }}
+        }}
+
         // Initialize
         loadStats();
         loadHistory();
         loadFeedback();
         loadCostData();
         loadMaintenanceMessage();
+        loadScheduledBroadcasts();
 
         async function cleanupIncomplete() {{
             if (!confirm('Delete all users who have not completed onboarding?')) return;
