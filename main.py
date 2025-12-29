@@ -37,7 +37,7 @@ from services.reminder_service import start_reminder_checker
 from services.metrics_service import track_user_activity, increment_message_count
 from utils.timezone import get_user_current_time
 from utils.formatting import get_help_text, format_reminders_list
-from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event
+from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning
 from admin_dashboard import router as dashboard_router
 
 
@@ -884,6 +884,20 @@ def process_single_action(ai_response, phone_number, incoming_msg):
         if ai_response["action"] == "store":
             # Use memory_text if AI provided date-converted version, otherwise use original
             memory_text = ai_response.get("memory_text", incoming_msg)
+
+            # Check for sensitive data (staging only)
+            if ENVIRONMENT == "staging":
+                sensitive_check = detect_sensitive_data(memory_text)
+                if sensitive_check['has_sensitive']:
+                    log_security_event('SENSITIVE_DATA_BLOCKED', {
+                        'phone': phone_number,
+                        'action': 'store',
+                        'types': sensitive_check['types']
+                    })
+                    reply_text = get_sensitive_data_warning()
+                    log_interaction(phone_number, incoming_msg, reply_text, "store_blocked", False)
+                    return reply_text
+
             save_memory(phone_number, memory_text, ai_response)
             reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
             log_interaction(phone_number, incoming_msg, reply_text, "store", True)
@@ -919,6 +933,19 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             reminder_date = ai_response.get("reminder_date")
             reminder_text = ai_response.get("reminder_text")
 
+            # Check for sensitive data (staging only)
+            if ENVIRONMENT == "staging":
+                sensitive_check = detect_sensitive_data(reminder_text)
+                if sensitive_check['has_sensitive']:
+                    log_security_event('SENSITIVE_DATA_BLOCKED', {
+                        'phone': phone_number,
+                        'action': 'reminder',
+                        'types': sensitive_check['types']
+                    })
+                    reply_text = get_sensitive_data_warning()
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_blocked", False)
+                    return reply_text
+
             try:
                 user_tz_str = get_user_timezone(phone_number)
                 tz = pytz.timezone(user_tz_str)
@@ -942,6 +969,19 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             # Server calculates the actual time to avoid AI arithmetic errors
             reminder_text = ai_response.get("reminder_text", "your reminder")
             offset_minutes_raw = ai_response.get("offset_minutes", 15)
+
+            # Check for sensitive data (staging only)
+            if ENVIRONMENT == "staging":
+                sensitive_check = detect_sensitive_data(reminder_text)
+                if sensitive_check['has_sensitive']:
+                    log_security_event('SENSITIVE_DATA_BLOCKED', {
+                        'phone': phone_number,
+                        'action': 'reminder_relative',
+                        'types': sensitive_check['types']
+                    })
+                    reply_text = get_sensitive_data_warning()
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_blocked", False)
+                    return reply_text
 
             logger.info(f"reminder_relative: offset_minutes_raw={offset_minutes_raw}, type={type(offset_minutes_raw)}, reminder_text={reminder_text}")
 
@@ -1009,6 +1049,19 @@ def process_single_action(ai_response, phone_number, incoming_msg):
         elif ai_response["action"] == "add_to_list":
             list_name = ai_response.get("list_name")
             item_text = ai_response.get("item_text")
+
+            # Check for sensitive data (staging only)
+            if ENVIRONMENT == "staging":
+                sensitive_check = detect_sensitive_data(item_text)
+                if sensitive_check['has_sensitive']:
+                    log_security_event('SENSITIVE_DATA_BLOCKED', {
+                        'phone': phone_number,
+                        'action': 'add_to_list',
+                        'types': sensitive_check['types']
+                    })
+                    reply_text = get_sensitive_data_warning()
+                    log_interaction(phone_number, incoming_msg, reply_text, "add_to_list_blocked", False)
+                    return reply_text
 
             # Validate inputs
             name_valid, name_result = validate_list_name(list_name)

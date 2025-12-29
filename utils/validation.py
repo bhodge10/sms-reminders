@@ -77,6 +77,64 @@ def mask_phone_number(phone: str) -> str:
     return "***" + digits[-4:]
 
 
+def detect_sensitive_data(text: str) -> dict:
+    """
+    Detect potentially sensitive data patterns in text.
+    Returns dict with 'has_sensitive': bool and 'types': list of detected types.
+
+    Detects:
+    - Credit card numbers (16 digits, with or without separators)
+    - Social Security Numbers (9 digits, with or without dashes)
+    """
+    if not text:
+        return {'has_sensitive': False, 'types': []}
+
+    detected = []
+
+    # Remove common separators for pattern matching
+    normalized = re.sub(r'[\s\-\.]', '', text)
+
+    # Credit Card Pattern: 16 consecutive digits
+    # Check formatted patterns in original text, and raw 16-digit sequences in normalized
+    cc_pattern_formatted = r'\b\d{4}[\s\-\.]\d{4}[\s\-\.]\d{4}[\s\-\.]\d{4}\b'
+    # For normalized text, find any 16-digit sequence (not part of longer number)
+    cc_matches = re.findall(r'\d{16,}', normalized)
+
+    if re.search(cc_pattern_formatted, text) or any(len(m) == 16 for m in cc_matches):
+        detected.append('credit_card')
+
+    # SSN Pattern: 9 consecutive digits (but not if part of longer number)
+    # Format: 123-45-6789 or 123456789
+    ssn_pattern_formatted = r'\b\d{3}[\s\-]\d{2}[\s\-]\d{4}\b'
+
+    if re.search(ssn_pattern_formatted, text):
+        detected.append('ssn')
+    else:
+        # Check for 9 consecutive digits that could be SSN
+        # Find digit sequences and check for exactly 9 digits (not part of longer number)
+        ssn_candidates = [m for m in re.findall(r'\d{9,}', normalized) if len(m) == 9]
+        for candidate in ssn_candidates:
+            # Basic SSN validation: first 3 digits can't be 000, 666, or 900-999
+            area = int(candidate[:3])
+            if area != 0 and area != 666 and area < 900:
+                detected.append('ssn')
+                break
+
+    return {
+        'has_sensitive': len(detected) > 0,
+        'types': detected
+    }
+
+
+def get_sensitive_data_warning() -> str:
+    """Return user-friendly warning message for sensitive data detection"""
+    return (
+        "I detected what looks like a credit card number or Social Security Number. "
+        "For your security, I can't store this type of sensitive financial or personal data. "
+        "Please don't send payment card numbers or SSNs via text."
+    )
+
+
 def log_security_event(event_type: str, details: dict):
     """Log security-related events with consistent format"""
     timestamp = datetime.utcnow().isoformat()
