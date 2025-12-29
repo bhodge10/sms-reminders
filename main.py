@@ -33,7 +33,7 @@ from models.list_model import (
 from services.sms_service import send_sms
 from services.ai_service import process_with_ai, parse_list_items
 from services.onboarding_service import handle_onboarding
-from services.reminder_service import start_reminder_checker
+# NOTE: Reminder checking is now handled by Celery Beat (see tasks/reminder_tasks.py)
 from services.metrics_service import track_user_activity, increment_message_count
 from utils.timezone import get_user_current_time
 from utils.formatting import get_help_text, format_reminders_list
@@ -199,8 +199,8 @@ app.include_router(dashboard_router)
 # Initialize database
 init_db()
 
-# Start background reminder checker
-start_reminder_checker()
+# NOTE: Background reminder checking is now handled by Celery Beat
+# See celery_config.py for the schedule and tasks/reminder_tasks.py for the task
 
 # Start scheduled broadcast checker
 start_broadcast_checker()

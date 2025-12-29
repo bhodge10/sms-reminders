@@ -272,6 +272,8 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_sent_reminder_at TIMESTAMP",
             # Track if a reminder was snoozed (to avoid showing duplicates)
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS snoozed BOOLEAN DEFAULT FALSE",
+            # Celery: Add claimed_at column for atomic reminder claiming
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP",
             # Settings table for app configuration
             """CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -288,6 +290,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_logs_phone_hash ON logs(phone_hash)",
             "CREATE INDEX IF NOT EXISTS idx_lists_phone_hash ON lists(phone_hash)",
             "CREATE INDEX IF NOT EXISTS idx_list_items_phone_hash ON list_items(phone_hash)",
+            # Celery: Index for efficient querying of due reminders
+            "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(reminder_date, sent, claimed_at) WHERE sent = FALSE",
         ]
 
         for migration in migrations:

@@ -57,7 +57,10 @@ OPENAI_TEMPERATURE = 0.3
 OPENAI_MAX_TOKENS = 300
 
 # Reminder Configuration
-REMINDER_CHECK_INTERVAL = 60  # seconds
+REMINDER_CHECK_INTERVAL = 30  # seconds (used by Celery Beat)
+
+# Celery/Redis Configuration (Upstash)
+UPSTASH_REDIS_URL = os.environ.get("UPSTASH_REDIS_URL", "redis://localhost:6379/0")
 
 # Memory Configuration
 MAX_MEMORIES_TO_DISPLAY = 20

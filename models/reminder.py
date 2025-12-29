@@ -311,3 +311,107 @@ def mark_reminder_snoozed(reminder_id):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def claim_due_reminders(batch_size=10):
+    """
+    Atomically claim due reminders using SELECT FOR UPDATE SKIP LOCKED.
+
+    This prevents race conditions when multiple workers try to claim
+    the same reminder. SKIP LOCKED ensures workers don't block each other.
+
+    Args:
+        batch_size: Maximum number of reminders to claim per call
+
+    Returns:
+        List of claimed reminder dicts with id, phone_number, reminder_text
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Claim reminders atomically with SKIP LOCKED
+        # This query:
+        # 1. Finds due reminders that haven't been sent and aren't claimed
+        # 2. Locks them (other workers will skip these rows)
+        # 3. Updates claimed_at to mark them as in-progress
+        # 4. Returns the claimed reminders
+        c.execute("""
+            WITH claimed AS (
+                SELECT id, phone_number, reminder_text
+                FROM reminders
+                WHERE reminder_date <= %s
+                  AND sent = FALSE
+                  AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '5 minutes')
+                ORDER BY reminder_date ASC
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE reminders r
+            SET claimed_at = NOW()
+            FROM claimed c
+            WHERE r.id = c.id
+            RETURNING r.id, r.phone_number, r.reminder_text
+        """, (now, batch_size))
+
+        results = c.fetchall()
+        conn.commit()
+
+        # Convert to list of dicts
+        return [
+            {
+                "id": row[0],
+                "phone_number": row[1],
+                "reminder_text": row[2],
+            }
+            for row in results
+        ]
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error claiming due reminders: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def release_stale_claims(timeout_minutes=5):
+    """
+    Release reminders that were claimed but not processed.
+
+    This handles cases where a worker crashes after claiming
+    but before sending. Should be run periodically.
+
+    Args:
+        timeout_minutes: How old a claim must be to be considered stale
+
+    Returns:
+        Number of reminders released
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""
+            UPDATE reminders
+            SET claimed_at = NULL
+            WHERE claimed_at IS NOT NULL
+              AND sent = FALSE
+              AND claimed_at < NOW() - INTERVAL '%s minutes'
+        """, (timeout_minutes,))
+        count = c.rowcount
+        conn.commit()
+        if count > 0:
+            logger.info(f"Released {count} stale reminder claims")
+        return count
+    except Exception as e:
+        logger.error(f"Error releasing stale claims: {e}")
+        return 0
+    finally:
+        if conn:
+            return_db_connection(conn)

@@ -1,52 +1,31 @@
 """
-SMS Reminders - Background Worker
-Standalone worker process for checking and sending due reminders
+SMS Reminders - Celery Worker Entrypoint
+This file provides a convenient entry point for starting Celery workers.
+
+Usage:
+    celery -A worker worker --loglevel=info
+    celery -A worker beat --loglevel=info
+
+Or using celery_app directly:
+    celery -A celery_app worker --loglevel=info
+    celery -A celery_app beat --loglevel=info
 """
 
-import time
-from datetime import datetime
-
-from config import logger, REMINDER_CHECK_INTERVAL
+from celery_app import celery_app
 from database import init_db
-from models.reminder import get_due_reminders, mark_reminder_sent
-from services.sms_service import send_sms
+from config import logger
 
-def check_reminders():
-    """Check for due reminders and send SMS notifications"""
-    logger.info(f"Checking for due reminders at {datetime.utcnow()}")
+# Re-export celery_app for Celery CLI
+app = celery_app
 
-    try:
-        due_reminders = get_due_reminders()
-
-        if due_reminders:
-            logger.info(f"Found {len(due_reminders)} due reminders")
-
-            for reminder_id, phone_number, reminder_text in due_reminders:
-                try:
-                    send_sms(phone_number, f"Reminder: {reminder_text}")
-                    mark_reminder_sent(reminder_id)
-                    logger.info(f"Sent reminder {reminder_id} to {phone_number}")
-                except Exception as e:
-                    logger.error(f"Failed to send reminder {reminder_id}: {e}")
-        else:
-            logger.info("No due reminders")
-
-    except Exception as e:
-        logger.error(f"Error checking reminders: {e}")
-
-def main():
-    """Main worker loop"""
-    logger.info("SMS Reminders Worker starting...")
-
-    # Initialize database connection
+# Initialize database on worker startup
+@celery_app.on_after_configure.connect
+def setup_db(sender, **kwargs):
+    """Initialize database when Celery worker starts"""
+    logger.info("Celery worker starting - initializing database...")
     init_db()
-    logger.info("Database initialized")
-
-    logger.info(f"Worker running - checking every {REMINDER_CHECK_INTERVAL} seconds")
-
-    while True:
-        check_reminders()
-        time.sleep(REMINDER_CHECK_INTERVAL)
+    logger.info("Database initialized for Celery worker")
 
 if __name__ == "__main__":
-    main()
+    # Allow running directly for local development
+    celery_app.start()
