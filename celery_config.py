@@ -22,9 +22,5 @@ beat_schedule = {
     },
 }
 
-# Task routing (for future scaling with multiple queues)
-task_routes = {
-    "tasks.reminder_tasks.send_single_reminder": {"queue": "sms"},
-    "tasks.reminder_tasks.check_and_send_reminders": {"queue": "celery"},
-    "tasks.reminder_tasks.release_stale_claims_task": {"queue": "celery"},
-}
+# Note: All tasks use the default 'celery' queue for simplicity.
+# For future scaling, you can add task_routes to distribute tasks across queues.
