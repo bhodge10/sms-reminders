@@ -847,6 +847,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 })
                 reply_text = get_sensitive_data_warning()
                 log_interaction(phone_number, incoming_msg, reply_text, "sensitive_blocked", False)
+                resp = MessagingResponse()
                 resp.message(staging_prefix(reply_text))
                 return Response(content=str(resp), media_type="application/xml")
 
