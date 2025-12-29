@@ -366,9 +366,11 @@ async def schedule_broadcast(request: ScheduleBroadcastRequest, admin: str = Dep
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
         # Parse the scheduled date
-        from datetime import datetime
         try:
             scheduled_dt = datetime.fromisoformat(request.scheduled_date.replace('Z', '+00:00'))
+            # Convert to naive UTC for storage and comparison
+            if scheduled_dt.tzinfo is not None:
+                scheduled_dt = scheduled_dt.astimezone(pytz.UTC).replace(tzinfo=None)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format")
 
