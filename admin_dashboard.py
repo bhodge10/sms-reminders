@@ -1399,8 +1399,9 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         <div class="form-group" id="scheduleDateGroup" style="display: none;">
             <label for="scheduleDate">Scheduled Date & Time (your local time)</label>
-            <input type="datetime-local" id="scheduleDate" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em;">
-            <small style="color: #7f8c8d;">The broadcast will be sent at this time to users within their 8am-8pm window</small>
+            <input type="datetime-local" id="scheduleDate" onchange="validateScheduleDate()" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em;">
+            <small id="scheduleDateError" style="color: #e74c3c; display: none;"></small>
+            <small id="scheduleDateHint" style="color: #7f8c8d;">The broadcast will be sent at this time to users within their 8am-8pm window</small>
         </div>
 
         <div class="preview-box">
@@ -1892,6 +1893,13 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             const isScheduled = document.getElementById('scheduleCheckbox').checked;
             const scheduleDate = document.getElementById('scheduleDate').value;
 
+            // Validate scheduled date if scheduling
+            if (isScheduled) {{
+                if (!validateScheduleDate()) {{
+                    return; // Don't show modal if date is invalid
+                }}
+            }}
+
             document.getElementById('modalCount').textContent = inWindowCount;
             document.getElementById('modalMessage').textContent = '[Remyndrs System Message] ' + message;
 
@@ -2070,6 +2078,43 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         }}
 
         // Scheduled Broadcast Functions
+        function validateScheduleDate() {{
+            const scheduleDate = document.getElementById('scheduleDate').value;
+            const errorEl = document.getElementById('scheduleDateError');
+            const hintEl = document.getElementById('scheduleDateHint');
+            const sendBtn = document.getElementById('sendBtn');
+
+            if (!scheduleDate) {{
+                errorEl.textContent = 'Please select a date and time';
+                errorEl.style.display = 'block';
+                hintEl.style.display = 'none';
+                sendBtn.disabled = true;
+                return false;
+            }}
+
+            const selectedDate = new Date(scheduleDate);
+            if (isNaN(selectedDate.getTime())) {{
+                errorEl.textContent = 'Invalid date format';
+                errorEl.style.display = 'block';
+                hintEl.style.display = 'none';
+                sendBtn.disabled = true;
+                return false;
+            }}
+
+            if (selectedDate <= new Date()) {{
+                errorEl.textContent = 'Scheduled time must be in the future';
+                errorEl.style.display = 'block';
+                hintEl.style.display = 'none';
+                sendBtn.disabled = true;
+                return false;
+            }}
+
+            errorEl.style.display = 'none';
+            hintEl.style.display = 'block';
+            sendBtn.disabled = !document.getElementById('message').value.trim();
+            return true;
+        }}
+
         function toggleScheduleMode() {{
             const checkbox = document.getElementById('scheduleCheckbox');
             const dateGroup = document.getElementById('scheduleDateGroup');
