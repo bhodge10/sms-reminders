@@ -1009,8 +1009,8 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     match = re.search(r'(\d+)', str(offset_minutes_raw))
                     offset_minutes = int(match.group(1)) if match else 15
 
-                # Cap at 24 hours (1440 minutes)
-                offset_minutes = min(offset_minutes, 1440)
+                # Cap at 30 days (43200 minutes)
+                offset_minutes = min(offset_minutes, 43200)
                 offset_minutes = max(offset_minutes, 1)  # Minimum 1 minute
 
                 logger.info(f"reminder_relative: parsed offset_minutes={offset_minutes}")
