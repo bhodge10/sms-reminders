@@ -575,26 +575,26 @@ def get_flagged_conversations(limit=50, include_reviewed=False):
         if include_reviewed:
             c.execute('''
                 SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
-                       ca.ai_explanation, ca.reviewed, ca.created_at,
+                       ca.ai_explanation, ca.reviewed, l.created_at,
                        l.message_in, l.message_out, COALESCE(ca.source, 'ai'),
                        COALESCE(u.timezone, 'America/New_York')
                 FROM conversation_analysis ca
                 LEFT JOIN logs l ON ca.log_id = l.id
                 LEFT JOIN users u ON ca.phone_number = u.phone_number
-                ORDER BY ca.created_at DESC
+                ORDER BY l.created_at DESC
                 LIMIT %s
             ''', (limit,))
         else:
             c.execute('''
                 SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
-                       ca.ai_explanation, ca.reviewed, ca.created_at,
+                       ca.ai_explanation, ca.reviewed, l.created_at,
                        l.message_in, l.message_out, COALESCE(ca.source, 'ai'),
                        COALESCE(u.timezone, 'America/New_York')
                 FROM conversation_analysis ca
                 LEFT JOIN logs l ON ca.log_id = l.id
                 LEFT JOIN users u ON ca.phone_number = u.phone_number
                 WHERE ca.reviewed = FALSE
-                ORDER BY ca.created_at DESC
+                ORDER BY l.created_at DESC
                 LIMIT %s
             ''', (limit,))
         rows = c.fetchall()
