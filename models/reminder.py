@@ -58,15 +58,17 @@ def get_due_reminders():
             return_db_connection(conn)
 
 def mark_reminder_sent(reminder_id):
-    """Mark a reminder as sent"""
+    """Mark a reminder as sent. Raises exception on failure to trigger retry."""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
         c.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
         conn.commit()
+        logger.info(f"Marked reminder {reminder_id} as sent")
     except Exception as e:
         logger.error(f"Error marking reminder sent: {e}")
+        raise  # Re-raise so Celery task knows to retry
     finally:
         if conn:
             return_db_connection(conn)

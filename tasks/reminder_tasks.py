@@ -74,7 +74,24 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
 
     Uses exponential backoff for retries (30s, 60s, 120s, max 300s).
     """
+    from database import get_db_connection, return_db_connection
+
     try:
+        # Safety check: verify reminder hasn't already been sent
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute('SELECT sent FROM reminders WHERE id = %s', (reminder_id,))
+            result = c.fetchone()
+            if result and result[0]:
+                logger.warning(f"Reminder {reminder_id} already sent, skipping duplicate")
+                return {
+                    "reminder_id": reminder_id,
+                    "status": "already_sent",
+                }
+        finally:
+            return_db_connection(conn)
+
         logger.info(f"Sending reminder {reminder_id} to {phone_number}")
 
         # Format message with snooze option
