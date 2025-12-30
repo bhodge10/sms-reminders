@@ -570,6 +570,64 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # DELETE ITEM BY NUMBER (context-aware)
+        # ==========================================
+        # Handle "Delete 2", "Remove 3", etc. when user has a last active list
+        delete_match = re.match(r'^(?:delete|remove)\s+(\d+)$', incoming_msg.strip(), re.IGNORECASE)
+        if delete_match:
+            item_num = int(delete_match.group(1))
+            last_active = get_last_active_list(phone_number)
+            if last_active:
+                list_info = get_list_by_name(phone_number, last_active)
+                if list_info:
+                    list_id = list_info[0]
+                    list_name = list_info[1]
+                    items = get_list_items(list_id)
+                    if items and 1 <= item_num <= len(items):
+                        item_id, item_text, _ = items[item_num - 1]
+                        if delete_list_item(phone_number, list_name, item_text):
+                            reply_msg = f"Removed '{item_text}' from your {list_name}"
+                        else:
+                            reply_msg = f"Couldn't remove item #{item_num} from your {list_name}"
+                        resp = MessagingResponse()
+                        resp.message(reply_msg)
+                        log_interaction(phone_number, incoming_msg, reply_msg, "delete_item", True)
+                        return Response(content=str(resp), media_type="application/xml")
+                    else:
+                        resp = MessagingResponse()
+                        resp.message(f"Item #{item_num} not found. Your {list_name} has {len(items)} items.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # CHECK OFF ITEM BY NUMBER (context-aware)
+        # ==========================================
+        # Handle "Check 2", "Check off 3", "Done 1", etc. when user has a last active list
+        check_match = re.match(r'^(?:check|check off|done|complete|finished)\s+(\d+)$', incoming_msg.strip(), re.IGNORECASE)
+        if check_match:
+            item_num = int(check_match.group(1))
+            last_active = get_last_active_list(phone_number)
+            if last_active:
+                list_info = get_list_by_name(phone_number, last_active)
+                if list_info:
+                    list_id = list_info[0]
+                    list_name = list_info[1]
+                    items = get_list_items(list_id)
+                    if items and 1 <= item_num <= len(items):
+                        item_id, item_text, _ = items[item_num - 1]
+                        if mark_item_complete(phone_number, list_name, item_text):
+                            reply_msg = f"Checked off '{item_text}'"
+                        else:
+                            reply_msg = f"Couldn't check off item #{item_num}"
+                        resp = MessagingResponse()
+                        resp.message(reply_msg)
+                        log_interaction(phone_number, incoming_msg, reply_msg, "complete_item", True)
+                        return Response(content=str(resp), media_type="application/xml")
+                    else:
+                        resp = MessagingResponse()
+                        resp.message(f"Item #{item_num} not found. Your {list_name} has {len(items)} items.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # FEEDBACK HANDLING
         # ==========================================
         if incoming_msg.upper().startswith("FEEDBACK:"):
