@@ -63,7 +63,6 @@ def check_and_send_reminders(self):
     max_retries=3,
     default_retry_delay=30,
     acks_late=True,
-    autoretry_for=(Exception,),
     retry_backoff=True,
     retry_backoff_max=300,
 )
@@ -73,25 +72,29 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
     Marks reminder as sent only after successful delivery.
 
     Uses exponential backoff for retries (30s, 60s, 120s, max 300s).
+    IMPORTANT: Once SMS is sent, we do NOT retry even if subsequent operations fail.
     """
     from database import get_db_connection, return_db_connection
 
+    # Safety check: verify reminder hasn't already been sent (use FOR UPDATE to lock row)
+    conn = get_db_connection()
     try:
-        # Safety check: verify reminder hasn't already been sent
-        conn = get_db_connection()
-        try:
-            c = conn.cursor()
-            c.execute('SELECT sent FROM reminders WHERE id = %s', (reminder_id,))
-            result = c.fetchone()
-            if result and result[0]:
-                logger.warning(f"Reminder {reminder_id} already sent, skipping duplicate")
-                return {
-                    "reminder_id": reminder_id,
-                    "status": "already_sent",
-                }
-        finally:
-            return_db_connection(conn)
+        c = conn.cursor()
+        c.execute('SELECT sent FROM reminders WHERE id = %s FOR UPDATE', (reminder_id,))
+        result = c.fetchone()
+        if result and result[0]:
+            logger.warning(f"Reminder {reminder_id} already sent, skipping duplicate")
+            conn.commit()
+            return {
+                "reminder_id": reminder_id,
+                "status": "already_sent",
+            }
+        conn.commit()
+    finally:
+        return_db_connection(conn)
 
+    # Try to send SMS - if this fails, we CAN retry
+    try:
         logger.info(f"Sending reminder {reminder_id} to {phone_number}")
 
         # Format message with snooze option
@@ -100,29 +103,36 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
         # Send SMS via Twilio
         send_sms(phone_number, message)
 
-        # Mark as sent only after successful send
-        mark_reminder_sent(reminder_id)
-
-        # Update last sent reminder for snooze feature
-        update_last_sent_reminder(phone_number, reminder_id)
-
-        # Track delivery metrics
-        track_reminder_delivery(reminder_id, "sent")
-
-        logger.info(f"Reminder {reminder_id} sent successfully")
-        return {
-            "reminder_id": reminder_id,
-            "status": "sent",
-        }
-
-    except self.MaxRetriesExceededError:
-        logger.error(f"Max retries exceeded for reminder {reminder_id}")
-        track_reminder_delivery(reminder_id, "failed", "Max retries exceeded")
-        raise
     except Exception as exc:
-        logger.exception(f"Error sending reminder {reminder_id}")
+        # SMS failed - safe to retry
+        logger.exception(f"Error sending SMS for reminder {reminder_id}")
         track_reminder_delivery(reminder_id, "failed", str(exc))
         raise self.retry(exc=exc)
+
+    # SMS sent successfully - mark as sent IMMEDIATELY
+    # After this point, we do NOT retry even if subsequent operations fail
+    try:
+        mark_reminder_sent(reminder_id)
+    except Exception as e:
+        # Log but don't retry - SMS was already sent!
+        logger.error(f"Failed to mark reminder {reminder_id} as sent (SMS was delivered): {e}")
+
+    # These are nice-to-have, don't retry if they fail
+    try:
+        update_last_sent_reminder(phone_number, reminder_id)
+    except Exception as e:
+        logger.error(f"Failed to update last_sent_reminder: {e}")
+
+    try:
+        track_reminder_delivery(reminder_id, "sent")
+    except Exception as e:
+        logger.error(f"Failed to track delivery metrics: {e}")
+
+    logger.info(f"Reminder {reminder_id} sent successfully")
+    return {
+        "reminder_id": reminder_id,
+        "status": "sent",
+    }
 
 
 @celery_app.task
