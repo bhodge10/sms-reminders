@@ -303,10 +303,13 @@ def init_db():
                 severity TEXT DEFAULT 'low',
                 ai_explanation TEXT,
                 reviewed BOOLEAN DEFAULT FALSE,
+                source TEXT DEFAULT 'ai',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
             # Track which logs have been analyzed
             "ALTER TABLE logs ADD COLUMN IF NOT EXISTS analyzed BOOLEAN DEFAULT FALSE",
+            # Add source column for flagging source (ai vs manual)
+            "ALTER TABLE conversation_analysis ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'ai'",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -440,22 +443,24 @@ def get_recent_logs(limit=100, offset=0, phone_filter=None, intent_filter=None):
         c = conn.cursor()
 
         # Build query dynamically based on filters
+        # Include subquery to check if log is already flagged
         query = '''
-            SELECT id, phone_number, message_in, message_out, intent, success, created_at, analyzed
-            FROM logs
+            SELECT l.id, l.phone_number, l.message_in, l.message_out, l.intent, l.success, l.created_at, l.analyzed,
+                   EXISTS(SELECT 1 FROM conversation_analysis ca WHERE ca.log_id = l.id) as is_flagged
+            FROM logs l
             WHERE 1=1
         '''
         params = []
 
         if phone_filter:
-            query += ' AND phone_number LIKE %s'
+            query += ' AND l.phone_number LIKE %s'
             params.append(f'%{phone_filter}%')
 
         if intent_filter:
-            query += ' AND intent = %s'
+            query += ' AND l.intent = %s'
             params.append(intent_filter)
 
-        query += ' ORDER BY created_at DESC LIMIT %s OFFSET %s'
+        query += ' ORDER BY l.created_at DESC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
 
         c.execute(query, params)
@@ -469,7 +474,8 @@ def get_recent_logs(limit=100, offset=0, phone_filter=None, intent_filter=None):
                 'intent': row[4],
                 'success': row[5],
                 'created_at': row[6].isoformat() if row[6] else None,
-                'analyzed': row[7] if len(row) > 7 else False
+                'analyzed': row[7] if len(row) > 7 else False,
+                'is_flagged': row[8] if len(row) > 8 else False
             }
             for row in rows
         ]
@@ -555,7 +561,7 @@ def save_conversation_analysis(log_id, phone_number, issue_type, severity, expla
 
 
 def get_flagged_conversations(limit=50, include_reviewed=False):
-    """Get flagged conversations from AI analysis"""
+    """Get flagged conversations from AI or manual flagging"""
     conn = None
     try:
         conn = get_db_connection()
@@ -564,7 +570,7 @@ def get_flagged_conversations(limit=50, include_reviewed=False):
             c.execute('''
                 SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
                        ca.ai_explanation, ca.reviewed, ca.created_at,
-                       l.message_in, l.message_out
+                       l.message_in, l.message_out, COALESCE(ca.source, 'ai')
                 FROM conversation_analysis ca
                 LEFT JOIN logs l ON ca.log_id = l.id
                 ORDER BY ca.created_at DESC
@@ -574,7 +580,7 @@ def get_flagged_conversations(limit=50, include_reviewed=False):
             c.execute('''
                 SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
                        ca.ai_explanation, ca.reviewed, ca.created_at,
-                       l.message_in, l.message_out
+                       l.message_in, l.message_out, COALESCE(ca.source, 'ai')
                 FROM conversation_analysis ca
                 LEFT JOIN logs l ON ca.log_id = l.id
                 WHERE ca.reviewed = FALSE
@@ -593,7 +599,8 @@ def get_flagged_conversations(limit=50, include_reviewed=False):
                 'reviewed': row[6],
                 'created_at': row[7].isoformat() if row[7] else None,
                 'message_in': row[8],
-                'message_out': row[9]
+                'message_out': row[9],
+                'source': row[10] if len(row) > 10 else 'ai'
             }
             for row in rows
         ]
@@ -630,9 +637,10 @@ def manual_flag_conversation(log_id, phone_number, issue_type, notes):
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        # Add 'source' to indicate manual vs AI flagging
         c.execute('''
-            INSERT INTO conversation_analysis (log_id, phone_number, issue_type, severity, ai_explanation)
-            VALUES (%s, %s, %s, 'medium', %s)
+            INSERT INTO conversation_analysis (log_id, phone_number, issue_type, severity, ai_explanation, source)
+            VALUES (%s, %s, %s, 'medium', %s, 'manual')
         ''', (log_id, phone_number, issue_type, notes))
         conn.commit()
         return True

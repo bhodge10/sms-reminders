@@ -1804,7 +1804,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <div class="tabs">
             <button class="tab active" onclick="showConversationTab('recent')">Recent Conversations</button>
             <button class="tab" onclick="showConversationTab('flagged')">
-                AI Flagged <span id="flaggedCount" style="background: #e74c3c; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.8em; margin-left: 5px;">0</span>
+                Flagged <span id="flaggedCount" style="background: #e74c3c; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.8em; margin-left: 5px;">0</span>
             </button>
         </div>
 
@@ -1876,14 +1876,15 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
             <table class="conversation-table" id="flaggedTable">
                 <tr>
-                    <th style="width: 150px;">Time</th>
-                    <th style="width: 100px;">Phone</th>
+                    <th style="width: 60px;">Source</th>
+                    <th style="width: 140px;">Time</th>
+                    <th style="width: 90px;">Phone</th>
                     <th>Conversation</th>
                     <th style="width: 120px;">Issue</th>
                     <th style="width: 80px;">Actions</th>
                 </tr>
                 <tr id="flaggedLoading">
-                    <td colspan="5" style="color: #95a5a6; text-align: center;">Loading flagged conversations...</td>
+                    <td colspan="6" style="color: #95a5a6; text-align: center;">Loading flagged conversations...</td>
                 </tr>
             </table>
         </div>
@@ -2722,6 +2723,19 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                         const intentBadge = c.intent ? `<span class="intent-badge">${{c.intent}}</span>` : '-';
                         const msgInEscaped = escapeHtml(c.message_in).replace(/'/g, "\\'").replace(/"/g, "&quot;");
                         const msgOutEscaped = escapeHtml(c.message_out).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                        const isFlagged = c.is_flagged;
+
+                        // Highlight flagged rows
+                        if (isFlagged) {{
+                            row.style.background = '#fef3e2';
+                        }}
+
+                        const actionButton = isFlagged
+                            ? '<span style="color: #e67e22; font-size: 0.85em;">Flagged</span>'
+                            : `<button class="btn" style="padding: 4px 8px; font-size: 0.8em; background: #e67e22; color: white;"
+                                    onclick="showFlagModal(${{c.id}}, '${{c.phone_number}}', '${{msgInEscaped}}', '${{msgOutEscaped}}')">
+                                    Flag
+                                </button>`;
 
                         row.innerHTML = `
                             <td>${{date}}</td>
@@ -2729,12 +2743,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                             <td><div class="msg-in">${{escapeHtml(c.message_in)}}</div></td>
                             <td><div class="msg-out">${{escapeHtml(c.message_out)}}</div></td>
                             <td>${{intentBadge}}</td>
-                            <td>
-                                <button class="btn" style="padding: 4px 8px; font-size: 0.8em; background: #e67e22; color: white;"
-                                    onclick="showFlagModal(${{c.id}}, '${{c.phone_number}}', '${{msgInEscaped}}', '${{msgOutEscaped}}')">
-                                    Flag
-                                </button>
-                            </td>
+                            <td>${{actionButton}}</td>
                         `;
                     }});
                 }}
@@ -2793,7 +2802,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
                 if (flagged.length === 0) {{
                     const row = table.insertRow();
-                    row.innerHTML = '<td colspan="5" style="color: #95a5a6; text-align: center;">No flagged conversations</td>';
+                    row.innerHTML = '<td colspan="6" style="color: #95a5a6; text-align: center;">No flagged conversations</td>';
                 }} else {{
                     flagged.forEach(f => {{
                         const row = table.insertRow();
@@ -2803,8 +2812,12 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                         const date = new Date(f.created_at).toLocaleString();
                         const phoneMasked = f.phone_number ? '...' + f.phone_number.slice(-4) : 'N/A';
                         const severityClass = `severity-${{f.severity || 'low'}}`;
+                        const source = f.source || 'ai';
+                        const sourceLabel = source === 'manual' ? 'Manual' : 'AI';
+                        const sourceColor = source === 'manual' ? '#9b59b6' : '#3498db';
 
                         row.innerHTML = `
+                            <td><span style="background: ${{sourceColor}}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75em;">${{sourceLabel}}</span></td>
                             <td>${{date}}</td>
                             <td>${{phoneMasked}}</td>
                             <td>
