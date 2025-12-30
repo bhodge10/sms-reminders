@@ -983,6 +983,68 @@ async def flag_conversation(request: ManualFlagRequest, admin: str = Depends(ver
         raise HTTPException(status_code=500, detail="Error flagging conversation")
 
 
+@router.get("/admin/user/reminders")
+async def get_user_reminders_admin(phone: str, admin: str = Depends(verify_admin)):
+    """Get all reminders for a user by phone number (full or partial ending)"""
+    try:
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            # Support partial phone lookup (e.g., "3047" matches phones ending in 3047)
+            if len(phone) < 10:
+                c.execute("""
+                    SELECT id, phone_number, reminder_text, reminder_date, sent, claimed_at, created_at
+                    FROM reminders
+                    WHERE phone_number LIKE %s
+                    ORDER BY reminder_date DESC
+                    LIMIT 50
+                """, (f'%{phone}',))
+            else:
+                c.execute("""
+                    SELECT id, phone_number, reminder_text, reminder_date, sent, claimed_at, created_at
+                    FROM reminders
+                    WHERE phone_number = %s
+                    ORDER BY reminder_date DESC
+                    LIMIT 50
+                """, (phone,))
+
+            reminders = c.fetchall()
+
+            # Check for duplicates
+            c.execute("""
+                SELECT reminder_text, COUNT(*) as cnt
+                FROM reminders
+                WHERE phone_number LIKE %s AND sent = FALSE
+                GROUP BY reminder_text
+                HAVING COUNT(*) > 1
+            """, (f'%{phone}',))
+            duplicates = c.fetchall()
+
+            return JSONResponse(content={
+                "reminders": [
+                    {
+                        "id": r[0],
+                        "phone": "..." + r[1][-4:] if r[1] else None,
+                        "text": r[2],
+                        "date": r[3].isoformat() if r[3] else None,
+                        "sent": r[4],
+                        "claimed_at": r[5].isoformat() if r[5] else None,
+                        "created_at": r[6].isoformat() if r[6] else None,
+                    }
+                    for r in reminders
+                ],
+                "duplicates": [
+                    {"text": d[0], "count": d[1]}
+                    for d in duplicates
+                ]
+            })
+        finally:
+            return_db_connection(conn)
+    except Exception as e:
+        logger.error(f"Error getting user reminders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # DASHBOARD UI
 # =====================================================
