@@ -487,8 +487,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # PENDING LIST ITEM SELECTION
         # ==========================================
         # Check if user has a pending list item and sent a number
+        # But NOT if we're in a pending delete flow (pending_list_item stores list name for deletion)
         pending_item = get_pending_list_item(phone_number)
-        if pending_item:
+        user_for_pending = get_user(phone_number)
+        pending_delete_flag = user_for_pending and user_for_pending[9] if user_for_pending else False
+        if pending_item and not pending_delete_flag:
             if incoming_msg.strip().isdigit():
                 list_num = int(incoming_msg.strip())
                 lists = get_lists(phone_number)
@@ -793,6 +796,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # LIST COMMANDS (MY LISTS, SHOW LISTS)
         # ==========================================
         if incoming_msg.upper() in ["MY LISTS", "SHOW LISTS", "LIST LISTS", "LISTS"]:
+            # Clear any pending list item state so number responses show lists, not add items
+            create_or_update_user(phone_number, pending_list_item=None, pending_delete=False)
             lists = get_lists(phone_number)
             if len(lists) == 1:
                 # Only one list, show it directly
