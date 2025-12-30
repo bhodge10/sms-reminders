@@ -616,3 +616,23 @@ def mark_analysis_reviewed(analysis_id):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def manual_flag_conversation(log_id, phone_number, issue_type, notes):
+    """Manually flag a conversation for review"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO conversation_analysis (log_id, phone_number, issue_type, severity, ai_explanation)
+            VALUES (%s, %s, %s, 'medium', %s)
+        ''', (log_id, phone_number, issue_type, notes))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error manually flagging conversation: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)

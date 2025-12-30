@@ -18,7 +18,8 @@ from services.metrics_service import get_all_metrics, get_cost_analytics
 from services.sms_service import send_sms
 from database import (
     get_db_connection, return_db_connection, get_setting, set_setting,
-    get_recent_logs, get_flagged_conversations, mark_analysis_reviewed
+    get_recent_logs, get_flagged_conversations, mark_analysis_reviewed,
+    manual_flag_conversation
 )
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 from utils.validation import log_security_event
@@ -888,6 +889,34 @@ async def trigger_analysis(background_tasks: BackgroundTasks, admin: str = Depen
     except Exception as e:
         logger.error(f"Error triggering analysis: {e}")
         raise HTTPException(status_code=500, detail="Error triggering analysis")
+
+
+class ManualFlagRequest(BaseModel):
+    log_id: int
+    phone_number: str
+    issue_type: str
+    notes: str
+
+
+@router.post("/admin/conversations/flag")
+async def flag_conversation(request: ManualFlagRequest, admin: str = Depends(verify_admin)):
+    """Manually flag a conversation for review"""
+    try:
+        success = manual_flag_conversation(
+            log_id=request.log_id,
+            phone_number=request.phone_number,
+            issue_type=request.issue_type,
+            notes=request.notes
+        )
+        if success:
+            return JSONResponse(content={"success": True})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to flag conversation")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error flagging conversation: {e}")
+        raise HTTPException(status_code=500, detail="Error flagging conversation")
 
 
 # =====================================================
@@ -1794,9 +1823,10 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <th>User Message</th>
                     <th>System Response</th>
                     <th style="width: 100px;">Intent</th>
+                    <th style="width: 70px;">Action</th>
                 </tr>
                 <tr id="conversationLoading">
-                    <td colspan="5" style="color: #95a5a6; text-align: center;">Loading conversations...</td>
+                    <td colspan="6" style="color: #95a5a6; text-align: center;">Loading conversations...</td>
                 </tr>
             </table>
 
@@ -1833,6 +1863,43 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <td colspan="5" style="color: #95a5a6; text-align: center;">Loading flagged conversations...</td>
                 </tr>
             </table>
+        </div>
+    </div>
+
+    <!-- Flag Conversation Modal -->
+    <div class="modal" id="flagModal">
+        <div class="modal-content">
+            <h3 style="color: #e67e22;">🚩 Flag Conversation</h3>
+            <input type="hidden" id="flagLogId">
+            <input type="hidden" id="flagPhone">
+
+            <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
+                <div><strong>User:</strong> <span id="flagMsgIn"></span></div>
+                <div style="margin-top: 8px;"><strong>System:</strong> <span id="flagMsgOut" style="font-size: 0.9em; color: #666;"></span></div>
+            </div>
+
+            <div class="form-group">
+                <label for="flagIssueType">Issue Type</label>
+                <select id="flagIssueType" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="misunderstood_intent">Misunderstood Intent</option>
+                    <option value="poor_response">Poor Response</option>
+                    <option value="frustrated_user">Frustrated User</option>
+                    <option value="failed_action">Failed Action</option>
+                    <option value="confused_user">Confused User</option>
+                    <option value="needs_review">Needs Review</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="flagNotes">Notes (what went wrong?)</label>
+                <textarea id="flagNotes" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;" placeholder="Describe the issue..."></textarea>
+            </div>
+
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="hideFlagModal()">Cancel</button>
+                <button class="btn" style="background: #e67e22; color: white;" onclick="submitFlag()">Flag for Review</button>
+            </div>
         </div>
     </div>
 
@@ -2619,13 +2686,15 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
                 if (conversations.length === 0) {{
                     const row = table.insertRow();
-                    row.innerHTML = '<td colspan="5" style="color: #95a5a6; text-align: center;">No conversations found</td>';
+                    row.innerHTML = '<td colspan="6" style="color: #95a5a6; text-align: center;">No conversations found</td>';
                 }} else {{
                     conversations.forEach(c => {{
                         const row = table.insertRow();
                         const date = new Date(c.created_at).toLocaleString();
                         const phoneMasked = c.phone_number ? '...' + c.phone_number.slice(-4) : 'N/A';
                         const intentBadge = c.intent ? `<span class="intent-badge">${{c.intent}}</span>` : '-';
+                        const msgInEscaped = escapeHtml(c.message_in).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+                        const msgOutEscaped = escapeHtml(c.message_out).replace(/'/g, "\\'").replace(/"/g, "&quot;");
 
                         row.innerHTML = `
                             <td>${{date}}</td>
@@ -2633,6 +2702,12 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                             <td><div class="msg-in">${{escapeHtml(c.message_in)}}</div></td>
                             <td><div class="msg-out">${{escapeHtml(c.message_out)}}</div></td>
                             <td>${{intentBadge}}</td>
+                            <td>
+                                <button class="btn" style="padding: 4px 8px; font-size: 0.8em; background: #e67e22; color: white;"
+                                    onclick="showFlagModal(${{c.id}}, '${{c.phone_number}}', '${{msgInEscaped}}', '${{msgOutEscaped}}')">
+                                    Flag
+                                </button>
+                            </td>
                         `;
                     }});
                 }}
@@ -2770,6 +2845,57 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }} catch (e) {{
                 statusDiv.innerHTML = '❌ Error: ' + e.message;
                 statusDiv.style.background = '#f8d7da';
+            }}
+        }}
+
+        // Manual Flag Functions
+        function showFlagModal(logId, phone, msgIn, msgOut) {{
+            document.getElementById('flagLogId').value = logId;
+            document.getElementById('flagPhone').value = phone;
+            document.getElementById('flagMsgIn').textContent = msgIn;
+            document.getElementById('flagMsgOut').textContent = msgOut.substring(0, 200) + (msgOut.length > 200 ? '...' : '');
+            document.getElementById('flagIssueType').value = 'needs_review';
+            document.getElementById('flagNotes').value = '';
+            document.getElementById('flagModal').classList.add('active');
+        }}
+
+        function hideFlagModal() {{
+            document.getElementById('flagModal').classList.remove('active');
+        }}
+
+        async function submitFlag() {{
+            const logId = document.getElementById('flagLogId').value;
+            const phone = document.getElementById('flagPhone').value;
+            const issueType = document.getElementById('flagIssueType').value;
+            const notes = document.getElementById('flagNotes').value.trim();
+
+            if (!notes) {{
+                alert('Please add notes describing the issue');
+                return;
+            }}
+
+            try {{
+                const response = await fetch('/admin/conversations/flag', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        log_id: parseInt(logId),
+                        phone_number: phone,
+                        issue_type: issueType,
+                        notes: notes
+                    }})
+                }});
+
+                if (response.ok) {{
+                    hideFlagModal();
+                    alert('Conversation flagged for review');
+                    loadFlaggedConversations();
+                }} else {{
+                    const data = await response.json();
+                    alert('Error: ' + (data.detail || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
             }}
         }}
 
