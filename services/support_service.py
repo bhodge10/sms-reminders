@@ -96,6 +96,50 @@ def get_or_create_open_ticket(phone_number: str) -> int:
             return_db_connection(conn)
 
 
+def has_technician_replied(ticket_id: int) -> bool:
+    """
+    Check if a technician has replied to a ticket.
+    Used to determine if we need to send email notifications.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM support_messages WHERE ticket_id = %s AND direction = 'outbound'",
+            (ticket_id,)
+        )
+        result = c.fetchone()
+        return result and result[0] > 0
+    except Exception as e:
+        logger.error(f"Error checking technician replies: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def is_first_message_in_ticket(ticket_id: int) -> bool:
+    """Check if this is the first message in the ticket (new ticket)."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM support_messages WHERE ticket_id = %s",
+            (ticket_id,)
+        )
+        result = c.fetchone()
+        # If count is 0, this will be the first message
+        return result and result[0] == 0
+    except Exception as e:
+        logger.error(f"Error checking first message: {e}")
+        return True  # Default to sending email if we can't check
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def add_support_message(phone_number: str, message: str, direction: str = 'inbound') -> dict:
     """
     Add a message to a support ticket.
@@ -113,6 +157,15 @@ def add_support_message(phone_number: str, message: str, direction: str = 'inbou
         ticket_id = get_or_create_open_ticket(phone_number)
         if not ticket_id:
             return {'success': False, 'error': 'Could not create ticket'}
+
+        # Check if we should send email BEFORE adding the message
+        # Send email if: first message OR technician hasn't replied yet
+        should_send_email = False
+        if direction == 'inbound':
+            is_first = is_first_message_in_ticket(ticket_id)
+            tech_replied = has_technician_replied(ticket_id)
+            # Send email if it's the first message OR if tech hasn't replied
+            should_send_email = is_first or not tech_replied
 
         conn = get_db_connection()
         c = conn.cursor()
@@ -132,10 +185,13 @@ def add_support_message(phone_number: str, message: str, direction: str = 'inbou
 
         conn.commit()
 
-        # Send email notification for inbound messages
-        if direction == 'inbound':
+        # Send email notification only if needed
+        if direction == 'inbound' and should_send_email:
             user_name = get_user_name(phone_number)
             send_support_notification(ticket_id, phone_number, message, user_name)
+            logger.info(f"Email sent for ticket #{ticket_id} (first msg or awaiting tech reply)")
+        elif direction == 'inbound':
+            logger.info(f"Skipping email for ticket #{ticket_id} (tech already engaged)")
 
         return {'success': True, 'ticket_id': ticket_id}
 
@@ -206,18 +262,53 @@ def reply_to_ticket(ticket_id: int, message: str) -> dict:
             return_db_connection(conn)
 
 
-def close_ticket(ticket_id: int) -> bool:
-    """Close a support ticket"""
+def close_ticket(ticket_id: int, notify_user: bool = True) -> bool:
+    """
+    Close a support ticket and optionally notify the user via SMS.
+
+    Args:
+        ticket_id: The ticket ID to close
+        notify_user: Whether to send SMS notification to user (default True)
+
+    Returns:
+        True if ticket was closed successfully
+    """
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+
+        # Get phone number before closing (for SMS notification)
+        phone_number = None
+        if notify_user:
+            c.execute(
+                "SELECT phone_number FROM support_tickets WHERE id = %s",
+                (ticket_id,)
+            )
+            result = c.fetchone()
+            if result:
+                phone_number = result[0]
+
+        # Close the ticket
         c.execute(
             "UPDATE support_tickets SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
             (ticket_id,)
         )
         conn.commit()
-        return c.rowcount > 0
+
+        if c.rowcount > 0:
+            # Send SMS notification to user
+            if notify_user and phone_number:
+                try:
+                    sms_message = f"[Support Ticket #{ticket_id}] Your support ticket has been closed. Thank you for contacting Remyndrs support! Text SUPPORT: anytime to open a new ticket."
+                    send_sms(phone_number, sms_message)
+                    logger.info(f"Sent closure notification for ticket #{ticket_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send closure SMS for ticket #{ticket_id}: {e}")
+                    # Don't fail the close operation if SMS fails
+            return True
+        return False
+
     except Exception as e:
         logger.error(f"Error closing ticket: {e}")
         return False
