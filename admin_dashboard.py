@@ -1053,6 +1053,267 @@ async def get_user_reminders_admin(phone: str, admin: str = Depends(verify_admin
 
 
 # =====================================================
+# PUBLIC CHANGELOG / UPDATES PAGE
+# =====================================================
+
+class ChangelogEntry(BaseModel):
+    title: str
+    description: Optional[str] = None
+    entry_type: str = "improvement"  # bug_fix, feature, improvement
+
+
+@router.get("/updates", response_class=HTMLResponse)
+async def public_updates_page():
+    """Public changelog page - no auth required"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT id, title, description, entry_type, created_at
+            FROM changelog
+            WHERE published = TRUE
+            ORDER BY created_at DESC
+            LIMIT 50
+        ''')
+        entries = c.fetchall()
+
+        # Build changelog entries HTML
+        entries_html = ""
+        current_date = None
+        for entry_id, title, description, entry_type, created_at in entries:
+            entry_date = created_at.strftime('%B %d, %Y') if created_at else ''
+
+            # Add date header if new date
+            if entry_date != current_date:
+                if current_date is not None:
+                    entries_html += "</div>"  # Close previous date group
+                entries_html += f'<div class="date-group"><h3 class="date-header">{entry_date}</h3>'
+                current_date = entry_date
+
+            # Entry type badge
+            type_colors = {
+                'bug_fix': '#e74c3c',
+                'feature': '#27ae60',
+                'improvement': '#3498db'
+            }
+            type_labels = {
+                'bug_fix': 'Bug Fix',
+                'feature': 'New Feature',
+                'improvement': 'Improvement'
+            }
+            badge_color = type_colors.get(entry_type, '#95a5a6')
+            badge_label = type_labels.get(entry_type, entry_type)
+
+            entries_html += f'''
+            <div class="changelog-entry">
+                <span class="entry-badge" style="background-color: {badge_color}">{badge_label}</span>
+                <span class="entry-title">{title}</span>
+                {f'<p class="entry-description">{description}</p>' if description else ''}
+            </div>
+            '''
+
+        if current_date is not None:
+            entries_html += "</div>"  # Close last date group
+
+        if not entries:
+            entries_html = '<p class="no-entries">No updates yet. Check back soon!</p>'
+
+        html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Remyndrs Updates</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f6fa;
+            color: #2c3e50;
+        }}
+        .header {{
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #3498db;
+        }}
+        .header h1 {{
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+        }}
+        .header p {{
+            margin: 0;
+            color: #7f8c8d;
+        }}
+        .date-group {{
+            margin-bottom: 25px;
+        }}
+        .date-header {{
+            font-size: 14px;
+            color: #7f8c8d;
+            margin: 0 0 10px 0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        .changelog-entry {{
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }}
+        .entry-badge {{
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            color: white;
+            text-transform: uppercase;
+            margin-right: 10px;
+        }}
+        .entry-title {{
+            font-weight: 500;
+        }}
+        .entry-description {{
+            margin: 10px 0 0 0;
+            color: #666;
+            font-size: 14px;
+            line-height: 1.5;
+        }}
+        .no-entries {{
+            text-align: center;
+            color: #7f8c8d;
+            padding: 40px;
+        }}
+        .footer {{
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            color: #7f8c8d;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Remyndrs Updates</h1>
+        <p>Latest bug fixes, improvements, and new features</p>
+    </div>
+
+    {entries_html}
+
+    <div class="footer">
+        <p>Text <strong>?</strong> to Remyndrs anytime for help</p>
+    </div>
+</body>
+</html>
+        """
+        return HTMLResponse(content=html)
+
+    except Exception as e:
+        logger.error(f"Error loading updates page: {e}")
+        return HTMLResponse(content="<h1>Error loading updates</h1>", status_code=500)
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/changelog")
+async def get_changelog_entries(admin: str = Depends(verify_admin)):
+    """Get all changelog entries for admin management"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT id, title, description, entry_type, created_at, published
+            FROM changelog
+            ORDER BY created_at DESC
+        ''')
+        entries = c.fetchall()
+        return [
+            {
+                'id': e[0],
+                'title': e[1],
+                'description': e[2],
+                'entry_type': e[3],
+                'created_at': e[4].isoformat() if e[4] else None,
+                'published': e[5]
+            }
+            for e in entries
+        ]
+    except Exception as e:
+        logger.error(f"Error getting changelog: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/changelog")
+async def add_changelog_entry(entry: ChangelogEntry, admin: str = Depends(verify_admin)):
+    """Add a new changelog entry"""
+    conn = None
+    try:
+        if entry.entry_type not in ['bug_fix', 'feature', 'improvement']:
+            raise HTTPException(status_code=400, detail="Invalid entry type")
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO changelog (title, description, entry_type)
+            VALUES (%s, %s, %s)
+            RETURNING id
+        ''', (entry.title, entry.description, entry.entry_type))
+        entry_id = c.fetchone()[0]
+        conn.commit()
+
+        logger.info(f"Changelog entry added by {admin}: {entry.title}")
+        return {"id": entry_id, "message": "Entry added successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding changelog entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.delete("/admin/changelog/{entry_id}")
+async def delete_changelog_entry(entry_id: int, admin: str = Depends(verify_admin)):
+    """Delete a changelog entry"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('DELETE FROM changelog WHERE id = %s', (entry_id,))
+        conn.commit()
+
+        if c.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        logger.info(f"Changelog entry {entry_id} deleted by {admin}")
+        return {"message": "Entry deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting changelog entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
 # DASHBOARD UI
 # =====================================================
 
@@ -1926,6 +2187,40 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         <div style="margin-top: 15px; font-size: 0.85em; color: #7f8c8d;">
             <em>SMS: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing</em>
+        </div>
+    </div>
+
+    <!-- Changelog Management Section -->
+    <div id="changelog" class="section section-anchor">
+        <h2>📋 Updates & Changelog</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px;">
+            Public page: <a href="/updates" target="_blank">/updates</a> - Share this link with users instead of sending broadcast messages for every update.
+        </p>
+
+        <div class="broadcast-form" style="margin-bottom: 20px;">
+            <h3 style="margin-top: 0;">Add New Entry</h3>
+            <div style="margin-bottom: 10px;">
+                <label style="display: block; margin-bottom: 5px; font-weight: 500;">Type:</label>
+                <select id="changelogType" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 200px;">
+                    <option value="bug_fix">🐛 Bug Fix</option>
+                    <option value="feature">✨ New Feature</option>
+                    <option value="improvement" selected>🔧 Improvement</option>
+                </select>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="display: block; margin-bottom: 5px; font-weight: 500;">Title:</label>
+                <input type="text" id="changelogTitle" placeholder="Brief title (e.g., 'Fixed reminder timezone bug')" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="display: block; margin-bottom: 5px; font-weight: 500;">Description (optional):</label>
+                <textarea id="changelogDescription" placeholder="More details about the change..." style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; height: 60px;"></textarea>
+            </div>
+            <button onclick="addChangelogEntry()" class="btn" style="background: #27ae60;">Add Entry</button>
+        </div>
+
+        <h3>Recent Entries</h3>
+        <div id="changelogEntries" style="max-height: 400px; overflow-y: auto;">
+            <p style="color: #95a5a6;">Loading...</p>
         </div>
     </div>
 
@@ -3227,6 +3522,98 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
         }}
 
+        // Changelog functions
+        async function loadChangelog() {{
+            try {{
+                const response = await fetch('/admin/changelog');
+                const entries = await response.json();
+
+                const container = document.getElementById('changelogEntries');
+
+                if (entries.length === 0) {{
+                    container.innerHTML = '<p style="color: #95a5a6;">No changelog entries yet.</p>';
+                    return;
+                }}
+
+                const typeLabels = {{
+                    'bug_fix': '🐛 Bug Fix',
+                    'feature': '✨ Feature',
+                    'improvement': '🔧 Improvement'
+                }};
+
+                container.innerHTML = entries.map(e => {{
+                    const date = new Date(e.created_at).toLocaleDateString();
+                    return `
+                        <div style="background: white; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-start;">
+                            <div>
+                                <span style="font-size: 0.85em; color: #7f8c8d;">${{date}}</span>
+                                <span style="margin-left: 10px; font-size: 0.85em;">${{typeLabels[e.entry_type] || e.entry_type}}</span>
+                                <div style="font-weight: 500; margin-top: 4px;">${{e.title}}</div>
+                                ${{e.description ? `<div style="color: #666; font-size: 0.9em; margin-top: 4px;">${{e.description}}</div>` : ''}}
+                            </div>
+                            <button onclick="deleteChangelogEntry(${{e.id}})" style="background: #e74c3c; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8em;">Delete</button>
+                        </div>
+                    `;
+                }}).join('');
+            }} catch (e) {{
+                console.error('Error loading changelog:', e);
+                document.getElementById('changelogEntries').innerHTML = '<p style="color: #e74c3c;">Error loading changelog</p>';
+            }}
+        }}
+
+        async function addChangelogEntry() {{
+            const title = document.getElementById('changelogTitle').value.trim();
+            const description = document.getElementById('changelogDescription').value.trim();
+            const entryType = document.getElementById('changelogType').value;
+
+            if (!title) {{
+                alert('Please enter a title');
+                return;
+            }}
+
+            try {{
+                const response = await fetch('/admin/changelog', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        title: title,
+                        description: description || null,
+                        entry_type: entryType
+                    }})
+                }});
+
+                if (response.ok) {{
+                    document.getElementById('changelogTitle').value = '';
+                    document.getElementById('changelogDescription').value = '';
+                    loadChangelog();
+                }} else {{
+                    const error = await response.json();
+                    alert('Error: ' + (error.detail || 'Failed to add entry'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function deleteChangelogEntry(id) {{
+            if (!confirm('Delete this changelog entry?')) return;
+
+            try {{
+                const response = await fetch(`/admin/changelog/${{id}}`, {{
+                    method: 'DELETE'
+                }});
+
+                if (response.ok) {{
+                    loadChangelog();
+                }} else {{
+                    const error = await response.json();
+                    alert('Error: ' + (error.detail || 'Failed to delete entry'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
         // Initialize
         loadStats();
         loadHistory();
@@ -3236,6 +3623,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         loadScheduledBroadcasts();
         loadConversations();
         loadFlaggedConversations();
+        loadChangelog();
 
         async function cleanupIncomplete() {{
             if (!confirm('Delete all users who have not completed onboarding?')) return;

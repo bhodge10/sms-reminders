@@ -228,6 +228,18 @@ def init_db():
             )
         ''')
 
+        # Public changelog for updates, fixes, and features
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS changelog (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                entry_type TEXT NOT NULL DEFAULT 'improvement',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                published BOOLEAN DEFAULT TRUE
+            )
+        ''')
+
         # Add new columns to existing tables (migrations)
         # These will silently fail if columns already exist
         migrations = [
