@@ -5,44 +5,39 @@ Helper functions for formatting text and data
 
 def get_help_text():
     """Return help guide for users"""
-    return """How to Use This Service
+    return """REMYNDRS HELP GUIDE
 
-STORING MEMORIES:
-Just text naturally!
-- "My Honda Accord is a 2018, VIN ABC123"
-- "Dentist is Dr. Smith, 555-1234"
+MEMORIES
+Store: "My car is a 2018 Honda, VIN ABC123"
+Recall: "What's my VIN?"
+Delete: "Forget my car info"
 
-FINDING MEMORIES:
-Ask naturally:
-- "What's my VIN?"
-- "What's my dentist's number?"
+REMINDERS
+Set: "Remind me at 3pm to call mom"
+Relative: "Remind me in 30 minutes to check oven"
+View: "Show my reminders"
+Delete: "Delete reminder about mom"
+Snooze: Reply SNOOZE when you get a reminder (adds 15 min), or "SNOOZE 1h" for 1 hour
 
-SETTING REMINDERS:
-- "Remind me at 9pm to take meds"
-- "Remind me tomorrow at 2pm to call mom"
-- "Remind me in 30 minutes to check laundry"
+LISTS
+Create: "Create a grocery list"
+Add: "Add milk, eggs, bread to grocery list"
+View: "Show my grocery list" or "MY LISTS"
+Check off: "Check off milk"
+Remove: "Remove eggs from list"
 
-MANAGING LISTS:
-- "Create a grocery list"
-- "Add milk to my grocery list"
-- "Show my grocery list"
-- "Check off milk"
-- "Remove eggs from grocery list"
+QUICK COMMANDS
+? - This help guide
+MY LISTS - View all lists
+LIST ALL - View all memories
+SNOOZE - Snooze last reminder
+STOP - Pauses texts from Remyndrs (your account and data stay active, text START to resume)
+FEEDBACK: [message] - Send us feedback
 
-COMMANDS:
-- LIST ALL - View all your memories
-- LIST REMINDERS - View all reminders
-- MY LISTS - View all your lists
-- DELETE ALL - Clear all data (asks confirmation)
-- RESET ACCOUNT - Start over from scratch
-- INFO - Show this guide
-
-TIPS:
-- For reminders, always include AM or PM
+TIPS
+- Always include AM or PM for times
 - I understand natural language - just talk!
-- Your timezone is set from your ZIP code
-
-Need more help? Just ask!"""
+- Reply SNOOZE within 30 min of a reminder"""
 
 def get_onboarding_prompt(step):
     """Get the appropriate prompt for the current onboarding step"""
