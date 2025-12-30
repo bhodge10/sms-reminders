@@ -19,7 +19,8 @@ from services.sms_service import send_sms
 from database import (
     get_db_connection, return_db_connection, get_setting, set_setting,
     get_recent_logs, get_flagged_conversations, mark_analysis_reviewed,
-    manual_flag_conversation, mark_conversation_good, get_good_conversations
+    manual_flag_conversation, mark_conversation_good, get_good_conversations,
+    dismiss_conversation
 )
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 from utils.validation import log_security_event
@@ -906,6 +907,11 @@ class MarkGoodRequest(BaseModel):
     notes: Optional[str] = ""
 
 
+class DismissRequest(BaseModel):
+    log_id: int
+    phone_number: str
+
+
 @router.post("/admin/conversations/good")
 async def mark_good(request: MarkGoodRequest, admin: str = Depends(verify_admin)):
     """Mark a conversation as good/accurate"""
@@ -935,6 +941,25 @@ async def get_good(admin: str = Depends(verify_admin)):
     except Exception as e:
         logger.error(f"Error getting good conversations: {e}")
         raise HTTPException(status_code=500, detail="Error getting good conversations")
+
+
+@router.post("/admin/conversations/dismiss")
+async def dismiss_conv(request: DismissRequest, admin: str = Depends(verify_admin)):
+    """Dismiss a conversation (already fixed, not applicable)"""
+    try:
+        success = dismiss_conversation(
+            log_id=request.log_id,
+            phone_number=request.phone_number
+        )
+        if success:
+            return JSONResponse(content={"success": True})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to dismiss")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error dismissing conversation: {e}")
+        raise HTTPException(status_code=500, detail="Error dismissing conversation")
 
 
 @router.post("/admin/conversations/flag")
@@ -2790,14 +2815,18 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                         let actionButtons;
                         if (reviewStatus === 'good') {{
                             actionButtons = '<span style="color: #27ae60; font-size: 0.85em;">Good</span>';
+                        }} else if (reviewStatus === 'dismissed') {{
+                            actionButtons = '<span style="color: #95a5a6; font-size: 0.85em;">Dismissed</span>';
                         }} else if (reviewStatus) {{
                             actionButtons = '<span style="color: #e67e22; font-size: 0.85em;">Flagged</span>';
                         }} else {{
                             actionButtons = `
                                 <button class="btn" style="padding: 3px 6px; font-size: 0.75em; background: #27ae60; color: white; margin-right: 3px;"
                                     onclick="markAsGood(${{c.id}}, '${{c.phone_number}}')">Good</button>
-                                <button class="btn" style="padding: 3px 6px; font-size: 0.75em; background: #e67e22; color: white;"
+                                <button class="btn" style="padding: 3px 6px; font-size: 0.75em; background: #e67e22; color: white; margin-right: 3px;"
                                     onclick="showFlagModal(${{c.id}}, '${{c.phone_number}}', '${{msgInEscaped}}', '${{msgOutEscaped}}')">Flag</button>
+                                <button class="btn" style="padding: 3px 6px; font-size: 0.75em; background: #95a5a6; color: white;"
+                                    onclick="dismissConversation(${{c.id}}, '${{c.phone_number}}')">Dismiss</button>
                             `;
                         }}
 
@@ -3052,6 +3081,29 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }} catch (e) {{
                 console.error('Error:', e);
                 alert('Error marking as good');
+            }}
+        }}
+
+        // Dismiss Conversation Function
+        async function dismissConversation(logId, phone) {{
+            try {{
+                const response = await fetch('/admin/conversations/dismiss', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        log_id: logId,
+                        phone_number: phone
+                    }})
+                }});
+
+                if (response.ok) {{
+                    loadConversations();  // Refresh to update status
+                }} else {{
+                    alert('Error dismissing conversation');
+                }}
+            }} catch (e) {{
+                console.error('Error:', e);
+                alert('Error dismissing conversation');
             }}
         }}
 

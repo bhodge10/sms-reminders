@@ -683,6 +683,26 @@ def mark_conversation_good(log_id, phone_number, notes=""):
             return_db_connection(conn)
 
 
+def dismiss_conversation(log_id, phone_number):
+    """Dismiss a conversation (already fixed, not applicable)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO conversation_analysis (log_id, phone_number, issue_type, severity, ai_explanation, source)
+            VALUES (%s, %s, 'dismissed', 'none', 'Dismissed - already fixed or not applicable', 'manual')
+        ''', (log_id, phone_number))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error dismissing conversation: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def get_good_conversations(limit=50):
     """Get conversations marked as good"""
     conn = None
