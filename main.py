@@ -662,13 +662,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # SUPPORT HANDLING (Premium users only)
+        # SUPPORT HANDLING (Premium users, or all users in beta mode)
         # ==========================================
         if incoming_msg.upper().startswith("SUPPORT:") or incoming_msg.upper().startswith("SUPPORT "):
             from services.support_service import is_premium_user, add_support_message
+            from config import BETA_MODE
 
-            # Check if user is premium
-            if not is_premium_user(phone_number):
+            # Check if user is premium (or beta mode allows all users)
+            if not BETA_MODE and not is_premium_user(phone_number):
                 resp = MessagingResponse()
                 resp.message("Support chat is available for premium members. Use 'Feedback: [message]' to send us feedback, or upgrade to premium for direct support.")
                 log_interaction(phone_number, incoming_msg, "Support denied - not premium", "support_denied", False)
