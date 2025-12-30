@@ -11,7 +11,7 @@ import pytz
 from config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TEMPERATURE, OPENAI_MAX_TOKENS, OPENAI_TIMEOUT, logger, MAX_MEMORIES_IN_CONTEXT, MAX_COMPLETED_REMINDERS_DISPLAY
 from models.memory import get_memories
 from models.reminder import get_user_reminders
-from models.user import get_user_timezone
+from models.user import get_user_timezone, get_user_first_name
 from models.list_model import get_lists, get_list_items
 from utils.timezone import get_user_current_time
 from database import log_api_usage
@@ -128,6 +128,7 @@ def process_with_ai(message, phone_number, context):
         # Get current time in user's timezone
         user_time = get_user_current_time(phone_number)
         user_tz = get_user_timezone(phone_number)
+        user_first_name = get_user_first_name(phone_number)
 
         current_datetime = user_time.strftime('%Y-%m-%d %H:%M:%S')
         current_day_of_week = user_time.strftime('%A')
@@ -135,7 +136,11 @@ def process_with_ai(message, phone_number, context):
         current_time_readable = user_time.strftime('%I:%M %p')
 
         # Build system prompt
+        user_name_context = f"USER'S NAME: {user_first_name}" if user_first_name else "USER'S NAME: (not provided)"
+
         system_prompt = f"""You are a helpful SMS memory assistant with reminder capabilities.
+
+{user_name_context}
 
 CURRENT DATE/TIME INFORMATION (in user's timezone: {user_tz}):
 - Full date: {current_date_readable}
@@ -300,7 +305,7 @@ For ASKING TIME CLARIFICATION:
 For UNCLEAR requests or GREETINGS:
 {{
     "action": "help",
-    "response": "Friendly, helpful response"
+    "response": "Personalized greeting using user's name if available (e.g., 'Hi [Name]! How can I help you today?'), otherwise just 'Hi! How can I help you today?'"
 }}
 
 For HELP REQUESTS:

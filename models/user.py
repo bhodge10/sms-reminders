@@ -124,6 +124,41 @@ def get_user_timezone(phone_number):
     return 'America/New_York'  # Default
 
 
+def get_user_first_name(phone_number):
+    """Get user's first name"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone, decrypt_field
+            phone_hash = hash_phone(phone_number)
+            # Try to get encrypted name first
+            c.execute('SELECT first_name, first_name_encrypted FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('SELECT first_name, first_name_encrypted FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
+            if result:
+                # Prefer encrypted field if available
+                if result[1]:
+                    return decrypt_field(result[1])
+                return result[0]
+        else:
+            c.execute('SELECT first_name FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
+            if result:
+                return result[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user first name: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def get_last_active_list(phone_number):
     """Get user's last active list name"""
     conn = None
