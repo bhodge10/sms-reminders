@@ -45,6 +45,7 @@ def check_and_send_reminders(self):
 
         # Dispatch individual send tasks for each reminder
         for reminder in reminders:
+            logger.info(f"Dispatching reminder {reminder['id']} for {reminder['phone_number'][-4:]}: {reminder['reminder_text'][:30]}")
             send_single_reminder.delay(
                 reminder_id=reminder["id"],
                 phone_number=reminder["phone_number"],
@@ -89,12 +90,14 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
         result = c.fetchone()
 
         if result and result[0]:
-            logger.warning(f"Reminder {reminder_id} already sent, skipping duplicate")
+            logger.warning(f"Reminder {reminder_id} already sent (sent={result[0]}), skipping duplicate")
             conn.commit()
             return {
                 "reminder_id": reminder_id,
                 "status": "already_sent",
             }
+
+        logger.info(f"Reminder {reminder_id} not yet sent, proceeding to send")
 
         # Try to send SMS - if this fails, we CAN retry (rollback releases lock)
         try:
@@ -138,6 +141,7 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
     # These are nice-to-have, don't retry if they fail
     try:
         update_last_sent_reminder(phone_number, reminder_id)
+        logger.info(f"Updated last_sent_reminder for {phone_number[-4:]} to reminder {reminder_id}")
     except Exception as e:
         logger.error(f"Failed to update last_sent_reminder: {e}")
 
