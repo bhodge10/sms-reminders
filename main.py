@@ -467,6 +467,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         if delete_type == 'reminder':
                             if delete_reminder(phone_number, selected['id']):
                                 reply_msg = f"Deleted reminder: {selected['text']}"
+                                # If this was a recurring reminder, also delete the recurring pattern
+                                recurring_id = selected.get('recurring_id')
+                                if recurring_id:
+                                    if delete_recurring_reminder(recurring_id, phone_number):
+                                        reply_msg += " (and its recurring schedule)"
                             else:
                                 reply_msg = "Couldn't delete that reminder."
 
@@ -692,15 +697,20 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             delete_options = []
 
             # Check for reminder at this position
+            # Tuple format: (id, reminder_date, reminder_text, recurring_id, sent)
             reminders = get_user_reminders(phone_number)
             pending_reminders = [r for r in reminders if not r[4]]  # unsent only
             if pending_reminders and 1 <= item_num <= len(pending_reminders):
                 reminder = pending_reminders[item_num - 1]
+                recurring_id = reminder[3]
+                # Show [R] prefix for recurring reminders
+                display_prefix = "[R] " if recurring_id else ""
                 delete_options.append({
                     'type': 'reminder',
                     'id': reminder[0],
                     'text': reminder[2],
-                    'display': f"Reminder: {reminder[2][:40]}"
+                    'recurring_id': recurring_id,
+                    'display': f"Reminder: {display_prefix}{reminder[2][:40]}"
                 })
 
             # Check for list item at this position
