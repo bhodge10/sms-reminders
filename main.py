@@ -311,16 +311,27 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # START/RESUBSCRIBE COMMAND (Twilio compliance)
         # ==========================================
+        # Note: "YES" is also used for confirmations, so check if user has pending action first
         if incoming_msg.upper() in ["START", "YES", "UNSTOP"]:
-            logger.info(f"START command received from {mask_phone_number(phone_number)}")
+            # Check if user has a pending confirmation (delete, etc.)
+            user_check = get_user(phone_number)
+            has_pending_action = user_check and user_check[9]  # pending_delete flag
 
-            # Clear the opted_out flag
-            create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
+            # Only treat as START if no pending action AND message is START/UNSTOP (not YES)
+            # OR if opted_out and saying YES to resubscribe
+            is_opted_out = user_check and user_check[10] if user_check else False
 
-            resp = MessagingResponse()
-            resp.message("Welcome back to Remyndrs! You're now resubscribed and will receive messages again.")
-            log_interaction(phone_number, incoming_msg, "User resubscribed", "start", True)
-            return Response(content=str(resp), media_type="application/xml")
+            if not has_pending_action and (incoming_msg.upper() in ["START", "UNSTOP"] or is_opted_out):
+                logger.info(f"START command received from {mask_phone_number(phone_number)}")
+
+                # Clear the opted_out flag
+                create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
+
+                resp = MessagingResponse()
+                resp.message("Welcome back to Remyndrs! You're now resubscribed and will receive messages again.")
+                log_interaction(phone_number, incoming_msg, "User resubscribed", "start", True)
+                return Response(content=str(resp), media_type="application/xml")
+            # If has pending action or YES without opt-out, fall through to handle confirmation
 
         # ==========================================
         # SUPPORT MODE CHECK
