@@ -4,6 +4,7 @@ Entry point for the FastAPI application
 """
 
 import re
+import json
 import pytz
 import asyncio
 from datetime import datetime, timedelta
@@ -441,39 +442,60 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # PENDING REMINDER DELETE SELECTION
+        # PENDING DELETE SELECTION (reminders, list items, memories)
         # ==========================================
-        # Check if user has pending reminder deletion and sent a number
-        pending_reminder_data = get_pending_reminder_delete(phone_number)
-        if pending_reminder_data and incoming_msg.strip().isdigit():
-            import json
-            try:
-                reminder_options = json.loads(pending_reminder_data)
-                selection = int(incoming_msg.strip())
-                if 1 <= selection <= len(reminder_options):
-                    selected_reminder = reminder_options[selection - 1]
-                    reminder_id = selected_reminder['id']
-                    reminder_text = selected_reminder['text']
-
-                    if delete_reminder(phone_number, reminder_id):
-                        reply_msg = f"Deleted your reminder: {reminder_text}"
-                    else:
-                        reply_msg = "Couldn't delete that reminder."
-
-                    # Clear pending delete
-                    create_or_update_user(phone_number, pending_reminder_delete=None)
-
-                    resp = MessagingResponse()
-                    resp.message(staging_prefix(reply_msg))
-                    log_interaction(phone_number, incoming_msg, reply_msg, "delete_reminder_selected", True)
-                    return Response(content=str(resp), media_type="application/xml")
-                else:
-                    resp = MessagingResponse()
-                    resp.message(staging_prefix(f"Please reply with a number between 1 and {len(reminder_options)}"))
-                    return Response(content=str(resp), media_type="application/xml")
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing pending reminder delete data: {e}")
+        # Check if user has pending deletion and sent a number or CANCEL
+        pending_delete_data = get_pending_reminder_delete(phone_number)
+        if pending_delete_data:
+            # Handle CANCEL
+            if incoming_msg.strip().upper() == "CANCEL":
                 create_or_update_user(phone_number, pending_reminder_delete=None)
+                resp = MessagingResponse()
+                resp.message("Cancelled.")
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Handle number selection
+            if incoming_msg.strip().isdigit():
+                try:
+                    delete_options = json.loads(pending_delete_data)
+                    selection = int(incoming_msg.strip())
+                    if 1 <= selection <= len(delete_options):
+                        selected = delete_options[selection - 1]
+                        delete_type = selected.get('type', 'reminder')
+                        reply_msg = None
+
+                        if delete_type == 'reminder':
+                            if delete_reminder(phone_number, selected['id']):
+                                reply_msg = f"Deleted reminder: {selected['text']}"
+                            else:
+                                reply_msg = "Couldn't delete that reminder."
+
+                        elif delete_type == 'list_item':
+                            if delete_list_item(phone_number, selected['list_name'], selected['text']):
+                                reply_msg = f"Removed '{selected['text']}' from {selected['list_name']}"
+                            else:
+                                reply_msg = "Couldn't delete that list item."
+
+                        elif delete_type == 'memory':
+                            if delete_memory(phone_number, selected['id']):
+                                reply_msg = f"Deleted memory: {selected['text']}"
+                            else:
+                                reply_msg = "Couldn't delete that memory."
+
+                        # Clear pending delete
+                        create_or_update_user(phone_number, pending_reminder_delete=None)
+
+                        resp = MessagingResponse()
+                        resp.message(staging_prefix(reply_msg))
+                        log_interaction(phone_number, incoming_msg, reply_msg, f"delete_{delete_type}", True)
+                        return Response(content=str(resp), media_type="application/xml")
+                    else:
+                        resp = MessagingResponse()
+                        resp.message(staging_prefix(f"Please reply with a number between 1 and {len(delete_options)}, or CANCEL"))
+                        return Response(content=str(resp), media_type="application/xml")
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"Error parsing pending delete data: {e}")
+                    create_or_update_user(phone_number, pending_reminder_delete=None)
 
         # ==========================================
         # PENDING MEMORY DELETE SELECTION/CONFIRMATION
@@ -481,7 +503,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Check if user has pending memory deletion
         pending_memory_data = get_pending_memory_delete(phone_number)
         if pending_memory_data:
-            import json
             try:
                 memory_data = json.loads(pending_memory_data)
 
@@ -662,12 +683,27 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # DELETE ITEM BY NUMBER (context-aware)
+        # DELETE BY NUMBER (smart disambiguation)
         # ==========================================
-        # Handle "Delete 2", "Remove 3", etc. when user has a last active list
+        # Handle "Delete 1", "Remove 2", etc. - ask user what they want to delete
         delete_match = re.match(r'^(?:delete|remove)\s+(\d+)$', incoming_msg.strip(), re.IGNORECASE)
         if delete_match:
             item_num = int(delete_match.group(1))
+            delete_options = []
+
+            # Check for reminder at this position
+            reminders = get_user_reminders(phone_number)
+            pending_reminders = [r for r in reminders if not r[4]]  # unsent only
+            if pending_reminders and 1 <= item_num <= len(pending_reminders):
+                reminder = pending_reminders[item_num - 1]
+                delete_options.append({
+                    'type': 'reminder',
+                    'id': reminder[0],
+                    'text': reminder[2],
+                    'display': f"Reminder: {reminder[2][:40]}"
+                })
+
+            # Check for list item at this position
             last_active = get_last_active_list(phone_number)
             if last_active:
                 list_info = get_list_by_name(phone_number, last_active)
@@ -677,18 +713,49 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     items = get_list_items(list_id)
                     if items and 1 <= item_num <= len(items):
                         item_id, item_text, _ = items[item_num - 1]
-                        if delete_list_item(phone_number, list_name, item_text):
-                            reply_msg = f"Removed '{item_text}' from your {list_name}"
-                        else:
-                            reply_msg = f"Couldn't remove item #{item_num} from your {list_name}"
-                        resp = MessagingResponse()
-                        resp.message(reply_msg)
-                        log_interaction(phone_number, incoming_msg, reply_msg, "delete_item", True)
-                        return Response(content=str(resp), media_type="application/xml")
-                    else:
-                        resp = MessagingResponse()
-                        resp.message(f"Item #{item_num} not found. Your {list_name} has {len(items)} items.")
-                        return Response(content=str(resp), media_type="application/xml")
+                        delete_options.append({
+                            'type': 'list_item',
+                            'list_name': list_name,
+                            'text': item_text,
+                            'display': f"'{item_text}' from {list_name} list"
+                        })
+
+            # Check for memory at this position
+            memories = get_memories(phone_number)
+            if memories and 1 <= item_num <= len(memories):
+                memory = memories[item_num - 1]
+                memory_text = memory[1] if len(memory) > 1 else str(memory)
+                delete_options.append({
+                    'type': 'memory',
+                    'id': memory[0] if len(memory) > 0 else None,
+                    'text': memory_text[:40] if memory_text else "memory",
+                    'display': f"Memory: {memory_text[:40] if memory_text else 'memory'}..."
+                })
+
+            if not delete_options:
+                resp = MessagingResponse()
+                resp.message(f"Nothing found at position #{item_num} to delete.")
+                return Response(content=str(resp), media_type="application/xml")
+
+            if len(delete_options) == 1:
+                # Only one option - ask for confirmation
+                opt = delete_options[0]
+                create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options))
+                resp = MessagingResponse()
+                resp.message(f"Delete {opt['display']}?\n\nReply 1 to confirm or CANCEL to cancel.")
+                log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_confirm", True)
+                return Response(content=str(resp), media_type="application/xml")
+            else:
+                # Multiple options - show menu
+                create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options))
+                lines = ["What would you like to delete? Reply with a number:\n"]
+                for i, opt in enumerate(delete_options, 1):
+                    lines.append(f"{i}. {opt['display']}")
+                lines.append("\nOr reply CANCEL to cancel.")
+                resp = MessagingResponse()
+                resp.message("\n".join(lines))
+                log_interaction(phone_number, incoming_msg, "Showing delete options", "delete_options", True)
+                return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # CHECK OFF ITEM BY NUMBER (context-aware)
@@ -1979,7 +2046,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             log_interaction(phone_number, incoming_msg, reply_text, "rename_list", True)
 
         elif ai_response["action"] == "delete_reminder":
-            import json
             search_term = ai_response.get("search_term", "")
             user_tz = get_user_timezone(phone_number)
             tz = pytz.timezone(user_tz)
@@ -2021,7 +2087,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             log_interaction(phone_number, incoming_msg, reply_text, "delete_reminder", True)
 
         elif ai_response["action"] == "delete_memory":
-            import json
             search_term = ai_response.get("search_term", "")
 
             # Search for matching memories
@@ -2189,7 +2254,6 @@ async def consent_page():
 @app.get("/memories/{phone_number}")
 async def view_memories(phone_number: str, admin: str = Depends(verify_admin)):
     """View all memories for a phone number - for testing/admin"""
-    import json
     memories = get_memories(phone_number)
     return {
         "phone_number": phone_number,
