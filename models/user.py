@@ -124,6 +124,47 @@ def get_user_timezone(phone_number):
     return 'America/New_York'  # Default
 
 
+def update_user_timezone(phone_number, new_timezone):
+    """
+    Update user's timezone setting.
+
+    Args:
+        phone_number: User's phone number
+        new_timezone: Valid pytz timezone string (e.g., 'America/Los_Angeles')
+
+    Returns:
+        tuple: (success: bool, old_timezone: str or None)
+    """
+    conn = None
+    try:
+        # Get current timezone first
+        old_timezone = get_user_timezone(phone_number)
+
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            # Try phone_hash first
+            c.execute('UPDATE users SET timezone = %s WHERE phone_hash = %s', (new_timezone, phone_hash))
+            if c.rowcount == 0:
+                # Fallback to phone_number
+                c.execute('UPDATE users SET timezone = %s WHERE phone_number = %s', (new_timezone, phone_number))
+        else:
+            c.execute('UPDATE users SET timezone = %s WHERE phone_number = %s', (new_timezone, phone_number))
+
+        conn.commit()
+        logger.info(f"Updated timezone for {phone_number[-4:]} from {old_timezone} to {new_timezone}")
+        return (True, old_timezone)
+    except Exception as e:
+        logger.error(f"Error updating user timezone: {e}")
+        return (False, None)
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def get_user_first_name(phone_number):
     """Get user's first name"""
     conn = None

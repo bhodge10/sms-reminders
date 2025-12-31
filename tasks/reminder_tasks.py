@@ -12,6 +12,11 @@ from models.reminder import (
     mark_reminder_sent,
     update_last_sent_reminder,
     release_stale_claims,
+    get_all_active_recurring_reminders,
+    get_recurring_reminder_by_id,
+    save_reminder_with_local_time,
+    check_reminder_exists_for_recurring,
+    update_recurring_reminder_generated,
 )
 from services.sms_service import send_sms
 from services.metrics_service import track_reminder_delivery
@@ -236,4 +241,214 @@ def analyze_conversations_task():
         return result
     except Exception as exc:
         logger.exception("Error in conversation analysis task")
+        raise
+
+
+# =====================================================
+# RECURRING REMINDER FUNCTIONS
+# =====================================================
+
+def should_trigger_on_date(recurrence_type, recurrence_day, dt):
+    """
+    Check if a recurring reminder should trigger on a given date.
+
+    Args:
+        recurrence_type: 'daily', 'weekly', 'weekdays', 'weekends', 'monthly'
+        recurrence_day: Day of week (0-6) for weekly, day of month (1-31) for monthly
+        dt: The datetime to check
+
+    Returns:
+        True if reminder should trigger on this date
+    """
+    weekday = dt.weekday()  # 0=Monday, 6=Sunday
+
+    if recurrence_type == 'daily':
+        return True
+    elif recurrence_type == 'weekly':
+        return weekday == recurrence_day
+    elif recurrence_type == 'weekdays':
+        return weekday < 5  # Mon-Fri
+    elif recurrence_type == 'weekends':
+        return weekday >= 5  # Sat-Sun
+    elif recurrence_type == 'monthly':
+        # Handle months with fewer days
+        import calendar
+        last_day = calendar.monthrange(dt.year, dt.month)[1]
+        target_day = min(recurrence_day, last_day)
+        return dt.day == target_day
+    return False
+
+
+def generate_first_occurrence(recurring_id):
+    """
+    Generate the first occurrence for a newly created recurring reminder.
+    Called immediately when user creates a recurring reminder.
+
+    Args:
+        recurring_id: The recurring reminder ID
+
+    Returns:
+        The datetime of the next occurrence, or None if error
+    """
+    import pytz
+    from datetime import datetime, timedelta
+
+    try:
+        recurring = get_recurring_reminder_by_id(recurring_id)
+        if not recurring:
+            logger.error(f"Recurring reminder {recurring_id} not found")
+            return None
+
+        # Parse time
+        time_parts = recurring['reminder_time'].split(':')
+        hour = int(time_parts[0])
+        minute = int(time_parts[1].split(':')[0]) if ':' in time_parts[1] else int(time_parts[1])
+
+        # Get user's timezone
+        user_tz = pytz.timezone(recurring['timezone'])
+        now = datetime.now(user_tz)
+
+        # Find next occurrence
+        check_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        # If time already passed today, start from tomorrow
+        if check_date <= now:
+            check_date = check_date + timedelta(days=1)
+
+        # Find the next date that matches the recurrence pattern
+        max_days = 366  # Don't search more than a year
+        for _ in range(max_days):
+            if should_trigger_on_date(
+                recurring['recurrence_type'],
+                recurring['recurrence_day'],
+                check_date
+            ):
+                break
+            check_date = check_date + timedelta(days=1)
+        else:
+            logger.error(f"Could not find next occurrence for recurring {recurring_id}")
+            return None
+
+        # Check if reminder already exists for this date
+        if check_reminder_exists_for_recurring(recurring_id, check_date.date()):
+            logger.info(f"Reminder already exists for recurring {recurring_id} on {check_date.date()}")
+            # Return the next occurrence datetime anyway
+            utc_dt = check_date.astimezone(pytz.UTC)
+            update_recurring_reminder_generated(recurring_id, check_date.date(), utc_dt)
+            return utc_dt
+
+        # Convert to UTC for storage
+        utc_dt = check_date.astimezone(pytz.UTC)
+
+        # Create the reminder
+        reminder_id = save_reminder_with_local_time(
+            phone_number=recurring['phone_number'],
+            reminder_text=recurring['reminder_text'],
+            reminder_date=utc_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            local_time=recurring['reminder_time'],
+            timezone=recurring['timezone'],
+            recurring_id=recurring_id
+        )
+
+        if reminder_id:
+            logger.info(f"Generated first occurrence for recurring {recurring_id}: reminder {reminder_id} at {check_date}")
+            # Update the recurring reminder with generation info
+            update_recurring_reminder_generated(recurring_id, check_date.date(), utc_dt)
+            return utc_dt
+        else:
+            logger.error(f"Failed to save first occurrence for recurring {recurring_id}")
+            return None
+
+    except Exception as e:
+        logger.exception(f"Error generating first occurrence for recurring {recurring_id}: {e}")
+        return None
+
+
+@celery_app.task
+def generate_recurring_reminders():
+    """
+    Generate concrete reminders from recurring patterns.
+    Runs hourly via Celery Beat.
+    Creates reminders for the next 24 hours.
+
+    Returns:
+        dict with count of generated reminders
+    """
+    import pytz
+    from datetime import datetime, timedelta
+
+    try:
+        recurring_list = get_all_active_recurring_reminders()
+
+        if not recurring_list:
+            logger.debug("No active recurring reminders")
+            return {"generated": 0}
+
+        logger.info(f"Processing {len(recurring_list)} active recurring reminders")
+
+        generated_count = 0
+        hours_ahead = 24  # Generate reminders for next 24 hours
+
+        for recurring in recurring_list:
+            try:
+                recurring_id = recurring['id']
+
+                # Parse time
+                time_str = recurring['reminder_time']
+                time_parts = time_str.split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1].split(':')[0]) if ':' in time_parts[1] else int(time_parts[1])
+
+                # Get user's timezone
+                user_tz = pytz.timezone(recurring['timezone'])
+                now = datetime.now(user_tz)
+                end_time = now + timedelta(hours=hours_ahead)
+
+                # Start checking from now
+                check_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                # If time already passed today, start from tomorrow
+                if check_date <= now:
+                    check_date = check_date + timedelta(days=1)
+
+                # Check each day in the window
+                while check_date <= end_time:
+                    if should_trigger_on_date(
+                        recurring['recurrence_type'],
+                        recurring['recurrence_day'],
+                        check_date
+                    ):
+                        # Check if reminder already exists for this date
+                        if not check_reminder_exists_for_recurring(recurring_id, check_date.date()):
+                            # Convert to UTC
+                            utc_dt = check_date.astimezone(pytz.UTC)
+
+                            # Create the reminder
+                            reminder_id = save_reminder_with_local_time(
+                                phone_number=recurring['phone_number'],
+                                reminder_text=recurring['reminder_text'],
+                                reminder_date=utc_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                                local_time=time_str,
+                                timezone=recurring['timezone'],
+                                recurring_id=recurring_id
+                            )
+
+                            if reminder_id:
+                                logger.info(f"Generated reminder {reminder_id} for recurring {recurring_id} at {check_date}")
+                                generated_count += 1
+
+                                # Update next occurrence
+                                update_recurring_reminder_generated(recurring_id, check_date.date(), utc_dt)
+
+                    check_date = check_date + timedelta(days=1)
+
+            except Exception as e:
+                logger.error(f"Error processing recurring {recurring['id']}: {e}")
+                continue
+
+        logger.info(f"Generated {generated_count} reminders from recurring patterns")
+        return {"generated": generated_count}
+
+    except Exception as exc:
+        logger.exception("Error in generate_recurring_reminders")
         raise

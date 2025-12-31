@@ -25,6 +25,11 @@ beat_schedule = {
         "task": "tasks.reminder_tasks.analyze_conversations_task",
         "schedule": timedelta(hours=4),
     },
+    # Generate recurring reminders every hour
+    "generate-recurring-reminders": {
+        "task": "tasks.reminder_tasks.generate_recurring_reminders",
+        "schedule": timedelta(hours=1),
+    },
 }
 
 # Note: All tasks use the default 'celery' queue for simplicity.

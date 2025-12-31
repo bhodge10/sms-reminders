@@ -211,6 +211,9 @@ Examples:
 - "Remind me in 5 months" → action: "reminder_relative" with offset_months: 5
 - "5 months from now remind me to wrap presents" → action: "reminder_relative" with offset_months: 5
 - "Remind me tomorrow at 2pm" → action: "reminder" with tomorrow's date at 14:00:00
+- "Remind me every day at 7pm to take medicine" → action: "reminder_recurring" with recurrence_type: "daily", time: "19:00"
+- "Every Sunday at 6pm remind me to take out garbage" → action: "reminder_recurring" with recurrence_type: "weekly", recurrence_day: 6, time: "18:00"
+- "Remind me every weekday at 8am to check email" → action: "reminder_recurring" with recurrence_type: "weekdays", time: "08:00"
 
 RESPONSE FORMAT (must be valid JSON):
 
@@ -293,6 +296,28 @@ For SETTING REMINDERS WITH RELATIVE TIME ("in X minutes/hours/days/weeks/months"
     "offset_months": number (optional - for months, e.g., 5 for "5 months")
 }}
 IMPORTANT: Use this action for ANY relative time request. Only include ONE offset type. The server will calculate the exact date/time.
+
+For RECURRING REMINDERS ("every day", "every Sunday", "weekdays", etc.):
+{{
+    "action": "reminder_recurring",
+    "reminder_text": "what to remind them about",
+    "recurrence_type": "daily" | "weekly" | "weekdays" | "weekends" | "monthly",
+    "recurrence_day": number (for weekly: 0=Monday through 6=Sunday, for monthly: day of month 1-31, null for others),
+    "time": "HH:MM" (24-hour format)
+}}
+RECURRING PATTERNS:
+- "every day at 7pm" → recurrence_type: "daily", time: "19:00"
+- "daily at 8am" → recurrence_type: "daily", time: "08:00"
+- "every Sunday at 6pm" → recurrence_type: "weekly", recurrence_day: 6, time: "18:00"
+- "every Monday at 9am" → recurrence_type: "weekly", recurrence_day: 0, time: "09:00"
+- "every weekday at 8am" → recurrence_type: "weekdays", time: "08:00"
+- "weekdays at noon" → recurrence_type: "weekdays", time: "12:00"
+- "every weekend at 10am" → recurrence_type: "weekends", time: "10:00"
+- "on weekends at 9am" → recurrence_type: "weekends", time: "09:00"
+- "every month on the 1st at noon" → recurrence_type: "monthly", recurrence_day: 1, time: "12:00"
+- "monthly on the 15th at 3pm" → recurrence_type: "monthly", recurrence_day: 15, time: "15:00"
+IMPORTANT: For recurring reminders, ALWAYS require AM/PM or use 24-hour time. If AM/PM is missing, use "clarify_time" action.
+Days of week for weekly: Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
 
 For ASKING TIME CLARIFICATION:
 {{

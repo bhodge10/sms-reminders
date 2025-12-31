@@ -263,6 +263,23 @@ def init_db():
             )
         ''')
 
+        # Recurring reminders table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS recurring_reminders (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                reminder_text TEXT NOT NULL,
+                recurrence_type TEXT NOT NULL,
+                recurrence_day INTEGER,
+                reminder_time TIME NOT NULL,
+                timezone TEXT NOT NULL,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_generated_date DATE,
+                next_occurrence TIMESTAMP
+            )
+        ''')
+
         # Add new columns to existing tables (migrations)
         # These will silently fail if columns already exist
         migrations = [
@@ -348,6 +365,11 @@ def init_db():
             # Opt-out tracking for STOP command compliance
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out_at TIMESTAMP",
+            # Recurring reminders: link individual reminders to their recurring pattern
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS recurring_id INTEGER REFERENCES recurring_reminders(id)",
+            # Timezone management: store local time for recalculation on timezone change
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS local_time TIME",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS original_timezone TEXT",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -363,6 +385,10 @@ def init_db():
             # Index for conversation analysis lookups
             "CREATE INDEX IF NOT EXISTS idx_logs_analyzed ON logs(analyzed) WHERE analyzed = FALSE",
             "CREATE INDEX IF NOT EXISTS idx_conversation_analysis_reviewed ON conversation_analysis(reviewed) WHERE reviewed = FALSE",
+            # Recurring reminders indexes
+            "CREATE INDEX IF NOT EXISTS idx_recurring_reminders_phone ON recurring_reminders(phone_number)",
+            "CREATE INDEX IF NOT EXISTS idx_recurring_reminders_active ON recurring_reminders(active, next_occurrence) WHERE active = TRUE",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_recurring_id ON reminders(recurring_id) WHERE recurring_id IS NOT NULL",
         ]
 
         for migration in migrations:

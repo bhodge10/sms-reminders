@@ -1128,6 +1128,157 @@ async def cleanup_stuck_reminders(admin: str = Depends(verify_admin)):
 
 
 # =====================================================
+# RECURRING REMINDERS MANAGEMENT
+# =====================================================
+
+@router.get("/admin/recurring")
+async def get_all_recurring_reminders(admin: str = Depends(verify_admin)):
+    """Get all recurring reminders for admin view"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, phone_number, reminder_text, recurrence_type, recurrence_day,
+                   reminder_time, timezone, active, created_at, last_generated_date, next_occurrence
+            FROM recurring_reminders
+            ORDER BY created_at DESC
+            LIMIT 200
+        """)
+        rows = c.fetchall()
+
+        recurring_list = []
+        for r in rows:
+            # Format pattern for display
+            recurrence_type = r[3]
+            recurrence_day = r[4]
+            if recurrence_type == 'daily':
+                pattern = "Every day"
+            elif recurrence_type == 'weekly':
+                days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                pattern = f"Every {days[recurrence_day]}" if recurrence_day is not None else "Weekly"
+            elif recurrence_type == 'weekdays':
+                pattern = "Weekdays (Mon-Fri)"
+            elif recurrence_type == 'weekends':
+                pattern = "Weekends (Sat-Sun)"
+            elif recurrence_type == 'monthly':
+                suffix = 'th'
+                if recurrence_day in [1, 21, 31]:
+                    suffix = 'st'
+                elif recurrence_day in [2, 22]:
+                    suffix = 'nd'
+                elif recurrence_day in [3, 23]:
+                    suffix = 'rd'
+                pattern = f"Monthly on the {recurrence_day}{suffix}" if recurrence_day else "Monthly"
+            else:
+                pattern = recurrence_type
+
+            recurring_list.append({
+                "id": r[0],
+                "phone": "..." + r[1][-4:] if r[1] else None,
+                "phone_full": r[1],
+                "text": r[2],
+                "pattern": pattern,
+                "recurrence_type": recurrence_type,
+                "time": str(r[5]) if r[5] else None,
+                "timezone": r[6],
+                "active": r[7],
+                "created_at": r[8].isoformat() if r[8] else None,
+                "last_generated": str(r[9]) if r[9] else None,
+                "next_occurrence": r[10].isoformat() if r[10] else None,
+            })
+
+        return JSONResponse(content={"recurring": recurring_list, "count": len(recurring_list)})
+    except Exception as e:
+        logger.error(f"Error getting recurring reminders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/recurring/{recurring_id}/pause")
+async def pause_recurring_admin(recurring_id: int, admin: str = Depends(verify_admin)):
+    """Pause a recurring reminder"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE recurring_reminders SET active = FALSE WHERE id = %s RETURNING id, reminder_text",
+            (recurring_id,)
+        )
+        result = c.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Recurring reminder not found")
+        conn.commit()
+        logger.info(f"Admin paused recurring reminder {recurring_id}")
+        return {"success": True, "id": result[0], "text": result[1]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error pausing recurring reminder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/recurring/{recurring_id}/resume")
+async def resume_recurring_admin(recurring_id: int, admin: str = Depends(verify_admin)):
+    """Resume a paused recurring reminder"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE recurring_reminders SET active = TRUE WHERE id = %s RETURNING id, reminder_text",
+            (recurring_id,)
+        )
+        result = c.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Recurring reminder not found")
+        conn.commit()
+        logger.info(f"Admin resumed recurring reminder {recurring_id}")
+        return {"success": True, "id": result[0], "text": result[1]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resuming recurring reminder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.delete("/admin/recurring/{recurring_id}")
+async def delete_recurring_admin(recurring_id: int, admin: str = Depends(verify_admin)):
+    """Delete a recurring reminder"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM recurring_reminders WHERE id = %s RETURNING id, reminder_text",
+            (recurring_id,)
+        )
+        result = c.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Recurring reminder not found")
+        conn.commit()
+        logger.info(f"Admin deleted recurring reminder {recurring_id}: {result[1]}")
+        return {"success": True, "id": result[0], "text": result[1]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting recurring reminder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
 # PUBLIC CHANGELOG / UPDATES PAGE
 # =====================================================
 
@@ -2051,6 +2202,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <a href="#feedback">Feedback</a>
         <a href="#costs">Costs</a>
         <a href="#conversations">Conversations</a>
+        <a href="#recurring">Recurring</a>
     </div>
 
     <h2 id="overview" class="section-anchor" style="margin-top: 0;">Overview</h2>
@@ -2497,6 +2649,40 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 </tr>
             </table>
         </div>
+    </div>
+
+    <!-- Recurring Reminders Section -->
+    <div id="recurring" class="broadcast-section section-anchor">
+        <h2>🔄 Recurring Reminders</h2>
+        <p style="color: #7f8c8d; margin-bottom: 15px;">Manage all recurring reminders across users.</p>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <button class="btn btn-primary" onclick="loadRecurring()">Refresh</button>
+            <input type="text" id="recurringPhoneFilter" placeholder="Filter by phone (last 4 digits)..." style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; width: 200px;">
+            <select id="recurringStatusFilter" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="">All Status</option>
+                <option value="active">Active Only</option>
+                <option value="paused">Paused Only</option>
+            </select>
+            <span style="color: #7f8c8d; margin-left: auto; padding: 8px;">Total: <span id="recurringCount">0</span></span>
+        </div>
+
+        <table id="recurringTable">
+            <tr>
+                <th style="width: 80px;">ID</th>
+                <th style="width: 80px;">Phone</th>
+                <th>Reminder</th>
+                <th style="width: 140px;">Pattern</th>
+                <th style="width: 80px;">Time</th>
+                <th style="width: 100px;">Timezone</th>
+                <th style="width: 70px;">Status</th>
+                <th style="width: 140px;">Next</th>
+                <th style="width: 120px;">Actions</th>
+            </tr>
+            <tr id="recurringLoading">
+                <td colspan="9" style="color: #95a5a6; text-align: center;">Loading recurring reminders...</td>
+            </tr>
+        </table>
     </div>
 
     <!-- Flag Conversation Modal -->
@@ -3976,6 +4162,131 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         loadFlaggedConversations();
         loadChangelog();
         loadSupportTickets();
+        loadRecurring();
+
+        // =====================================================
+        // RECURRING REMINDERS FUNCTIONS
+        // =====================================================
+
+        let allRecurring = [];
+
+        async function loadRecurring() {{
+            try {{
+                const response = await fetch('/admin/recurring');
+                const data = await response.json();
+                allRecurring = data.recurring || [];
+                document.getElementById('recurringCount').textContent = data.count || 0;
+                renderRecurring();
+            }} catch (e) {{
+                console.error('Error loading recurring:', e);
+                document.getElementById('recurringLoading').innerHTML = '<td colspan="9" style="color: #e74c3c; text-align: center;">Error loading recurring reminders</td>';
+            }}
+        }}
+
+        function renderRecurring() {{
+            const table = document.getElementById('recurringTable');
+            const phoneFilter = document.getElementById('recurringPhoneFilter').value.toLowerCase();
+            const statusFilter = document.getElementById('recurringStatusFilter').value;
+
+            // Clear existing rows except header
+            while (table.rows.length > 1) {{
+                table.deleteRow(1);
+            }}
+
+            let filtered = allRecurring.filter(r => {{
+                if (phoneFilter && !r.phone.toLowerCase().includes(phoneFilter)) return false;
+                if (statusFilter === 'active' && !r.active) return false;
+                if (statusFilter === 'paused' && r.active) return false;
+                return true;
+            }});
+
+            if (filtered.length === 0) {{
+                const row = table.insertRow(-1);
+                row.innerHTML = '<td colspan="9" style="color: #95a5a6; text-align: center;">No recurring reminders found</td>';
+                return;
+            }}
+
+            for (const r of filtered) {{
+                const row = table.insertRow(-1);
+                const statusColor = r.active ? '#27ae60' : '#e74c3c';
+                const statusText = r.active ? 'Active' : 'Paused';
+                const toggleBtn = r.active
+                    ? `<button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8em;" onclick="pauseRecurring(${{r.id}})">Pause</button>`
+                    : `<button class="btn" style="padding: 4px 8px; font-size: 0.8em; background: #27ae60; color: white;" onclick="resumeRecurring(${{r.id}})">Resume</button>`;
+
+                // Format next occurrence
+                let nextStr = '-';
+                if (r.next_occurrence) {{
+                    const next = new Date(r.next_occurrence);
+                    nextStr = next.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric' }}) + ' ' +
+                              next.toLocaleTimeString('en-US', {{ hour: 'numeric', minute: '2-digit' }});
+                }}
+
+                row.innerHTML = `
+                    <td>${{r.id}}</td>
+                    <td>${{r.phone}}</td>
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{r.text}}">${{r.text}}</td>
+                    <td>${{r.pattern}}</td>
+                    <td>${{r.time || '-'}}</td>
+                    <td style="font-size: 0.85em;">${{r.timezone || '-'}}</td>
+                    <td><span style="color: ${{statusColor}}; font-weight: 500;">${{statusText}}</span></td>
+                    <td style="font-size: 0.85em;">${{nextStr}}</td>
+                    <td>
+                        ${{toggleBtn}}
+                        <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8em;" onclick="deleteRecurring(${{r.id}}, '${{r.text.replace(/'/g, "\\'").substring(0, 30)}}')">Delete</button>
+                    </td>
+                `;
+            }}
+        }}
+
+        async function pauseRecurring(id) {{
+            if (!confirm('Pause this recurring reminder?')) return;
+            try {{
+                const response = await fetch(`/admin/recurring/${{id}}/pause`, {{ method: 'POST' }});
+                const data = await response.json();
+                if (data.success) {{
+                    loadRecurring();
+                }} else {{
+                    alert('Failed to pause: ' + (data.detail || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function resumeRecurring(id) {{
+            if (!confirm('Resume this recurring reminder?')) return;
+            try {{
+                const response = await fetch(`/admin/recurring/${{id}}/resume`, {{ method: 'POST' }});
+                const data = await response.json();
+                if (data.success) {{
+                    loadRecurring();
+                }} else {{
+                    alert('Failed to resume: ' + (data.detail || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function deleteRecurring(id, text) {{
+            if (!confirm(`Delete recurring reminder "${{text}}"? This cannot be undone.`)) return;
+            try {{
+                const response = await fetch(`/admin/recurring/${{id}}`, {{ method: 'DELETE' }});
+                const data = await response.json();
+                if (data.success) {{
+                    loadRecurring();
+                }} else {{
+                    alert('Failed to delete: ' + (data.detail || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        // Filter handlers
+        document.getElementById('recurringPhoneFilter')?.addEventListener('input', renderRecurring);
+        document.getElementById('recurringStatusFilter')?.addEventListener('change', renderRecurring);
 
         async function cleanupIncomplete() {{
             if (!confirm('Delete all users who have not completed onboarding?')) return;

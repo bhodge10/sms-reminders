@@ -88,13 +88,16 @@
         
         .beta-badge {
             display: inline-block;
-            background: var(--success-green);
+            background: #FF6B35;
             color: white;
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-weight: 600;
+            padding: 14px 32px;
+            border-radius: 25px;
+            font-weight: 700;
             margin-bottom: 30px;
-            font-size: 14px;
+            font-size: 20px;
+            box-shadow: 0 4px 12px rgba(255, 107, 53, 0.4);
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
         
         .cta-button {
@@ -177,6 +180,51 @@
             font-weight: 700;
             color: var(--primary-blue);
             margin: 10px 0;
+        }
+        
+        /* Why Remyndrs Section */
+        .why-remyndrs {
+            padding: 80px 0;
+            background: white;
+        }
+        
+        .why-remyndrs h2 {
+            text-align: center;
+            font-size: 42px;
+            margin-bottom: 60px;
+            color: var(--text-dark);
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 50px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        
+        .feature {
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .feature-icon {
+            font-size: 60px;
+            margin-bottom: 25px;
+            display: block;
+        }
+        
+        .feature h3 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            color: var(--text-dark);
+            font-weight: 700;
+        }
+        
+        .feature p {
+            font-size: 16px;
+            color: #666;
+            line-height: 1.6;
         }
         
         /* How It Works */
@@ -391,7 +439,7 @@
                 display: none;
             }
             
-            .steps, .cases-grid {
+            .steps, .cases-grid, .features-grid {
                 grid-template-columns: 1fr;
             }
             
@@ -443,6 +491,51 @@
                     <p><strong>Scan with your phone camera</strong></p>
                     <p>or text directly:</p>
                     <div class="phone-number">(855) 552-1950</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Why Remyndrs Section -->
+    <section class="why-remyndrs">
+        <div class="container">
+            <h2>Why Remyndrs?</h2>
+            
+            <div class="features-grid">
+                <div class="feature">
+                    <span class="feature-icon">📱</span>
+                    <h3>No App Required</h3>
+                    <p>Works on any phone via SMS. No downloads, no accounts, no hassle. Just text like you normally would.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">🧠</span>
+                    <h3>Natural Language</h3>
+                    <p>Talk to Remyndrs like a friend. No commands to memorize. Just say what you need to remember.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">⏰</span>
+                    <h3>Smart Reminders</h3>
+                    <p>Set reminders for anything. Get reminded at exactly the right time, right to your phone.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">🔒</span>
+                    <h3>Private & Secure</h3>
+                    <p>Your data is encrypted and never shared. You can delete everything anytime.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">💡</span>
+                    <h3>Always Accessible</h3>
+                    <p>Works 24/7. No internet required beyond basic SMS. Perfect for anyone, any age.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">✨</span>
+                    <h3>Constantly Learning</h3>
+                    <p>We're in beta and actively improving based on user feedback. Help shape the future!</p>
                 </div>
             </div>
         </div>
@@ -570,22 +663,9 @@
                 <li>View all your data anytime (text "show all")</li>
                 <li>Delete specific reminders (text "delete [reminder]")</li>
                 <li>Delete your entire account (text "delete account")</li>
-                <li>Export your data (contact us at <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="31414358475052487143545c485f5543421f525e5c">[email&#160;protected]</a>)</li>
+                <li>Export your data (contact us at support@remyndrs.com class="__cf_email__" data-cfemail="3c4f494c4c534e487c4e59514552584e4f125f5351">[email&#160;protected]</a>)</li>
             </ul>
 
             <h3>Questions?</h3>
-            <p>Contact us at <strong>privacy@remyndrs.com</strong> or text "help" to (855) 552-1950</p>
-        </div>
-    </section>
-
-    <!-- CTA Section -->
-    <section class="cta-section">
-        <div class="container">
-            <h2>Ready to Remember Everything?</h2>
-            <p>Join our beta and never forget again</p>
-            <a href="sms:8555521950" class="cta-button cta-white">Text Us Now: (855) 552-1950</a>
-        </div>
-    </section>
-
-    <!-- Footer -->
-   
+            <p>Contact us at support@remyndrs.com class="__cf_email__" data-cfemail="f88b8d8888978a8cb88a9d9581969c8a8bd69b9795">[email&#160;protected]</a></strong> or text "Support: [your message here]..." to (855) 552-1950</p>
+        </di

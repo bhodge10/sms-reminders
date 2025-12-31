@@ -23,7 +23,13 @@ from fastapi import Depends
 from database import init_db, log_interaction, get_setting
 from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, mark_user_opted_out
 from models.memory import save_memory, get_memories, search_memories, delete_memory
-from models.reminder import save_reminder, get_user_reminders, search_pending_reminders, delete_reminder, get_last_sent_reminder, mark_reminder_snoozed
+from models.reminder import (
+    save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
+    get_last_sent_reminder, mark_reminder_snoozed, save_recurring_reminder,
+    get_recurring_reminders, delete_recurring_reminder, pause_recurring_reminder,
+    resume_recurring_reminder, save_reminder_with_local_time,
+    recalculate_pending_reminders_for_timezone, update_recurring_reminders_timezone
+)
 from models.list_model import (
     create_list, get_lists, get_list_by_name, get_list_items,
     add_list_item, mark_item_complete, mark_item_incomplete,
@@ -781,9 +787,249 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # TIMEZONE COMMANDS
+        # ==========================================
+        msg_upper = incoming_msg.upper().strip()
+
+        # Show current timezone
+        if msg_upper in ["MY TIMEZONE", "TIMEZONE", "MY TZ", "SHOW TIMEZONE"]:
+            user_tz = get_user_timezone(phone_number)
+            user_time = get_user_current_time(phone_number)
+            current_time_str = user_time.strftime('%I:%M %p on %A, %B %d').lstrip('0')
+
+            resp = MessagingResponse()
+            resp.message(f"Your timezone is set to: {user_tz}\n\nCurrent time: {current_time_str}\n\n(To change, text: TIMEZONE [city or timezone])")
+            log_interaction(phone_number, incoming_msg, f"Timezone: {user_tz}", "my_timezone", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Update timezone
+        if msg_upper.startswith("TIMEZONE ") or msg_upper.startswith("SET TIMEZONE "):
+            # Extract timezone string
+            if msg_upper.startswith("SET TIMEZONE "):
+                tz_input = incoming_msg[13:].strip()
+            else:
+                tz_input = incoming_msg[9:].strip()
+
+            # Try to parse the timezone
+            import pytz
+            from utils.timezone import parse_timezone_input
+
+            new_tz = parse_timezone_input(tz_input)
+
+            if new_tz:
+                # Update user's timezone
+                from models.user import update_user_timezone
+                update_user_timezone(phone_number, new_tz)
+
+                # Recalculate pending reminders
+                updated_count = recalculate_pending_reminders_for_timezone(phone_number, new_tz)
+
+                # Update recurring reminders timezone
+                recurring_count = update_recurring_reminders_timezone(phone_number, new_tz)
+
+                # Get new current time
+                tz = pytz.timezone(new_tz)
+                new_time = datetime.now(tz)
+                current_time_str = new_time.strftime('%I:%M %p').lstrip('0')
+
+                reply_parts = [f"Timezone updated to: {new_tz}"]
+                reply_parts.append(f"Current time: {current_time_str}")
+
+                if updated_count > 0:
+                    reply_parts.append(f"\n{updated_count} pending reminder(s) adjusted to new timezone.")
+                if recurring_count > 0:
+                    reply_parts.append(f"{recurring_count} recurring reminder(s) updated.")
+
+                resp = MessagingResponse()
+                resp.message("\n".join(reply_parts))
+                log_interaction(phone_number, incoming_msg, f"Timezone updated to {new_tz}", "timezone_update", True)
+                return Response(content=str(resp), media_type="application/xml")
+            else:
+                resp = MessagingResponse()
+                resp.message(f"Sorry, I couldn't recognize '{tz_input}' as a timezone.\n\nTry: Pacific, Eastern, Central, Mountain, or a city name like 'Los Angeles' or 'New York'.")
+                log_interaction(phone_number, incoming_msg, f"Unrecognized timezone: {tz_input}", "timezone_update", False)
+                return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # RECURRING REMINDER COMMANDS
+        # ==========================================
+
+        # Show all recurring reminders
+        if msg_upper in ["MY RECURRING", "MY RECURRING REMINDERS", "RECURRING", "RECURRING REMINDERS", "SHOW RECURRING"]:
+            recurring_list = get_recurring_reminders(phone_number, include_inactive=True)
+
+            if not recurring_list:
+                resp = MessagingResponse()
+                resp.message("You don't have any recurring reminders set up yet.\n\nTry: 'Remind me every day at 7pm to take medicine'")
+                log_interaction(phone_number, incoming_msg, "No recurring reminders", "my_recurring", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Format list
+            user_tz_str = get_user_timezone(phone_number)
+            tz = pytz.timezone(user_tz_str)
+            lines = ["Your recurring reminders:\n"]
+
+            for i, r in enumerate(recurring_list, 1):
+                # Parse time for display
+                time_parts = r['reminder_time'].split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1].split(':')[0]) if ':' in time_parts[1] else int(time_parts[1])
+                display_time = datetime(2000, 1, 1, hour, minute).strftime('%I:%M %p').lstrip('0')
+
+                # Format pattern
+                if r['recurrence_type'] == 'daily':
+                    pattern = "Every day"
+                elif r['recurrence_type'] == 'weekly':
+                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    pattern = f"Every {days[r['recurrence_day']]}"
+                elif r['recurrence_type'] == 'weekdays':
+                    pattern = "Weekdays"
+                elif r['recurrence_type'] == 'weekends':
+                    pattern = "Weekends"
+                elif r['recurrence_type'] == 'monthly':
+                    suffix = 'th'
+                    if r['recurrence_day'] in [1, 21, 31]:
+                        suffix = 'st'
+                    elif r['recurrence_day'] in [2, 22]:
+                        suffix = 'nd'
+                    elif r['recurrence_day'] in [3, 23]:
+                        suffix = 'rd'
+                    pattern = f"Monthly on the {r['recurrence_day']}{suffix}"
+
+                status = ""
+                if not r['active']:
+                    status = " (PAUSED)"
+
+                lines.append(f"{i}. {r['reminder_text']}")
+                lines.append(f"   {pattern} at {display_time}{status}")
+
+                # Show next occurrence if available and active
+                if r['active'] and r['next_occurrence']:
+                    try:
+                        next_dt = datetime.fromisoformat(r['next_occurrence'].replace('Z', '+00:00'))
+                        if next_dt.tzinfo is None:
+                            next_dt = pytz.UTC.localize(next_dt)
+                        next_local = next_dt.astimezone(tz)
+                        next_str = next_local.strftime('%a, %b %d at %I:%M %p').replace(' 0', ' ')
+                        lines.append(f"   Next: {next_str}")
+                    except:
+                        pass
+
+                lines.append("")  # Blank line between entries
+
+            lines.append("(Text 'STOP RECURRING [#]' to cancel, 'PAUSE RECURRING [#]' to pause)")
+
+            resp = MessagingResponse()
+            resp.message("\n".join(lines))
+            log_interaction(phone_number, incoming_msg, f"Listed {len(recurring_list)} recurring reminders", "my_recurring", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Stop/Delete recurring reminder
+        if msg_upper.startswith("STOP RECURRING ") or msg_upper.startswith("DELETE RECURRING ") or msg_upper.startswith("CANCEL RECURRING "):
+            # Extract number
+            parts = incoming_msg.split()
+            if len(parts) >= 3:
+                try:
+                    num = int(parts[2])
+                    recurring_list = get_recurring_reminders(phone_number, include_inactive=True)
+
+                    if num < 1 or num > len(recurring_list):
+                        resp = MessagingResponse()
+                        resp.message(f"Please enter a number between 1 and {len(recurring_list)}.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    recurring = recurring_list[num - 1]
+                    if delete_recurring_reminder(recurring['id'], phone_number):
+                        resp = MessagingResponse()
+                        resp.message(f"Deleted recurring reminder: {recurring['reminder_text']}\n\nYou won't receive any more reminders for this.")
+                        log_interaction(phone_number, incoming_msg, f"Deleted recurring {recurring['id']}", "stop_recurring", True)
+                    else:
+                        resp = MessagingResponse()
+                        resp.message("Couldn't delete that recurring reminder.")
+                        log_interaction(phone_number, incoming_msg, "Delete failed", "stop_recurring", False)
+                    return Response(content=str(resp), media_type="application/xml")
+                except ValueError:
+                    pass
+
+            resp = MessagingResponse()
+            resp.message("Please specify which recurring reminder to stop.\n\nText 'MY RECURRING' to see the list, then 'STOP RECURRING [number]'.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Pause recurring reminder
+        if msg_upper.startswith("PAUSE RECURRING "):
+            parts = incoming_msg.split()
+            if len(parts) >= 3:
+                try:
+                    num = int(parts[2])
+                    recurring_list = get_recurring_reminders(phone_number, include_inactive=True)
+
+                    if num < 1 or num > len(recurring_list):
+                        resp = MessagingResponse()
+                        resp.message(f"Please enter a number between 1 and {len(recurring_list)}.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    recurring = recurring_list[num - 1]
+                    if not recurring['active']:
+                        resp = MessagingResponse()
+                        resp.message(f"That reminder is already paused. Text 'RESUME RECURRING {num}' to resume it.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    if pause_recurring_reminder(recurring['id'], phone_number):
+                        resp = MessagingResponse()
+                        resp.message(f"Paused: {recurring['reminder_text']}\n\nText 'RESUME RECURRING {num}' when you want to restart it.")
+                        log_interaction(phone_number, incoming_msg, f"Paused recurring {recurring['id']}", "pause_recurring", True)
+                    else:
+                        resp = MessagingResponse()
+                        resp.message("Couldn't pause that recurring reminder.")
+                    return Response(content=str(resp), media_type="application/xml")
+                except ValueError:
+                    pass
+
+            resp = MessagingResponse()
+            resp.message("Please specify which recurring reminder to pause.\n\nText 'MY RECURRING' to see the list.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Resume recurring reminder
+        if msg_upper.startswith("RESUME RECURRING "):
+            parts = incoming_msg.split()
+            if len(parts) >= 3:
+                try:
+                    num = int(parts[2])
+                    recurring_list = get_recurring_reminders(phone_number, include_inactive=True)
+
+                    if num < 1 or num > len(recurring_list):
+                        resp = MessagingResponse()
+                        resp.message(f"Please enter a number between 1 and {len(recurring_list)}.")
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    recurring = recurring_list[num - 1]
+                    if recurring['active']:
+                        resp = MessagingResponse()
+                        resp.message(f"That reminder is already active!")
+                        return Response(content=str(resp), media_type="application/xml")
+
+                    if resume_recurring_reminder(recurring['id'], phone_number):
+                        # Generate next occurrence
+                        from tasks.reminder_tasks import generate_first_occurrence
+                        generate_first_occurrence(recurring['id'])
+
+                        resp = MessagingResponse()
+                        resp.message(f"Resumed: {recurring['reminder_text']}\n\nYou'll start receiving reminders again.")
+                        log_interaction(phone_number, incoming_msg, f"Resumed recurring {recurring['id']}", "resume_recurring", True)
+                    else:
+                        resp = MessagingResponse()
+                        resp.message("Couldn't resume that recurring reminder.")
+                    return Response(content=str(resp), media_type="application/xml")
+                except ValueError:
+                    pass
+
+            resp = MessagingResponse()
+            resp.message("Please specify which recurring reminder to resume.\n\nText 'MY RECURRING' to see the list.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # DELETE ALL COMMANDS (separated by type)
         # ==========================================
-        msg_upper = incoming_msg.upper()
 
         # Delete all memories only
         if msg_upper in ["DELETE ALL MEMORIES", "DELETE ALL MY MEMORIES", "FORGET ALL MEMORIES", "FORGET ALL MY MEMORIES"]:
@@ -1141,7 +1387,14 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 utc_dt = aware_dt.astimezone(pytz.UTC)
                 reminder_date_utc = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-                save_reminder(phone_number, reminder_text, reminder_date_utc)
+                # Extract local time for timezone recalculation support
+                local_time_str = naive_dt.strftime('%H:%M')
+
+                # Use save_reminder_with_local_time for timezone recalculation support
+                save_reminder_with_local_time(
+                    phone_number, reminder_text, reminder_date_utc,
+                    local_time_str, user_tz_str
+                )
             except Exception as e:
                 logger.error(f"Error converting reminder time to UTC: {e}")
                 save_reminder(phone_number, reminder_text, reminder_date)
@@ -1233,6 +1486,123 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 logger.error(f"Error setting relative reminder: {e}, ai_response={ai_response}")
                 reply_text = "Sorry, I couldn't set that reminder. Please try again."
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", False)
+
+        elif ai_response["action"] == "reminder_recurring":
+            # Handle recurring reminders (e.g., "every day at 7pm", "every Sunday at 6pm")
+            reminder_text = ai_response.get("reminder_text", "your reminder")
+            recurrence_type = ai_response.get("recurrence_type")
+            recurrence_day = ai_response.get("recurrence_day")
+            time_str = ai_response.get("time")  # HH:MM format
+
+            # Check for sensitive data (staging only)
+            if ENVIRONMENT == "staging":
+                sensitive_check = detect_sensitive_data(reminder_text)
+                if sensitive_check['has_sensitive']:
+                    log_security_event('SENSITIVE_DATA_BLOCKED', {
+                        'phone': phone_number,
+                        'action': 'reminder_recurring',
+                        'types': sensitive_check['types']
+                    })
+                    reply_text = get_sensitive_data_warning()
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_blocked", False)
+                    return reply_text
+
+            try:
+                # Validate required fields
+                if not recurrence_type or not time_str:
+                    reply_text = "Sorry, I couldn't understand that recurring reminder. Please try again with a specific pattern like 'every day at 7pm'."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    return reply_text
+
+                # Validate recurrence_type
+                valid_types = ['daily', 'weekly', 'weekdays', 'weekends', 'monthly']
+                if recurrence_type not in valid_types:
+                    reply_text = f"Sorry, I don't recognize that recurrence pattern. Try: daily, weekly, weekdays, weekends, or monthly."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    return reply_text
+
+                # For weekly and monthly, validate recurrence_day
+                if recurrence_type == 'weekly' and recurrence_day is None:
+                    reply_text = "Please specify which day of the week (e.g., 'every Sunday at 6pm')."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    return reply_text
+
+                if recurrence_type == 'monthly' and recurrence_day is None:
+                    reply_text = "Please specify which day of the month (e.g., 'every 1st at noon')."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    return reply_text
+
+                # Get user's timezone
+                user_tz_str = get_user_timezone(phone_number)
+
+                # Save the recurring reminder
+                recurring_id = save_recurring_reminder(
+                    phone_number=phone_number,
+                    reminder_text=reminder_text,
+                    recurrence_type=recurrence_type,
+                    recurrence_day=recurrence_day,
+                    reminder_time=time_str,
+                    timezone=user_tz_str
+                )
+
+                if not recurring_id:
+                    reply_text = "Sorry, I couldn't save that recurring reminder. Please try again."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    return reply_text
+
+                # Generate the first occurrence immediately
+                from tasks.reminder_tasks import generate_first_occurrence
+                next_occurrence = generate_first_occurrence(recurring_id)
+
+                # Format confirmation message
+                # Parse time for display
+                hour, minute = map(int, time_str.split(':'))
+                display_time = datetime(2000, 1, 1, hour, minute).strftime('%I:%M %p').lstrip('0')
+
+                # Format recurrence pattern for display
+                if recurrence_type == 'daily':
+                    pattern_text = "every day"
+                elif recurrence_type == 'weekly':
+                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    pattern_text = f"every {days[recurrence_day]}"
+                elif recurrence_type == 'weekdays':
+                    pattern_text = "every weekday"
+                elif recurrence_type == 'weekends':
+                    pattern_text = "every weekend"
+                elif recurrence_type == 'monthly':
+                    # Add ordinal suffix
+                    suffix = 'th'
+                    if recurrence_day in [1, 21, 31]:
+                        suffix = 'st'
+                    elif recurrence_day in [2, 22]:
+                        suffix = 'nd'
+                    elif recurrence_day in [3, 23]:
+                        suffix = 'rd'
+                    pattern_text = f"on the {recurrence_day}{suffix} of every month"
+
+                reply_text = f"Got it! I'll remind you {pattern_text} at {display_time} to {reminder_text}.\n\n"
+
+                if next_occurrence:
+                    # Format next occurrence
+                    tz = pytz.timezone(user_tz_str)
+                    if isinstance(next_occurrence, str):
+                        next_dt = datetime.fromisoformat(next_occurrence.replace('Z', '+00:00'))
+                    else:
+                        next_dt = next_occurrence
+                    if next_dt.tzinfo is None:
+                        next_dt = pytz.UTC.localize(next_dt)
+                    next_local = next_dt.astimezone(tz)
+                    next_str = next_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')
+                    reply_text += f"Next reminder: {next_str}\n\n"
+
+                reply_text += "(Text 'MY RECURRING' to see all, 'STOP RECURRING [#]' to cancel)"
+
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", True)
+
+            except Exception as e:
+                logger.error(f"Error setting recurring reminder: {e}, ai_response={ai_response}")
+                reply_text = "Sorry, I couldn't set that recurring reminder. Please try again."
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
 
         # ==========================================
         # LIST ACTION HANDLERS
