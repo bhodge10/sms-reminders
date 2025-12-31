@@ -916,15 +916,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
                 lines.append("")  # Blank line between entries
 
-            lines.append("(Text 'STOP RECURRING [#]' to cancel, 'PAUSE RECURRING [#]' to pause)")
+            lines.append("(Text 'DELETE RECURRING [#]' to remove, 'PAUSE RECURRING [#]' to pause)")
 
             resp = MessagingResponse()
             resp.message("\n".join(lines))
             log_interaction(phone_number, incoming_msg, f"Listed {len(recurring_list)} recurring reminders", "my_recurring", True)
             return Response(content=str(resp), media_type="application/xml")
 
-        # Stop/Delete recurring reminder
-        if msg_upper.startswith("STOP RECURRING ") or msg_upper.startswith("DELETE RECURRING ") or msg_upper.startswith("CANCEL RECURRING "):
+        # Delete recurring reminder (avoid "STOP" prefix - conflicts with carrier opt-out)
+        if msg_upper.startswith("DELETE RECURRING ") or msg_upper.startswith("CANCEL RECURRING ") or msg_upper.startswith("REMOVE RECURRING "):
             # Extract number
             parts = incoming_msg.split()
             if len(parts) >= 3:
@@ -951,7 +951,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     pass
 
             resp = MessagingResponse()
-            resp.message("Please specify which recurring reminder to stop.\n\nText 'MY RECURRING' to see the list, then 'STOP RECURRING [number]'.")
+            resp.message("Please specify which recurring reminder to delete.\n\nText 'MY RECURRING' to see the list, then 'DELETE RECURRING [number]'.")
             return Response(content=str(resp), media_type="application/xml")
 
         # Pause recurring reminder
@@ -1594,7 +1594,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     next_str = next_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')
                     reply_text += f"Next reminder: {next_str}\n\n"
 
-                reply_text += "(Text 'MY RECURRING' to see all, 'STOP RECURRING [#]' to cancel)"
+                reply_text += "(Text 'MY RECURRING' to see all, 'DELETE RECURRING [#]' to remove)"
 
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", True)
 
