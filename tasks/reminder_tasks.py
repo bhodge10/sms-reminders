@@ -136,24 +136,42 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
             track_reminder_delivery(reminder_id, "failed", str(exc))
             raise self.retry(exc=exc)
 
-        # SMS sent successfully - mark as sent IN THE SAME TRANSACTION
-        # This ensures the update happens while we still hold the lock
+        # SMS sent successfully - mark as sent
+        # Release the FOR UPDATE lock first, then use a fresh connection to update
+        # This avoids any connection state issues with the long-held transaction
         try:
-            c.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
-            conn.commit()
-            logger.info(f"Marked reminder {reminder_id} as sent")
+            conn.commit()  # Release the FOR UPDATE lock
+            logger.info(f"Released lock for reminder {reminder_id}, now marking as sent")
         except Exception as e:
-            # Even if commit fails, try again with a fresh connection
-            logger.error(f"Failed to mark reminder {reminder_id} as sent in transaction: {e}")
-            conn.rollback()
-            # Last-ditch effort with new connection
-            try:
-                mark_reminder_sent(reminder_id)
-            except Exception as e2:
-                logger.error(f"Also failed with separate connection: {e2}")
-                # At this point, SMS was sent but we couldn't mark it
-                # The stale claim release will eventually re-trigger it
-                # But at least we tried everything
+            logger.error(f"Failed to release lock for reminder {reminder_id}: {e}")
+
+        # Use a completely fresh connection to mark as sent
+        # This ensures no transaction state issues
+        from database import get_db_connection as get_fresh_conn, return_db_connection as return_fresh_conn
+        mark_conn = None
+        try:
+            mark_conn = get_fresh_conn()
+            mark_cursor = mark_conn.cursor()
+            mark_cursor.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
+            mark_conn.commit()
+
+            # Verify the update actually persisted
+            mark_cursor.execute('SELECT sent FROM reminders WHERE id = %s', (reminder_id,))
+            verify_result = mark_cursor.fetchone()
+            if verify_result and verify_result[0]:
+                logger.info(f"[VERIFIED] Reminder {reminder_id} marked as sent (sent={verify_result[0]})")
+            else:
+                logger.error(f"[VERIFY FAILED] Reminder {reminder_id} sent flag is still {verify_result}")
+                # Try one more time with explicit transaction
+                mark_cursor.execute('BEGIN')
+                mark_cursor.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
+                mark_cursor.execute('COMMIT')
+                logger.info(f"Retried with explicit BEGIN/COMMIT for reminder {reminder_id}")
+        except Exception as e:
+            logger.exception(f"Failed to mark reminder {reminder_id} as sent: {e}")
+        finally:
+            if mark_conn:
+                return_fresh_conn(mark_conn)
 
     except Exception as outer_exc:
         # Catch-all for any unexpected errors
