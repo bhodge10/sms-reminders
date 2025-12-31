@@ -811,7 +811,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 tz_input = incoming_msg[9:].strip()
 
             # Try to parse the timezone
-            import pytz
             from utils.timezone import parse_timezone_input
 
             new_tz = parse_timezone_input(tz_input)
