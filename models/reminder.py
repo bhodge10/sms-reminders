@@ -627,6 +627,12 @@ def delete_recurring_reminder(recurring_id, phone_number):
     try:
         conn = get_db_connection()
         c = conn.cursor()
+
+        # Debug: Check what's in the database first
+        c.execute('SELECT id, phone_number FROM recurring_reminders WHERE id = %s', (recurring_id,))
+        existing = c.fetchone()
+        logger.info(f"Delete attempt: recurring_id={recurring_id}, phone={phone_number[-4:]}, existing={existing}")
+
         c.execute(
             'DELETE FROM recurring_reminders WHERE id = %s AND phone_number = %s',
             (recurring_id, phone_number)
@@ -635,6 +641,8 @@ def delete_recurring_reminder(recurring_id, phone_number):
         conn.commit()
         if success:
             logger.info(f"Deleted recurring reminder {recurring_id}")
+        else:
+            logger.warning(f"Delete failed for recurring {recurring_id} - rowcount=0")
         return success
     except Exception as e:
         logger.error(f"Error deleting recurring reminder: {e}")
