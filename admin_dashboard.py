@@ -1079,6 +1079,54 @@ async def mark_reminder_as_sent(reminder_id: int, admin: str = Depends(verify_ad
             return_db_connection(conn)
 
 
+@router.post("/admin/reminders/cleanup-stuck")
+async def cleanup_stuck_reminders(admin: str = Depends(verify_admin)):
+    """
+    Mark all old unsent reminders as sent to prevent duplicate sends.
+    This cleans up reminders that are more than 30 minutes past their scheduled time.
+    Use this before resuming production after fixing duplicate reminder bugs.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Find and mark all old stuck reminders (more than 30 min past due)
+        c.execute("""
+            UPDATE reminders
+            SET sent = TRUE, claimed_at = NULL
+            WHERE sent = FALSE
+              AND reminder_date < NOW() - INTERVAL '30 minutes'
+            RETURNING id, phone_number, reminder_text, reminder_date
+        """)
+        cleaned = c.fetchall()
+        conn.commit()
+
+        cleaned_list = [
+            {
+                "id": r[0],
+                "phone": r[1][-4:] if r[1] else "????",
+                "text": r[2][:50] if r[2] else "",
+                "scheduled": r[3].isoformat() if r[3] else None
+            }
+            for r in cleaned
+        ]
+
+        logger.warning(f"Admin cleaned up {len(cleaned)} stuck reminders: {[r['id'] for r in cleaned_list]}")
+
+        return {
+            "success": True,
+            "cleaned_count": len(cleaned),
+            "cleaned_reminders": cleaned_list
+        }
+    except Exception as e:
+        logger.error(f"Error cleaning stuck reminders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 # =====================================================
 # PUBLIC CHANGELOG / UPDATES PAGE
 # =====================================================
