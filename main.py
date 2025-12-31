@@ -398,8 +398,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 user_time = get_user_current_time(phone_number)
                 user_tz = get_user_timezone(phone_number)
 
+                # Clean up the pending_time - remove any existing AM/PM
+                clean_time = pending_time.upper().replace("AM", "").replace("PM", "").replace("A.M.", "").replace("P.M.", "").strip()
+
                 # Parse the time
-                time_parts = pending_time.split(":")
+                time_parts = clean_time.split(":")
                 hour = int(time_parts[0])
                 minute = int(time_parts[1]) if len(time_parts) > 1 else 0
 
