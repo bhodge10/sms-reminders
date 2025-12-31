@@ -45,12 +45,16 @@ def check_and_send_reminders(self):
 
         # Dispatch individual send tasks for each reminder
         for reminder in reminders:
-            logger.info(f"Dispatching reminder {reminder['id']} for {reminder['phone_number'][-4:]}: {reminder['reminder_text'][:30]}")
-            send_single_reminder.delay(
-                reminder_id=reminder["id"],
-                phone_number=reminder["phone_number"],
-                reminder_text=reminder["reminder_text"],
-            )
+            try:
+                logger.info(f"Dispatching reminder {reminder['id']} for {reminder['phone_number'][-4:]}: {reminder['reminder_text'][:30]}")
+                result = send_single_reminder.delay(
+                    reminder_id=reminder["id"],
+                    phone_number=reminder["phone_number"],
+                    reminder_text=reminder["reminder_text"],
+                )
+                logger.info(f"[DISPATCH SUCCESS] reminder {reminder['id']} queued with task_id={result.id}")
+            except Exception as dispatch_err:
+                logger.exception(f"[DISPATCH FAILED] reminder {reminder['id']}: {dispatch_err}")
 
         return {"processed": len(reminders)}
 
@@ -79,9 +83,25 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
     to prevent race conditions where mark_reminder_sent fails and the reminder
     gets picked up again.
     """
+    # Log immediately at task start - before ANY other operations
+    # Use defensive logging in case phone_number is None
+    phone_suffix = phone_number[-4:] if phone_number else "NONE"
+    logger.info(f"[TASK START] send_single_reminder received: reminder_id={reminder_id}, phone={phone_suffix}")
+
+    # Validate inputs early
+    if not phone_number:
+        logger.error(f"[INVALID INPUT] reminder_id={reminder_id} has no phone_number!")
+        return {"reminder_id": reminder_id, "status": "error", "reason": "no_phone"}
+
     from database import get_db_connection, return_db_connection
 
-    conn = get_db_connection()
+    conn = None
+    try:
+        conn = get_db_connection()
+        logger.info(f"[DB] Got connection for reminder {reminder_id}")
+    except Exception as e:
+        logger.error(f"[DB ERROR] Failed to get connection for reminder {reminder_id}: {e}")
+        raise self.retry(exc=e)
     try:
         c = conn.cursor()
 
@@ -135,8 +155,18 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
                 # The stale claim release will eventually re-trigger it
                 # But at least we tried everything
 
+    except Exception as outer_exc:
+        # Catch-all for any unexpected errors
+        logger.exception(f"[UNEXPECTED ERROR] in send_single_reminder for {reminder_id}: {outer_exc}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        raise self.retry(exc=outer_exc)
     finally:
-        return_db_connection(conn)
+        if conn:
+            return_db_connection(conn)
 
     # These are nice-to-have, don't retry if they fail
     try:
@@ -150,7 +180,7 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
     except Exception as e:
         logger.error(f"Failed to track delivery metrics: {e}")
 
-    logger.info(f"Reminder {reminder_id} sent successfully")
+    logger.info(f"[TASK COMPLETE] Reminder {reminder_id} sent successfully")
     return {
         "reminder_id": reminder_id,
         "status": "sent",
