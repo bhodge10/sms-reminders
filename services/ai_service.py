@@ -463,9 +463,16 @@ Examples of multi-command messages:
 - "Check off eggs and add butter to grocery list" → 2 actions: complete_item(item_text="eggs") + add_to_list(item_text="butter")
 - "Delete my dentist reminder and set a new one for tomorrow at 9am" → 2 actions: delete_reminder + reminder
 
-For MULTIPLE COMMANDS, return:
+RECURRING/MULTI-DAY REMINDERS:
+When the user asks for reminders "for the next X days" at a specific time, create MULTIPLE separate reminder actions - one for EACH day.
+- "Remind me for the next 3 days at 11am to take medication" → 3 separate reminder actions for day 1, day 2, and day 3, each at 11:00 AM
+- "For the next 5 days at 8pm remind me to call mom" → 5 separate reminder actions, one for each of the next 5 days at 8:00 PM
+- "Every day for the next week at 9am remind me to exercise" → 7 separate reminder actions at 9:00 AM each day
+IMPORTANT: "for the next X days" means X separate reminders on consecutive days, NOT "in X days". Each reminder must have the specified time.
+
+For MULTIPLE COMMANDS or RECURRING REMINDERS, return:
 {{
-    "multiple": true,
+    "action": "multiple",
     "actions": [
         {{ "action": "first_action", ... }},
         {{ "action": "second_action", ... }}
