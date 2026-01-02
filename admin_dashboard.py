@@ -1605,6 +1605,399 @@ async def reopen_support_ticket(ticket_id: int, admin: str = Depends(verify_admi
 
 
 # =====================================================
+# CUSTOMER SERVICE API ENDPOINTS
+# =====================================================
+
+@router.get("/admin/cs/search")
+async def cs_search_customers(
+    q: str = "",
+    admin: str = Depends(verify_admin)
+):
+    """Search customers by phone number or name"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if not q or len(q) < 2:
+            return {"customers": [], "message": "Enter at least 2 characters to search"}
+
+        # Search by phone (partial) or name
+        search_pattern = f"%{q}%"
+        c.execute('''
+            SELECT
+                phone_number,
+                first_name,
+                last_name,
+                COALESCE(premium_status, 'free') as tier,
+                subscription_status,
+                created_at,
+                last_active_at,
+                timezone,
+                onboarding_complete
+            FROM users
+            WHERE phone_number LIKE %s
+               OR LOWER(first_name) LIKE LOWER(%s)
+               OR LOWER(last_name) LIKE LOWER(%s)
+            ORDER BY last_active_at DESC NULLS LAST
+            LIMIT 50
+        ''', (search_pattern, search_pattern, search_pattern))
+
+        results = c.fetchall()
+        customers = []
+        for row in results:
+            customers.append({
+                "phone": row[0],
+                "phone_masked": f"***{row[0][-4:]}" if row[0] else None,
+                "first_name": row[1],
+                "last_name": row[2],
+                "tier": row[3],
+                "subscription_status": row[4],
+                "created_at": str(row[5]) if row[5] else None,
+                "last_active_at": str(row[6]) if row[6] else None,
+                "timezone": row[7],
+                "onboarding_complete": row[8],
+            })
+
+        return {"customers": customers, "count": len(customers)}
+    except Exception as e:
+        logger.error(f"CS search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/cs/customer/{phone_number}")
+async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin)):
+    """Get full customer profile"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Get user info
+        c.execute('''
+            SELECT
+                phone_number, first_name, last_name, email, zip_code, timezone,
+                onboarding_complete, created_at, premium_status, premium_since,
+                subscription_status, stripe_customer_id, stripe_subscription_id,
+                last_active_at, total_messages
+            FROM users WHERE phone_number = %s
+        ''', (phone_number,))
+        user = c.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        # Get counts
+        c.execute('SELECT COUNT(*) FROM reminders WHERE phone_number = %s', (phone_number,))
+        reminder_count = c.fetchone()[0]
+
+        c.execute('SELECT COUNT(*) FROM reminders WHERE phone_number = %s AND sent = FALSE', (phone_number,))
+        pending_reminders = c.fetchone()[0]
+
+        c.execute('SELECT COUNT(*) FROM lists WHERE phone_number = %s', (phone_number,))
+        list_count = c.fetchone()[0]
+
+        c.execute('SELECT COUNT(*) FROM memories WHERE phone_number = %s', (phone_number,))
+        memory_count = c.fetchone()[0]
+
+        c.execute('SELECT COUNT(*) FROM recurring_reminders WHERE phone_number = %s AND is_active = TRUE', (phone_number,))
+        recurring_count = c.fetchone()[0]
+
+        # Get recent messages
+        c.execute('''
+            SELECT message_in, message_out, intent, created_at
+            FROM logs WHERE phone_number = %s
+            ORDER BY created_at DESC LIMIT 20
+        ''', (phone_number,))
+        recent_messages = []
+        for row in c.fetchall():
+            recent_messages.append({
+                "message_in": row[0],
+                "message_out": row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                "intent": row[2],
+                "timestamp": str(row[3])
+            })
+
+        # Get CS notes
+        c.execute('''
+            SELECT note, created_by, created_at
+            FROM customer_notes WHERE phone_number = %s
+            ORDER BY created_at DESC
+        ''', (phone_number,))
+        notes = []
+        for row in c.fetchall():
+            notes.append({
+                "note": row[0],
+                "created_by": row[1],
+                "created_at": str(row[2])
+            })
+
+        return {
+            "phone": user[0],
+            "phone_masked": f"***{user[0][-4:]}",
+            "first_name": user[1],
+            "last_name": user[2],
+            "email": user[3],
+            "zip_code": user[4],
+            "timezone": user[5],
+            "onboarding_complete": user[6],
+            "created_at": str(user[7]) if user[7] else None,
+            "tier": user[8] or 'free',
+            "premium_since": str(user[9]) if user[9] else None,
+            "subscription_status": user[10],
+            "stripe_customer_id": user[11],
+            "stripe_subscription_id": user[12],
+            "last_active_at": str(user[13]) if user[13] else None,
+            "total_messages": user[14] or 0,
+            "stats": {
+                "reminders": reminder_count,
+                "pending_reminders": pending_reminders,
+                "lists": list_count,
+                "memories": memory_count,
+                "recurring_reminders": recurring_count,
+            },
+            "recent_messages": recent_messages,
+            "notes": notes,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CS get customer error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/cs/customer/{phone_number}/reminders")
+async def cs_get_customer_reminders(phone_number: str, admin: str = Depends(verify_admin)):
+    """Get customer's reminders"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT id, reminder_text, reminder_date, sent, recurring_id, created_at
+            FROM reminders WHERE phone_number = %s
+            ORDER BY reminder_date DESC LIMIT 50
+        ''', (phone_number,))
+
+        reminders = []
+        for row in c.fetchall():
+            reminders.append({
+                "id": row[0],
+                "text": row[1],
+                "date": str(row[2]),
+                "sent": row[3],
+                "is_recurring": row[4] is not None,
+                "created_at": str(row[5])
+            })
+
+        return {"reminders": reminders}
+    except Exception as e:
+        logger.error(f"CS get reminders error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/cs/customer/{phone_number}/lists")
+async def cs_get_customer_lists(phone_number: str, admin: str = Depends(verify_admin)):
+    """Get customer's lists and items"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT id, list_name, created_at FROM lists
+            WHERE phone_number = %s ORDER BY created_at DESC
+        ''', (phone_number,))
+
+        lists = []
+        for row in c.fetchall():
+            list_id = row[0]
+            c.execute('''
+                SELECT item_text, completed FROM list_items
+                WHERE list_id = %s ORDER BY created_at DESC
+            ''', (list_id,))
+            items = [{"text": i[0], "completed": i[1]} for i in c.fetchall()]
+
+            lists.append({
+                "id": list_id,
+                "name": row[1],
+                "created_at": str(row[2]),
+                "items": items
+            })
+
+        return {"lists": lists}
+    except Exception as e:
+        logger.error(f"CS get lists error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/cs/customer/{phone_number}/memories")
+async def cs_get_customer_memories(phone_number: str, admin: str = Depends(verify_admin)):
+    """Get customer's memories"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT id, memory_text, created_at FROM memories
+            WHERE phone_number = %s ORDER BY created_at DESC LIMIT 50
+        ''', (phone_number,))
+
+        memories = []
+        for row in c.fetchall():
+            memories.append({
+                "id": row[0],
+                "text": row[1],
+                "created_at": str(row[2])
+            })
+
+        return {"memories": memories}
+    except Exception as e:
+        logger.error(f"CS get memories error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+class UpdateTierRequest(BaseModel):
+    tier: str
+    reason: str = ""
+
+
+@router.post("/admin/cs/customer/{phone_number}/tier")
+async def cs_update_customer_tier(
+    phone_number: str,
+    request: UpdateTierRequest,
+    admin: str = Depends(verify_admin)
+):
+    """Update customer's subscription tier (manual override)"""
+    conn = None
+    try:
+        if request.tier not in ['free', 'premium', 'family']:
+            raise HTTPException(status_code=400, detail="Invalid tier")
+
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Update tier
+        if request.tier == 'free':
+            c.execute('''
+                UPDATE users SET
+                    premium_status = %s,
+                    subscription_status = 'manual'
+                WHERE phone_number = %s
+            ''', (request.tier, phone_number))
+        else:
+            c.execute('''
+                UPDATE users SET
+                    premium_status = %s,
+                    premium_since = COALESCE(premium_since, CURRENT_TIMESTAMP),
+                    subscription_status = 'manual'
+                WHERE phone_number = %s
+            ''', (request.tier, phone_number))
+
+        # Add note about the change
+        c.execute('''
+            INSERT INTO customer_notes (phone_number, note, created_by)
+            VALUES (%s, %s, %s)
+        ''', (phone_number, f"Tier changed to {request.tier}. Reason: {request.reason or 'Not specified'}", admin))
+
+        conn.commit()
+        logger.info(f"CS: {admin} changed {phone_number[-4:]} tier to {request.tier}")
+
+        return {"message": f"Tier updated to {request.tier}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CS update tier error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+class AddNoteRequest(BaseModel):
+    note: str
+
+
+@router.post("/admin/cs/customer/{phone_number}/notes")
+async def cs_add_customer_note(
+    phone_number: str,
+    request: AddNoteRequest,
+    admin: str = Depends(verify_admin)
+):
+    """Add a note to customer's record"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            INSERT INTO customer_notes (phone_number, note, created_by)
+            VALUES (%s, %s, %s)
+        ''', (phone_number, request.note, admin))
+
+        conn.commit()
+        logger.info(f"CS: {admin} added note for {phone_number[-4:]}")
+
+        return {"message": "Note added"}
+    except Exception as e:
+        logger.error(f"CS add note error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.delete("/admin/cs/customer/{phone_number}/reminder/{reminder_id}")
+async def cs_delete_reminder(
+    phone_number: str,
+    reminder_id: int,
+    admin: str = Depends(verify_admin)
+):
+    """Delete a customer's reminder"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            DELETE FROM reminders WHERE id = %s AND phone_number = %s
+        ''', (reminder_id, phone_number))
+
+        if c.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Reminder not found")
+
+        conn.commit()
+        logger.info(f"CS: {admin} deleted reminder {reminder_id} for {phone_number[-4:]}")
+
+        return {"message": "Reminder deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CS delete reminder error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
 # DASHBOARD UI
 # =====================================================
 
@@ -2203,6 +2596,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <a href="#costs">Costs</a>
         <a href="#conversations">Conversations</a>
         <a href="#recurring">Recurring</a>
+        <a href="#customer-service">Customer Service</a>
     </div>
 
     <h2 id="overview" class="section-anchor" style="margin-top: 0;">Overview</h2>
@@ -2683,6 +3077,111 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 <td colspan="9" style="color: #95a5a6; text-align: center;">Loading recurring reminders...</td>
             </tr>
         </table>
+    </div>
+
+    <!-- Customer Service Section -->
+    <div id="customer-service" class="broadcast-section section-anchor">
+        <h2>Customer Service</h2>
+
+        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+            <div style="flex: 1;">
+                <input type="text" id="csSearchInput" placeholder="Search by phone number or name..."
+                    style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;"
+                    onkeyup="if(event.key === 'Enter') csSearch()">
+            </div>
+            <button class="btn" onclick="csSearch()" style="background: #3498db; color: white; padding: 12px 24px;">
+                Search
+            </button>
+        </div>
+
+        <div id="csSearchResults" style="display: none; margin-bottom: 20px;">
+            <h3>Search Results <span id="csResultCount" style="color: #7f8c8d; font-weight: normal;"></span></h3>
+            <table class="history-table" id="csResultsTable">
+                <thead>
+                    <tr>
+                        <th>Phone</th>
+                        <th>Name</th>
+                        <th>Tier</th>
+                        <th>Status</th>
+                        <th>Last Active</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="csResultsBody"></tbody>
+            </table>
+        </div>
+
+        <div id="csCustomerProfile" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3>Customer Profile</h3>
+                <button class="btn btn-secondary" onclick="csCloseProfile()" style="padding: 8px 16px;">
+                    ← Back to Search
+                </button>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <!-- Left Column - Profile Info -->
+                <div class="card" style="padding: 20px;">
+                    <h4 style="margin-bottom: 15px; color: #2c3e50;">Profile Information</h4>
+                    <div id="csProfileInfo" style="line-height: 1.8;"></div>
+
+                    <h4 style="margin: 20px 0 15px; color: #2c3e50;">Usage Stats</h4>
+                    <div id="csProfileStats" style="line-height: 1.8;"></div>
+
+                    <h4 style="margin: 20px 0 15px; color: #2c3e50;">Change Tier</h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="csTierSelect" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="free">Free</option>
+                            <option value="premium">Premium</option>
+                            <option value="family">Family</option>
+                        </select>
+                        <input type="text" id="csTierReason" placeholder="Reason..." style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <button class="btn" onclick="csUpdateTier()" style="background: #27ae60; color: white; padding: 8px 16px;">Update</button>
+                    </div>
+                </div>
+
+                <!-- Right Column - Notes -->
+                <div class="card" style="padding: 20px;">
+                    <h4 style="margin-bottom: 15px; color: #2c3e50;">Notes</h4>
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <input type="text" id="csNewNote" placeholder="Add a note..." style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <button class="btn" onclick="csAddNote()" style="background: #3498db; color: white; padding: 8px 16px;">Add</button>
+                    </div>
+                    <div id="csNotesList" style="max-height: 200px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <!-- Recent Messages -->
+            <div class="card" style="padding: 20px; margin-top: 20px;">
+                <h4 style="margin-bottom: 15px; color: #2c3e50;">Recent Messages</h4>
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>User Said</th>
+                            <th>System Replied</th>
+                            <th>Intent</th>
+                        </tr>
+                    </thead>
+                    <tbody id="csMessagesBody"></tbody>
+                </table>
+            </div>
+
+            <!-- Data Tabs -->
+            <div class="card" style="padding: 20px; margin-top: 20px;">
+                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                    <button class="btn" onclick="csShowTab('reminders')" id="csTabReminders" style="background: #3498db; color: white;">Reminders</button>
+                    <button class="btn btn-secondary" onclick="csShowTab('lists')" id="csTabLists">Lists</button>
+                    <button class="btn btn-secondary" onclick="csShowTab('memories')" id="csTabMemories">Memories</button>
+                </div>
+
+                <div id="csTabContent">
+                    <div id="csRemindersTab"></div>
+                    <div id="csListsTab" style="display: none;"></div>
+                    <div id="csMemoriesTab" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Flag Conversation Modal -->
@@ -4301,6 +4800,273 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 location.reload();
             }} catch (err) {{
                 alert('Error: ' + err.message);
+            }}
+        }}
+
+        // =====================================================
+        // CUSTOMER SERVICE FUNCTIONS
+        // =====================================================
+        let csCurrentPhone = null;
+
+        async function csSearch() {{
+            const query = document.getElementById('csSearchInput').value.trim();
+            if (query.length < 2) {{
+                alert('Enter at least 2 characters to search');
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/cs/search?q=${{encodeURIComponent(query)}}`);
+                const data = await response.json();
+
+                const resultsDiv = document.getElementById('csSearchResults');
+                const tbody = document.getElementById('csResultsBody');
+                const countSpan = document.getElementById('csResultCount');
+
+                tbody.innerHTML = '';
+                countSpan.textContent = `(${{data.count || 0}} found)`;
+
+                if (!data.customers || data.customers.length === 0) {{
+                    tbody.innerHTML = '<tr><td colspan="6" style="color: #95a5a6; text-align: center;">No customers found</td></tr>';
+                }} else {{
+                    for (const c of data.customers) {{
+                        const row = document.createElement('tr');
+                        const tierColor = c.tier === 'premium' ? '#9b59b6' : (c.tier === 'family' ? '#3498db' : '#95a5a6');
+                        row.innerHTML = `
+                            <td>${{c.phone_masked || '***'}}</td>
+                            <td>${{c.first_name || ''}} ${{c.last_name || ''}}</td>
+                            <td><span style="color: ${{tierColor}}; font-weight: 500;">${{c.tier || 'free'}}</span></td>
+                            <td>${{c.subscription_status || '-'}}</td>
+                            <td style="font-size: 0.85em;">${{c.last_active_at ? new Date(c.last_active_at).toLocaleDateString() : '-'}}</td>
+                            <td>
+                                <button class="btn" style="padding: 4px 12px; font-size: 0.85em;" onclick="csViewCustomer('${{c.phone}}')">View</button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    }}
+                }}
+
+                resultsDiv.style.display = 'block';
+                document.getElementById('csCustomerProfile').style.display = 'none';
+            }} catch (e) {{
+                alert('Search error: ' + e.message);
+            }}
+        }}
+
+        async function csViewCustomer(phone) {{
+            csCurrentPhone = phone;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(phone)}}`);
+                const data = await response.json();
+
+                // Profile Info
+                document.getElementById('csProfileInfo').innerHTML = `
+                    <div><strong>Phone:</strong> ${{data.phone_masked}}</div>
+                    <div><strong>Name:</strong> ${{data.first_name || '-'}} ${{data.last_name || ''}}</div>
+                    <div><strong>Email:</strong> ${{data.email || '-'}}</div>
+                    <div><strong>Timezone:</strong> ${{data.timezone || '-'}}</div>
+                    <div><strong>Joined:</strong> ${{data.created_at ? new Date(data.created_at).toLocaleDateString() : '-'}}</div>
+                    <div><strong>Last Active:</strong> ${{data.last_active_at ? new Date(data.last_active_at).toLocaleDateString() : '-'}}</div>
+                    <div><strong>Tier:</strong> <span style="color: ${{data.tier === 'premium' ? '#9b59b6' : '#3498db'}}; font-weight: 500;">${{data.tier}}</span></div>
+                    <div><strong>Subscription Status:</strong> ${{data.subscription_status || '-'}}</div>
+                `;
+
+                // Stats
+                document.getElementById('csProfileStats').innerHTML = `
+                    <div><strong>Total Reminders:</strong> ${{data.stats.reminders}} (${{data.stats.pending_reminders}} pending)</div>
+                    <div><strong>Recurring Reminders:</strong> ${{data.stats.recurring_reminders}}</div>
+                    <div><strong>Lists:</strong> ${{data.stats.lists}}</div>
+                    <div><strong>Memories:</strong> ${{data.stats.memories}}</div>
+                    <div><strong>Total Messages:</strong> ${{data.total_messages}}</div>
+                `;
+
+                // Set tier dropdown
+                document.getElementById('csTierSelect').value = data.tier;
+
+                // Notes
+                const notesList = document.getElementById('csNotesList');
+                if (data.notes && data.notes.length > 0) {{
+                    notesList.innerHTML = data.notes.map(n => `
+                        <div style="padding: 8px; background: #f8f9fa; border-radius: 4px; margin-bottom: 8px;">
+                            <div style="font-size: 0.85em; color: #7f8c8d;">${{new Date(n.created_at).toLocaleString()}} by ${{n.created_by || 'Unknown'}}</div>
+                            <div>${{n.note}}</div>
+                        </div>
+                    `).join('');
+                }} else {{
+                    notesList.innerHTML = '<div style="color: #95a5a6;">No notes yet</div>';
+                }}
+
+                // Recent Messages
+                const msgBody = document.getElementById('csMessagesBody');
+                if (data.recent_messages && data.recent_messages.length > 0) {{
+                    msgBody.innerHTML = data.recent_messages.map(m => `
+                        <tr>
+                            <td style="font-size: 0.85em;">${{new Date(m.timestamp).toLocaleString()}}</td>
+                            <td>${{m.message_in || '-'}}</td>
+                            <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;">${{m.message_out || '-'}}</td>
+                            <td><span style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${{m.intent || '-'}}</span></td>
+                        </tr>
+                    `).join('');
+                }} else {{
+                    msgBody.innerHTML = '<tr><td colspan="4" style="color: #95a5a6; text-align: center;">No messages</td></tr>';
+                }}
+
+                // Load default tab
+                csShowTab('reminders');
+
+                // Show profile, hide search results
+                document.getElementById('csSearchResults').style.display = 'none';
+                document.getElementById('csCustomerProfile').style.display = 'block';
+            }} catch (e) {{
+                alert('Error loading customer: ' + e.message);
+            }}
+        }}
+
+        function csCloseProfile() {{
+            document.getElementById('csCustomerProfile').style.display = 'none';
+            document.getElementById('csSearchResults').style.display = 'block';
+            csCurrentPhone = null;
+        }}
+
+        async function csShowTab(tab) {{
+            // Update button styles
+            ['reminders', 'lists', 'memories'].forEach(t => {{
+                const btn = document.getElementById('csTab' + t.charAt(0).toUpperCase() + t.slice(1));
+                if (t === tab) {{
+                    btn.style.background = '#3498db';
+                    btn.style.color = 'white';
+                    btn.classList.remove('btn-secondary');
+                }} else {{
+                    btn.style.background = '';
+                    btn.style.color = '';
+                    btn.classList.add('btn-secondary');
+                }}
+            }});
+
+            // Hide all tabs
+            document.getElementById('csRemindersTab').style.display = 'none';
+            document.getElementById('csListsTab').style.display = 'none';
+            document.getElementById('csMemoriesTab').style.display = 'none';
+
+            // Load and show selected tab
+            const tabDiv = document.getElementById('cs' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'Tab');
+            tabDiv.style.display = 'block';
+
+            if (!csCurrentPhone) return;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/${{tab}}`);
+                const data = await response.json();
+
+                if (tab === 'reminders') {{
+                    if (data.reminders && data.reminders.length > 0) {{
+                        tabDiv.innerHTML = `<table class="history-table">
+                            <thead><tr><th>ID</th><th>Text</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
+                            <tbody>${{data.reminders.map(r => `
+                                <tr>
+                                    <td>${{r.id}}</td>
+                                    <td>${{r.text}}</td>
+                                    <td>${{new Date(r.date).toLocaleString()}}</td>
+                                    <td>${{r.sent ? '<span style="color:#27ae60">Sent</span>' : '<span style="color:#e67e22">Pending</span>'}}</td>
+                                    <td>${{!r.sent ? `<button class="btn btn-danger" style="padding:2px 8px;font-size:0.8em;" onclick="csDeleteReminder(${{r.id}})">Delete</button>` : ''}}</td>
+                                </tr>
+                            `).join('')}}</tbody>
+                        </table>`;
+                    }} else {{
+                        tabDiv.innerHTML = '<div style="color: #95a5a6; padding: 20px; text-align: center;">No reminders</div>';
+                    }}
+                }} else if (tab === 'lists') {{
+                    if (data.lists && data.lists.length > 0) {{
+                        tabDiv.innerHTML = data.lists.map(l => `
+                            <div style="margin-bottom: 15px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
+                                <h4 style="margin: 0 0 10px;">${{l.name}}</h4>
+                                ${{l.items.length > 0 ? `<ul style="margin: 0; padding-left: 20px;">${{l.items.map(i => `
+                                    <li style="color: ${{i.completed ? '#95a5a6' : '#2c3e50'}}; ${{i.completed ? 'text-decoration: line-through;' : ''}}">${{i.text}}</li>
+                                `).join('')}}</ul>` : '<div style="color: #95a5a6;">Empty list</div>'}}
+                            </div>
+                        `).join('');
+                    }} else {{
+                        tabDiv.innerHTML = '<div style="color: #95a5a6; padding: 20px; text-align: center;">No lists</div>';
+                    }}
+                }} else if (tab === 'memories') {{
+                    if (data.memories && data.memories.length > 0) {{
+                        tabDiv.innerHTML = `<table class="history-table">
+                            <thead><tr><th>Memory</th><th>Created</th></tr></thead>
+                            <tbody>${{data.memories.map(m => `
+                                <tr>
+                                    <td>${{m.text}}</td>
+                                    <td style="font-size:0.85em;">${{new Date(m.created_at).toLocaleString()}}</td>
+                                </tr>
+                            `).join('')}}</tbody>
+                        </table>`;
+                    }} else {{
+                        tabDiv.innerHTML = '<div style="color: #95a5a6; padding: 20px; text-align: center;">No memories</div>';
+                    }}
+                }}
+            }} catch (e) {{
+                tabDiv.innerHTML = `<div style="color: #e74c3c;">Error loading ${{tab}}: ${{e.message}}</div>`;
+            }}
+        }}
+
+        async function csUpdateTier() {{
+            if (!csCurrentPhone) return;
+
+            const tier = document.getElementById('csTierSelect').value;
+            const reason = document.getElementById('csTierReason').value;
+
+            if (!confirm(`Change this customer to ${{tier}} tier?`)) return;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/tier`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ tier, reason }})
+                }});
+                const data = await response.json();
+                alert(data.message);
+                document.getElementById('csTierReason').value = '';
+                csViewCustomer(csCurrentPhone); // Refresh
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function csAddNote() {{
+            if (!csCurrentPhone) return;
+
+            const note = document.getElementById('csNewNote').value.trim();
+            if (!note) {{
+                alert('Enter a note');
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/notes`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ note }})
+                }});
+                const data = await response.json();
+                document.getElementById('csNewNote').value = '';
+                csViewCustomer(csCurrentPhone); // Refresh
+            }} catch (e) {{
+                alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function csDeleteReminder(reminderId) {{
+            if (!csCurrentPhone) return;
+            if (!confirm('Delete this reminder?')) return;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/reminder/${{reminderId}}`, {{
+                    method: 'DELETE'
+                }});
+                const data = await response.json();
+                csShowTab('reminders'); // Refresh
+            }} catch (e) {{
+                alert('Error: ' + e.message);
             }}
         }}
     </script>

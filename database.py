@@ -263,6 +263,17 @@ def init_db():
             )
         ''')
 
+        # Customer service notes
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS customer_notes (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                note TEXT NOT NULL,
+                created_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Recurring reminders table
         c.execute('''
             CREATE TABLE IF NOT EXISTS recurring_reminders (
