@@ -469,6 +469,7 @@ When the user asks for reminders "for the next X days" at a specific time, creat
 - "For the next 5 days at 8pm remind me to call mom" → 5 separate reminder actions, one for each of the next 5 days at 8:00 PM
 - "Every day for the next week at 9am remind me to exercise" → 7 separate reminder actions at 9:00 AM each day
 IMPORTANT: "for the next X days" means X separate reminders on consecutive days, NOT "in X days". Each reminder must have the specified time.
+IMPORTANT: If AM/PM is missing from recurring reminders (e.g., "for the next 3 days at 11 o'clock"), use "clarify_time" action to ask the user.
 
 For MULTIPLE COMMANDS or RECURRING REMINDERS, return:
 {{
