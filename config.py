@@ -118,3 +118,58 @@ else:
 BETA_MODE = os.environ.get("BETA_MODE", "true").lower() == "true"
 if BETA_MODE:
     logger.info("Beta mode enabled - all users can access support")
+
+# =====================================================
+# SUBSCRIPTION TIERS
+# =====================================================
+# Tier names (stored in users.premium_status)
+TIER_FREE = 'free'
+TIER_PREMIUM = 'premium'
+TIER_FAMILY = 'family'
+
+# Pricing (in cents for Stripe)
+PRICING = {
+    TIER_PREMIUM: {
+        'monthly': 699,           # $6.99/month
+        'annual': 7689,           # $76.89/year (1 month free)
+    },
+    TIER_FAMILY: {
+        'monthly': 1499,          # $14.99/month (base, 4 members)
+        'annual': 16489,          # $164.89/year (1 month free)
+        'additional_member': 350,  # $3.50/month per extra member
+        'base_members': 4,
+        'max_members': 10,
+    },
+}
+
+# Tier Limits
+TIER_LIMITS = {
+    TIER_FREE: {
+        'reminders_per_day': 2,
+        'max_lists': 5,
+        'max_items_per_list': 10,
+        'max_memories': 5,
+        'recurring_reminders': False,
+        'support_tickets': False,
+    },
+    TIER_PREMIUM: {
+        'reminders_per_day': None,  # Unlimited
+        'max_lists': 20,
+        'max_items_per_list': 30,
+        'max_memories': None,       # Unlimited
+        'recurring_reminders': True,
+        'support_tickets': True,
+    },
+    TIER_FAMILY: {
+        'reminders_per_day': None,  # Unlimited
+        'max_lists': 20,
+        'max_items_per_list': 30,
+        'max_memories': None,       # Unlimited
+        'recurring_reminders': True,
+        'support_tickets': True,
+    },
+}
+
+def get_tier_limits(tier: str) -> dict:
+    """Get limits for a given tier. Defaults to free tier if unknown."""
+    return TIER_LIMITS.get(tier, TIER_LIMITS[TIER_FREE])
