@@ -365,6 +365,10 @@ def init_db():
             # Opt-out tracking for STOP command compliance
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out_at TIMESTAMP",
+            # Stripe subscription fields
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
             # Recurring reminders: link individual reminders to their recurring pattern
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS recurring_id INTEGER REFERENCES recurring_reminders(id)",
             # Timezone management: store local time for recalculation on timezone change

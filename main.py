@@ -899,6 +899,71 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # UPGRADE / SUBSCRIPTION HANDLING
+        # ==========================================
+        if incoming_msg.upper() in ["UPGRADE", "SUBSCRIBE", "PREMIUM", "FAMILY", "PRICING"]:
+            from services.stripe_service import get_upgrade_message, get_user_subscription, create_checkout_session
+            from config import STRIPE_ENABLED, APP_BASE_URL
+
+            subscription = get_user_subscription(phone_number)
+
+            # If already premium, show account management
+            if subscription['tier'] != 'free' and subscription['status'] == 'active':
+                resp = MessagingResponse()
+                resp.message(f"You're already on the {subscription['tier'].title()} plan! Text ACCOUNT to manage your subscription.")
+                log_interaction(phone_number, incoming_msg, "Already subscribed", "upgrade_already_premium", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Show upgrade options
+            msg_upper = incoming_msg.upper()
+            if msg_upper in ["PREMIUM", "FAMILY"] and STRIPE_ENABLED:
+                # User selected a specific plan - create checkout link
+                plan = 'premium' if msg_upper == "PREMIUM" else 'family'
+                result = create_checkout_session(phone_number, plan, 'monthly')
+
+                if 'url' in result:
+                    resp = MessagingResponse()
+                    resp.message(f"Great choice! Complete your {plan.title()} subscription here:\n\n{result['url']}\n\nThis link expires in 24 hours.")
+                    log_interaction(phone_number, incoming_msg, f"Checkout link sent for {plan}", f"upgrade_{plan}_checkout", True)
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Visit {APP_BASE_URL}/upgrade to subscribe to {plan.title()}!")
+                    log_interaction(phone_number, incoming_msg, "Checkout fallback", f"upgrade_{plan}_fallback", True)
+                return Response(content=str(resp), media_type="application/xml")
+            else:
+                # Show pricing info
+                upgrade_msg = get_upgrade_message(phone_number)
+                resp = MessagingResponse()
+                resp.message(upgrade_msg)
+                log_interaction(phone_number, incoming_msg, "Upgrade info sent", "upgrade_info", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+        if incoming_msg.upper() in ["ACCOUNT", "MANAGE", "BILLING", "SUBSCRIPTION"]:
+            from services.stripe_service import get_user_subscription, create_customer_portal_session
+            from config import STRIPE_ENABLED, APP_BASE_URL
+
+            subscription = get_user_subscription(phone_number)
+
+            if subscription['tier'] == 'free':
+                resp = MessagingResponse()
+                resp.message("You're on the free plan. Text UPGRADE to see premium options!")
+                log_interaction(phone_number, incoming_msg, "Free user - no account", "account_free", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            if STRIPE_ENABLED:
+                result = create_customer_portal_session(phone_number)
+                if 'url' in result:
+                    resp = MessagingResponse()
+                    resp.message(f"Manage your {subscription['tier'].title()} subscription here:\n\n{result['url']}")
+                    log_interaction(phone_number, incoming_msg, "Portal link sent", "account_portal", True)
+                    return Response(content=str(resp), media_type="application/xml")
+
+            resp = MessagingResponse()
+            resp.message(f"You're on the {subscription['tier'].title()} plan. Visit {APP_BASE_URL}/account to manage your subscription.")
+            log_interaction(phone_number, incoming_msg, "Account info sent", "account_info", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # SUPPORT HANDLING (Premium users, or all users in beta mode)
         # ==========================================
         if incoming_msg.upper().startswith("SUPPORT:") or incoming_msg.upper().startswith("SUPPORT "):
@@ -2309,6 +2374,55 @@ def process_single_action(ai_response, phone_number, incoming_msg):
     except Exception as e:
         logger.error(f"Error processing action: {e}", exc_info=True)
         return "Sorry, I couldn't complete that action."
+
+
+# =====================================================
+# STRIPE WEBHOOK ENDPOINT
+# =====================================================
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events"""
+    from services.stripe_service import handle_webhook_event
+    from config import STRIPE_ENABLED
+
+    if not STRIPE_ENABLED:
+        logger.warning("Stripe webhook received but Stripe is not configured")
+        return {"error": "Stripe not configured"}, 400
+
+    try:
+        payload = await request.body()
+        sig_header = request.headers.get("stripe-signature", "")
+
+        result = handle_webhook_event(payload, sig_header)
+
+        if result.get('success'):
+            return {"status": "success"}
+        else:
+            logger.error(f"Webhook error: {result.get('error')}")
+            return {"error": result.get('error')}, 400
+
+    except Exception as e:
+        logger.error(f"Stripe webhook error: {e}")
+        return {"error": str(e)}, 500
+
+
+@app.get("/payment/success")
+async def payment_success(session_id: str = None):
+    """Handle successful payment redirect"""
+    return {
+        "status": "success",
+        "message": "Thank you for subscribing! You can close this page and continue using Remyndrs via SMS."
+    }
+
+
+@app.get("/payment/cancelled")
+async def payment_cancelled():
+    """Handle cancelled payment redirect"""
+    return {
+        "status": "cancelled",
+        "message": "Payment was cancelled. Text UPGRADE anytime to try again."
+    }
 
 
 # =====================================================

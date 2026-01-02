@@ -120,6 +120,30 @@ if BETA_MODE:
     logger.info("Beta mode enabled - all users can access support")
 
 # =====================================================
+# STRIPE CONFIGURATION
+# =====================================================
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+# Stripe Price IDs (create these in Stripe Dashboard)
+STRIPE_PRICE_IDS = {
+    'premium_monthly': os.environ.get("STRIPE_PRICE_PREMIUM_MONTHLY"),
+    'premium_annual': os.environ.get("STRIPE_PRICE_PREMIUM_ANNUAL"),
+    'family_monthly': os.environ.get("STRIPE_PRICE_FAMILY_MONTHLY"),
+    'family_annual': os.environ.get("STRIPE_PRICE_FAMILY_ANNUAL"),
+}
+
+# Base URL for redirects (set in environment)
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://remyndrs.com")
+
+STRIPE_ENABLED = bool(STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET)
+if STRIPE_ENABLED:
+    logger.info("Stripe payments enabled")
+else:
+    logger.warning("Stripe not configured - payment features disabled")
+
+# =====================================================
 # SUBSCRIPTION TIERS
 # =====================================================
 # Tier names (stored in users.premium_status)
