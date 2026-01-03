@@ -16,7 +16,7 @@ from twilio.request_validator import RequestValidator
 
 # Local imports
 import secrets
-from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN, ADMIN_USERNAME, ADMIN_PASSWORD, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, REQUEST_TIMEOUT
+from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, ADMIN_USERNAME, ADMIN_PASSWORD, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, REQUEST_TIMEOUT
 from collections import defaultdict
 import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -2473,6 +2473,25 @@ async def health_check():
         "environment": ENVIRONMENT,
         "features": ["memory_storage", "reminders", "onboarding", "timezone_support"]
     }
+
+
+@app.get("/contact.vcf")
+async def get_contact_vcf():
+    """Serve Remyndrs contact card (VCF) for saving to phone contacts"""
+    vcf_content = f"""BEGIN:VCARD
+VERSION:3.0
+FN:Remyndrs
+ORG:Remyndrs
+TEL;TYPE=CELL:{TWILIO_PHONE_NUMBER}
+NOTE:Your personal SMS assistant for reminders, lists, and memories. Text ? for help.
+END:VCARD"""
+
+    return Response(
+        content=vcf_content,
+        media_type="text/vcard",
+        headers={"Content-Disposition": "attachment; filename=remyndrs.vcf"}
+    )
+
 
 @app.get("/consent", response_class=HTMLResponse)
 async def consent_page():
