@@ -261,10 +261,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     logger.info(f"Staging fallback: Triggering fallback for {mask_phone_number(phone_number)}")
                     raise HTTPException(status_code=503, detail="Routing to staging")
 
-        # Staging environment: Only allow specific phone numbers for testing
+        # Staging environment: Only allow phone numbers configured in staging fallback settings
         if ENVIRONMENT == "staging":
-            STAGING_ALLOWED_NUMBERS = ["+18593935374"]  # Add allowed test numbers here
-            if phone_number not in STAGING_ALLOWED_NUMBERS:
+            staging_numbers_raw = get_setting("staging_fallback_numbers", "")
+            staging_allowed_numbers = [n.strip() for n in staging_numbers_raw.split("\n") if n.strip()]
+            if phone_number not in staging_allowed_numbers:
                 resp = MessagingResponse()
                 # Get maintenance message from database (or use default)
                 default_msg = "Remyndrs is undergoing maintenance. The service will be back up soon. You will receive a message when it's back up."
