@@ -11,6 +11,7 @@ from config import logger, FREE_TRIAL_DAYS, TIER_PREMIUM, APP_BASE_URL
 from models.user import get_user, get_onboarding_step, create_or_update_user
 from utils.timezone import get_timezone_from_zip, get_user_current_time
 from utils.formatting import get_onboarding_prompt
+from services.sms_service import send_sms
 
 def handle_onboarding(phone_number, message):
     """Handle onboarding flow for new users"""
@@ -94,8 +95,8 @@ What's your first name?""")
             first_name = user[1]
             user_time = get_user_current_time(phone_number)
 
-            # Build completion message with contact card attachment
-            msg = resp.message(f"""You're all set, {first_name}!
+            # Send welcome message first (without VCF)
+            resp.message(f"""You're all set, {first_name}!
 
 🎉 You have a FREE {FREE_TRIAL_DAYS}-day Premium trial!
 
@@ -107,13 +108,15 @@ Try these:
 Your timezone: {timezone}
 Your current time: {user_time.strftime('%I:%M %p')}
 
-Text ? anytime for help.
+Text ? anytime for help.""")
 
-📱 Tap the contact card below to save Remyndrs to your contacts!""")
-
-            # Attach VCF contact card
+            # Send VCF contact card as separate follow-up MMS
             vcf_url = f"{APP_BASE_URL}/contact.vcf"
-            msg.media(vcf_url)
+            send_sms(
+                phone_number,
+                "📱 Tap to save Remyndrs to your contacts!",
+                media_url=vcf_url
+            )
 
         return Response(content=str(resp), media_type="application/xml")
     
