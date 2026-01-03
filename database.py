@@ -325,6 +325,8 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_delete TEXT",
             # Delete memory feature: stores search results when multiple matches or confirmation needed
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_memory_delete TEXT",
+            # Free trial support
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end_date TIMESTAMP",
             # Feedback table (created via migration for existing deployments)
             """CREATE TABLE IF NOT EXISTS feedback (
                 id SERIAL PRIMARY KEY,

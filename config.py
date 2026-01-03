@@ -151,6 +151,9 @@ TIER_FREE = 'free'
 TIER_PREMIUM = 'premium'
 TIER_FAMILY = 'family'
 
+# Free trial configuration
+FREE_TRIAL_DAYS = 14  # New users get 14-day Premium trial
+
 # Pricing (in cents for Stripe)
 PRICING = {
     TIER_PREMIUM: {

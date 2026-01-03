@@ -13,7 +13,10 @@ from config import (
 
 
 def get_user_tier(phone_number: str) -> str:
-    """Get user's subscription tier. Returns 'free' if not found."""
+    """Get user's subscription tier. Returns 'free' if not found.
+
+    Checks trial status - if user has an active trial, returns 'premium'.
+    """
     conn = None
     try:
         conn = get_db_connection()
@@ -23,29 +26,93 @@ def get_user_tier(phone_number: str) -> str:
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
             c.execute(
-                'SELECT premium_status FROM users WHERE phone_hash = %s',
+                'SELECT premium_status, trial_end_date FROM users WHERE phone_hash = %s',
                 (phone_hash,)
             )
             result = c.fetchone()
             if not result:
                 c.execute(
-                    'SELECT premium_status FROM users WHERE phone_number = %s',
+                    'SELECT premium_status, trial_end_date FROM users WHERE phone_number = %s',
                     (phone_number,)
                 )
                 result = c.fetchone()
         else:
             c.execute(
-                'SELECT premium_status FROM users WHERE phone_number = %s',
+                'SELECT premium_status, trial_end_date FROM users WHERE phone_number = %s',
+                (phone_number,)
+            )
+            result = c.fetchone()
+
+        if result:
+            premium_status, trial_end_date = result[0], result[1]
+
+            # Check if user is on active trial
+            if trial_end_date and trial_end_date > datetime.utcnow():
+                return TIER_PREMIUM
+
+            # Return actual tier
+            if premium_status:
+                return premium_status
+
+        return TIER_FREE
+    except Exception as e:
+        logger.error(f"Error getting user tier: {e}")
+        return TIER_FREE
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_trial_info(phone_number: str) -> dict:
+    """Get trial status info for a user.
+
+    Returns:
+        dict with keys:
+            - is_trial: bool - True if user is on active trial
+            - days_remaining: int or None - days left in trial
+            - trial_end_date: datetime or None
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                'SELECT trial_end_date FROM users WHERE phone_hash = %s',
+                (phone_hash,)
+            )
+            result = c.fetchone()
+            if not result:
+                c.execute(
+                    'SELECT trial_end_date FROM users WHERE phone_number = %s',
+                    (phone_number,)
+                )
+                result = c.fetchone()
+        else:
+            c.execute(
+                'SELECT trial_end_date FROM users WHERE phone_number = %s',
                 (phone_number,)
             )
             result = c.fetchone()
 
         if result and result[0]:
-            return result[0]
-        return TIER_FREE
+            trial_end = result[0]
+            now = datetime.utcnow()
+            if trial_end > now:
+                days_remaining = (trial_end - now).days
+                return {
+                    'is_trial': True,
+                    'days_remaining': days_remaining,
+                    'trial_end_date': trial_end
+                }
+
+        return {'is_trial': False, 'days_remaining': None, 'trial_end_date': None}
     except Exception as e:
-        logger.error(f"Error getting user tier: {e}")
-        return TIER_FREE
+        logger.error(f"Error getting trial info: {e}")
+        return {'is_trial': False, 'days_remaining': None, 'trial_end_date': None}
     finally:
         if conn:
             return_db_connection(conn)

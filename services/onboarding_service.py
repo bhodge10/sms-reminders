@@ -3,10 +3,11 @@ Onboarding Service
 Handles new user onboarding flow
 """
 
+from datetime import datetime, timedelta
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
 
-from config import logger
+from config import logger, FREE_TRIAL_DAYS, TIER_PREMIUM
 from models.user import get_user, get_onboarding_step, create_or_update_user
 from utils.timezone import get_timezone_from_zip, get_user_current_time
 from utils.formatting import get_onboarding_prompt
@@ -74,13 +75,18 @@ What's your first name?""")
             # Get timezone from zip code
             timezone = get_timezone_from_zip(zip_code)
 
-            # Save zip and timezone, mark onboarding complete
+            # Calculate trial end date
+            trial_end_date = datetime.utcnow() + timedelta(days=FREE_TRIAL_DAYS)
+
+            # Save zip, timezone, trial info, and mark onboarding complete
             create_or_update_user(
                 phone_number,
                 zip_code=zip_code,
                 timezone=timezone,
                 onboarding_complete=True,
-                onboarding_step=5
+                onboarding_step=5,
+                premium_status=TIER_PREMIUM,
+                trial_end_date=trial_end_date
             )
 
             # Get user's name for personalized message
@@ -88,8 +94,11 @@ What's your first name?""")
             first_name = user[1]
             user_time = get_user_current_time(phone_number)
 
-            resp.message(f"""You're all set, {first_name}! Try these:
+            resp.message(f"""You're all set, {first_name}!
 
+🎉 You have a FREE {FREE_TRIAL_DAYS}-day Premium trial!
+
+Try these:
 📝 "Add milk, eggs, bread to grocery list"
 🧠 "Remember I parked on Level 3 spot 1"
 ⏰ "Remind me to call mom tomorrow at 2pm"
