@@ -9,7 +9,7 @@ import pytz
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Form, Request, HTTPException
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response, HTMLResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
@@ -2478,11 +2478,15 @@ async def health_check():
 @app.get("/contact.vcf")
 async def get_contact_vcf():
     """Serve Remyndrs contact card (VCF) for saving to phone contacts"""
+    from config import APP_BASE_URL
+    logo_url = f"{APP_BASE_URL}/static/remyndrs-logo.png"
+
     vcf_content = f"""BEGIN:VCARD
 VERSION:3.0
 FN:Remyndrs
 ORG:Remyndrs
 TEL;TYPE=CELL:{PUBLIC_PHONE_NUMBER}
+PHOTO;VALUE=URI:{logo_url}
 NOTE:Your personal SMS assistant for reminders, lists, and memories. Text ? for help.
 END:VCARD"""
 
@@ -2491,6 +2495,14 @@ END:VCARD"""
         media_type="text/vcard",
         headers={"Content-Disposition": "attachment; filename=remyndrs.vcf"}
     )
+
+
+@app.get("/static/remyndrs-logo.png")
+async def get_logo():
+    """Serve Remyndrs logo for contact card"""
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), "static", "remyndrs-logo.png")
+    return FileResponse(logo_path, media_type="image/png")
 
 
 @app.get("/consent", response_class=HTMLResponse)
