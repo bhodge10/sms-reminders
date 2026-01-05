@@ -1031,7 +1031,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 result = add_support_message(phone_number, support_message, 'inbound')
                 if result['success']:
                     resp = MessagingResponse()
-                    resp.message(staging_prefix(f"[Support Ticket #{result['ticket_id']}] Your message has been sent to our support team. We'll reply as soon as possible!\n\n(You're now in support mode - replies go to support. Text EXIT to leave or CLOSE to close ticket)"))
+                    resp.message(staging_prefix(f"[Support Ticket #{result['ticket_id']}] Your message has been sent to our support team. We'll reply as soon as possible!\n\n(You're now in support mode - all replies and messages will go to our support team. Text EXIT to leave support but keep ticket open or text CLOSE to close ticket)"))
                     log_interaction(phone_number, incoming_msg, f"Support ticket #{result['ticket_id']}", "support", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
