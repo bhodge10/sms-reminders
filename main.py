@@ -371,7 +371,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Check if user is in an active support conversation
         from services.support_service import (
             get_active_support_ticket, add_support_message,
-            exit_support_mode, close_ticket_by_phone
+            exit_support_mode, close_ticket_by_phone,
+            is_technician_actively_engaged
         )
 
         active_ticket = get_active_support_ticket(phone_number)
@@ -401,8 +402,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             result = add_support_message(phone_number, incoming_msg, 'inbound')
             if result['success']:
                 resp = MessagingResponse()
-                resp.message(staging_prefix(f"[Support Ticket #{ticket_id}] Message received. We'll respond shortly.\n\n(Text EXIT to leave support, or CLOSE to close ticket)"))
-                log_interaction(phone_number, incoming_msg, f"Support message (ticket #{ticket_id})", "support", True)
+                # Skip automated acknowledgment if a support agent is actively engaged
+                if is_technician_actively_engaged(ticket_id):
+                    # Silent acknowledgment - agent is actively responding
+                    log_interaction(phone_number, incoming_msg, f"Support message (ticket #{ticket_id}) - active conversation", "support", True)
+                else:
+                    # Send acknowledgment when no agent has responded recently
+                    resp.message(staging_prefix(f"[Support Ticket #{ticket_id}] Message received. We'll respond shortly.\n\n(All messages go to support until you text EXIT to return to normal use, or CLOSE to end this ticket)"))
+                    log_interaction(phone_number, incoming_msg, f"Support message (ticket #{ticket_id})", "support", True)
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================

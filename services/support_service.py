@@ -119,6 +119,49 @@ def has_technician_replied(ticket_id: int) -> bool:
             return_db_connection(conn)
 
 
+# How long after last tech reply to consider conversation "active" (minutes)
+ACTIVE_CONVERSATION_TIMEOUT = 10
+
+
+def is_technician_actively_engaged(ticket_id: int) -> bool:
+    """
+    Check if a technician has replied recently (within ACTIVE_CONVERSATION_TIMEOUT minutes).
+    Used to suppress automated acknowledgment messages during active conversations.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """SELECT created_at FROM support_messages
+               WHERE ticket_id = %s AND direction = 'outbound'
+               ORDER BY created_at DESC LIMIT 1""",
+            (ticket_id,)
+        )
+        result = c.fetchone()
+
+        if not result:
+            return False
+
+        last_reply_time = result[0]
+
+        # Handle timezone-naive comparison
+        now = datetime.utcnow()
+        if last_reply_time.tzinfo:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+
+        age_minutes = (now - last_reply_time).total_seconds() / 60
+        return age_minutes <= ACTIVE_CONVERSATION_TIMEOUT
+
+    except Exception as e:
+        logger.error(f"Error checking technician engagement: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def is_first_message_in_ticket(ticket_id: int) -> bool:
     """Check if this is the first message in the ticket (new ticket)."""
     conn = None
@@ -233,7 +276,7 @@ def reply_to_ticket(ticket_id: int, message: str) -> dict:
 
         # Send SMS to user with ticket number (so they stay in support mode context)
         # Include instructions for exiting support mode
-        sms_message = f"[Support Ticket #{ticket_id}]\n\n{message}\n\n(Reply to continue, or text EXIT to leave support)"
+        sms_message = f"[Support Ticket #{ticket_id}]\n\n{message}\n\n(Reply to continue, or text EXIT to return to normal use)"
         send_sms(phone_number, sms_message)
 
         # Record outbound message
