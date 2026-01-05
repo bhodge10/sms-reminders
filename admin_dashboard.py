@@ -2626,6 +2626,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <span class="nav-title">Remyndrs Dashboard</span>
         <a href="#overview">Overview</a>
         <a href="#broadcast">Broadcast</a>
+        <a href="#support">Support Tickets</a>
         <a href="#feedback">Feedback</a>
         <a href="#costs">Costs</a>
         <a href="#conversations">Conversations</a>
