@@ -46,6 +46,7 @@ from utils.timezone import get_user_current_time
 from utils.formatting import get_help_text, format_reminders_list
 from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning
 from admin_dashboard import router as dashboard_router, start_broadcast_checker
+from cs_portal import router as cs_router
 
 
 def staging_prefix(message):
@@ -206,6 +207,9 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
 
 # Include admin dashboard router
 app.include_router(dashboard_router)
+
+# Include CS portal router
+app.include_router(cs_router)
 
 # Initialize database
 init_db()

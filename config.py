@@ -79,6 +79,11 @@ MAX_ITEMS_PER_LIST = 40
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 
+# Customer Service Portal Authentication
+# Falls back to admin credentials if not set
+CS_USERNAME = os.environ.get("CS_USERNAME", ADMIN_USERNAME)
+CS_PASSWORD = os.environ.get("CS_PASSWORD", ADMIN_PASSWORD)
+
 # Rate Limiting
 RATE_LIMIT_MESSAGES = 15  # Max messages per window
 RATE_LIMIT_WINDOW = 60    # Window in seconds (1 minute)
