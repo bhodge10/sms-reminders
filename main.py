@@ -395,6 +395,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
             # Handle CLOSE TICKET command - close the ticket
             if msg_upper in ["CLOSE TICKET", "CLOSE"]:
+                # Add a system message to the ticket so CS agents can see user closed it
+                add_support_message(phone_number, "[User closed the ticket]", 'inbound')
                 result = close_ticket_by_phone(phone_number)
                 if result['success']:
                     resp = MessagingResponse()
