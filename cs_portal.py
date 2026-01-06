@@ -608,7 +608,7 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
             }}
         }}
 
-        // Customer Search - uses admin endpoint which returns {customers: [...]}
+        // Customer Search - uses admin endpoint
         async function searchCustomers() {{
             const query = document.getElementById('searchInput').value.trim();
             if (!query) return;
@@ -631,7 +631,7 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
                 const data = await response.json();
                 console.log('Search response:', data);
 
-                // Admin endpoint returns {customers: [...]}
+                // Admin endpoint returns customers array
                 const results = data.customers || [];
                 countSpan.textContent = `(${{results.length}} found)`;
 
