@@ -320,6 +320,36 @@ def get_pending_memory_delete(phone_number):
             return_db_connection(conn)
 
 
+def get_pending_reminder_date(phone_number):
+    """Get user's pending reminder date (for clarify_date_time flow - date without time)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('SELECT pending_reminder_text, pending_reminder_date FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('SELECT pending_reminder_text, pending_reminder_date FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('SELECT pending_reminder_text, pending_reminder_date FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
+
+        if result and result[1]:
+            return {'text': result[0], 'date': result[1]}
+        return None
+    except Exception as e:
+        logger.error(f"Error getting pending reminder date: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def mark_user_opted_out(phone_number):
     """Mark a user as opted out (STOP command compliance)"""
     conn = None

@@ -238,6 +238,70 @@ def delete_reminder(phone_number, reminder_id):
             return_db_connection(conn)
 
 
+def update_reminder_time(phone_number, reminder_id, new_date_utc, local_time=None, timezone=None):
+    """Update the time of a specific pending reminder by ID (only if not sent)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            # Update if it belongs to this user and hasn't been sent
+            if local_time and timezone:
+                c.execute(
+                    '''UPDATE reminders SET reminder_date = %s, local_time = %s, original_timezone = %s
+                       WHERE id = %s AND phone_hash = %s AND sent = FALSE''',
+                    (new_date_utc, local_time, timezone, reminder_id, phone_hash)
+                )
+            else:
+                c.execute(
+                    '''UPDATE reminders SET reminder_date = %s
+                       WHERE id = %s AND phone_hash = %s AND sent = FALSE''',
+                    (new_date_utc, reminder_id, phone_hash)
+                )
+            if c.rowcount == 0:
+                # Fallback for reminders created before encryption
+                if local_time and timezone:
+                    c.execute(
+                        '''UPDATE reminders SET reminder_date = %s, local_time = %s, original_timezone = %s
+                           WHERE id = %s AND phone_number = %s AND sent = FALSE''',
+                        (new_date_utc, local_time, timezone, reminder_id, phone_number)
+                    )
+                else:
+                    c.execute(
+                        '''UPDATE reminders SET reminder_date = %s
+                           WHERE id = %s AND phone_number = %s AND sent = FALSE''',
+                        (new_date_utc, reminder_id, phone_number)
+                    )
+        else:
+            if local_time and timezone:
+                c.execute(
+                    '''UPDATE reminders SET reminder_date = %s, local_time = %s, original_timezone = %s
+                       WHERE id = %s AND phone_number = %s AND sent = FALSE''',
+                    (new_date_utc, local_time, timezone, reminder_id, phone_number)
+                )
+            else:
+                c.execute(
+                    '''UPDATE reminders SET reminder_date = %s
+                       WHERE id = %s AND phone_number = %s AND sent = FALSE''',
+                    (new_date_utc, reminder_id, phone_number)
+                )
+
+        updated = c.rowcount > 0
+        conn.commit()
+        if updated:
+            logger.info(f"Updated reminder {reminder_id} to {new_date_utc}")
+        return updated
+    except Exception as e:
+        logger.error(f"Error updating reminder time: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def update_last_sent_reminder(phone_number, reminder_id):
     """Update the last sent reminder for a user (for snooze detection)"""
     conn = None

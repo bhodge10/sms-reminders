@@ -273,6 +273,22 @@ WHEN TO USE delete_reminder:
 - "remove the break reminder" → search_term: "break"
 IMPORTANT: If user says "delete [keyword]" and the keyword matches something in their SCHEDULED reminders (not lists), use delete_reminder.
 
+For UPDATING/CHANGING A REMINDER TIME:
+{{
+    "action": "update_reminder",
+    "search_term": "keyword(s) to identify which reminder to update",
+    "new_time": "HH:MM AM/PM format (e.g., '8:00 AM', '3:30 PM')",
+    "new_date": "YYYY-MM-DD format (optional - only if date is also changing)",
+    "confirmation": "Updated your [topic] reminder to [new time/date]"
+}}
+WHEN TO USE update_reminder:
+- "change my mammogram reminder to 8am" → search_term: "mammogram", new_time: "8:00 AM"
+- "move my dentist reminder to 3pm" → search_term: "dentist", new_time: "3:00 PM"
+- "reschedule my meeting reminder to tomorrow at 10am" → search_term: "meeting", new_time: "10:00 AM", new_date: tomorrow's date
+- "change my 9am reminder to 10am" → search_term: text of the 9am reminder, new_time: "10:00 AM"
+- "update the call mom reminder to 5pm" → search_term: "call mom", new_time: "5:00 PM"
+IMPORTANT: Use update_reminder when user wants to CHANGE/MODIFY/RESCHEDULE/MOVE an existing reminder to a new time. Do NOT delete the reminder.
+
 For DELETING/FORGETTING A MEMORY:
 {{
     "action": "delete_memory",
@@ -333,13 +349,27 @@ NOT SUPPORTED - If user asks for minute or hourly intervals (e.g., "every 5 minu
     "response": "I can't set reminders for minute or hourly intervals. I support: every day, weekly (e.g., every Sunday), weekdays, weekends, or monthly. Try something like 'Remind me every day at 7pm to take medicine'."
 }}
 
-For ASKING TIME CLARIFICATION:
+For ASKING TIME CLARIFICATION (when time given but missing AM/PM):
 {{
     "action": "clarify_time",
     "reminder_text": "what to remind them about",
     "time_mentioned": "the ambiguous time they said (e.g., '4:35')",
     "response": "Got it! Do you mean [time] AM or PM?"
 }}
+
+For ASKING WHAT TIME (when date given but NO time at all):
+{{
+    "action": "clarify_date_time",
+    "reminder_text": "what to remind them about",
+    "reminder_date": "YYYY-MM-DD (just the date, no time)",
+    "response": "I'll remind you on [day, date] to [task]. What time would you like the reminder?"
+}}
+WHEN TO USE clarify_date_time:
+- "Remind me tomorrow to check MyChart" → No time given, ask what time
+- "Remind me on Friday to call mom" → No time given, ask what time
+- "Remind me next week to pay bills" → No time given, ask what time
+- "Remind me January 15th to renew license" → No time given, ask what time
+IMPORTANT: If user says a date/day without ANY time (no AM/PM, no "at X", no "in X hours"), use clarify_date_time to ask what time they want.
 
 For UNCLEAR requests or GREETINGS:
 {{

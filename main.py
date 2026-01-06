@@ -22,13 +22,13 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, mark_user_opted_out
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, mark_user_opted_out
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
     get_last_sent_reminder, mark_reminder_snoozed, save_recurring_reminder,
     get_recurring_reminders, delete_recurring_reminder, pause_recurring_reminder,
-    resume_recurring_reminder, save_reminder_with_local_time,
+    resume_recurring_reminder, save_reminder_with_local_time, update_reminder_time,
     recalculate_pending_reminders_for_timezone, update_recurring_reminders_timezone
 )
 from models.list_model import (
@@ -486,6 +486,71 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 logger.error(f"Error processing time: {e}")
                 resp = MessagingResponse()
                 resp.message(staging_prefix("Sorry, I had trouble setting that reminder. Please try again."))
+                return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # PENDING DATE TIME RESPONSE (clarify_date_time flow)
+        # ==========================================
+        # Check if user has a pending reminder date (asked "what time?") and their message contains a time
+        pending_date_data = get_pending_reminder_date(phone_number)
+        if pending_date_data and has_am_pm:
+            pending_text = pending_date_data['text']
+            pending_date = pending_date_data['date']  # YYYY-MM-DD format
+
+            try:
+                import re
+                user_tz_str = get_user_timezone(phone_number)
+                tz = pytz.timezone(user_tz_str)
+
+                # Parse time from user message (e.g., "8am", "8:00 AM", "3:30pm")
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)', incoming_msg, re.IGNORECASE)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2)) if time_match.group(2) else 0
+                    am_pm = time_match.group(3).lower().replace('.', '')
+
+                    # Convert to 24-hour format
+                    if am_pm == 'pm' and hour != 12:
+                        hour += 12
+                    elif am_pm == 'am' and hour == 12:
+                        hour = 0
+
+                    # Parse the pending date and combine with time
+                    reminder_date_obj = datetime.strptime(pending_date, '%Y-%m-%d')
+                    reminder_datetime = reminder_date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                    # Localize to user's timezone
+                    aware_dt = tz.localize(reminder_datetime)
+
+                    # Convert to UTC for storage
+                    utc_dt = aware_dt.astimezone(pytz.UTC)
+                    reminder_date_str = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                    # Extract local time for timezone recalculation support
+                    local_time_str = f"{hour:02d}:{minute:02d}"
+
+                    # Save the reminder
+                    save_reminder_with_local_time(
+                        phone_number, pending_text, reminder_date_str,
+                        local_time_str, user_tz_str
+                    )
+
+                    # Format confirmation
+                    readable_date = aware_dt.strftime('%A, %B %d at %I:%M %p')
+                    reply_text = f"I'll remind you on {readable_date} to {pending_text}."
+
+                    # Clear pending reminder data
+                    create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_date=None)
+
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_date_time_confirmed", True)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(reply_text))
+                    return Response(content=str(resp), media_type="application/xml")
+
+            except Exception as e:
+                logger.error(f"Error processing date/time response: {e}")
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Sorry, I had trouble setting that reminder. Please try again with a time like '8am' or '3:30pm'."))
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
@@ -1711,13 +1776,27 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             time_mentioned = ai_response.get("time_mentioned")
 
             create_or_update_user(
-                phone_number, 
+                phone_number,
                 pending_reminder_text=reminder_text,
                 pending_reminder_time=time_mentioned
             )
 
             reply_text = ai_response.get("response", f"Do you mean {time_mentioned} AM or PM?")
             log_interaction(phone_number, incoming_msg, reply_text, "clarify_time", True)
+
+        elif ai_response["action"] == "clarify_date_time":
+            # User gave a date but no time - ask what time they want
+            reminder_text = ai_response.get("reminder_text")
+            reminder_date = ai_response.get("reminder_date")  # YYYY-MM-DD format
+
+            create_or_update_user(
+                phone_number,
+                pending_reminder_text=reminder_text,
+                pending_reminder_date=reminder_date
+            )
+
+            reply_text = ai_response.get("response", "What time would you like the reminder?")
+            log_interaction(phone_number, incoming_msg, reply_text, "clarify_date_time", True)
 
         elif ai_response["action"] == "reminder":
             reminder_date = ai_response.get("reminder_date")
@@ -2370,6 +2449,81 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 create_or_update_user(phone_number, pending_reminder_delete=json.dumps(reminder_options))
 
             log_interaction(phone_number, incoming_msg, reply_text, "delete_reminder", True)
+
+        elif ai_response["action"] == "update_reminder":
+            # Update/change the time of an existing reminder
+            import re
+            search_term = ai_response.get("search_term", "")
+            new_time_str = ai_response.get("new_time", "")  # e.g., "8:00 AM", "3:30 PM"
+            new_date_str = ai_response.get("new_date", "")  # optional, YYYY-MM-DD
+
+            user_tz_str = get_user_timezone(phone_number)
+            tz = pytz.timezone(user_tz_str)
+
+            # Search for matching pending reminders
+            matching_reminders = search_pending_reminders(phone_number, search_term)
+
+            if len(matching_reminders) == 0:
+                reply_text = f"No pending reminders found matching '{search_term}'."
+            elif len(matching_reminders) == 1:
+                reminder_id, reminder_text, current_date = matching_reminders[0]
+
+                try:
+                    # Parse the new time
+                    time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)', new_time_str, re.IGNORECASE)
+                    if time_match:
+                        hour = int(time_match.group(1))
+                        minute = int(time_match.group(2)) if time_match.group(2) else 0
+                        am_pm = time_match.group(3).lower().replace('.', '')
+
+                        # Convert to 24-hour format
+                        if am_pm == 'pm' and hour != 12:
+                            hour += 12
+                        elif am_pm == 'am' and hour == 12:
+                            hour = 0
+
+                        # Determine the date (use new_date if provided, otherwise keep current date)
+                        if new_date_str:
+                            date_obj = datetime.strptime(new_date_str, '%Y-%m-%d')
+                        else:
+                            # Keep the same date from current reminder
+                            if isinstance(current_date, str):
+                                utc_dt = datetime.strptime(current_date, '%Y-%m-%d %H:%M:%S')
+                            else:
+                                utc_dt = current_date
+                            utc_dt = pytz.UTC.localize(utc_dt)
+                            local_dt = utc_dt.astimezone(tz)
+                            date_obj = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                        # Create new datetime with updated time
+                        new_reminder_dt = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                        # Localize to user's timezone if not already
+                        if new_reminder_dt.tzinfo is None:
+                            aware_dt = tz.localize(new_reminder_dt)
+                        else:
+                            aware_dt = new_reminder_dt
+
+                        # Convert to UTC for storage
+                        utc_dt = aware_dt.astimezone(pytz.UTC)
+                        new_date_utc = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        local_time = f"{hour:02d}:{minute:02d}"
+
+                        if update_reminder_time(phone_number, reminder_id, new_date_utc, local_time, user_tz_str):
+                            readable_date = aware_dt.strftime('%A, %B %d at %I:%M %p')
+                            reply_text = f"Updated your reminder to: {reminder_text} on {readable_date}"
+                        else:
+                            reply_text = "Couldn't update that reminder."
+                    else:
+                        reply_text = "I couldn't parse that time. Please try again with a time like '8am' or '3:30pm'."
+                except Exception as e:
+                    logger.error(f"Error updating reminder: {e}")
+                    reply_text = "Sorry, I had trouble updating that reminder."
+            else:
+                # Multiple matches - for now, ask to be more specific
+                reply_text = f"Found multiple reminders matching '{search_term}'. Please be more specific about which one to update."
+
+            log_interaction(phone_number, incoming_msg, reply_text, "update_reminder", True)
 
         elif ai_response["action"] == "delete_memory":
             search_term = ai_response.get("search_term", "")
