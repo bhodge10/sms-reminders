@@ -497,12 +497,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # clarify_time flow - only if pending_reminder_time is set (not pending_reminder_date)
-        if user and len(user) > 11 and user[10] and user[11] and has_am_pm:  # pending_reminder_text AND pending_reminder_time exist
+        # Check for AM/PM with number (8am) OR standalone AM/PM response
+        is_standalone_am_pm = bool(re.match(r'^(am|pm|a\.m\.|p\.m\.)\.?$', incoming_msg.strip(), re.IGNORECASE))
+
+        if user and len(user) > 11 and user[10] and user[11] and (has_am_pm or is_standalone_am_pm):  # pending_reminder_text AND pending_reminder_time exist
             pending_text = user[10]
             pending_time = user[11]
 
-            # Detect AM vs PM from various formats (am, a.m., a, etc.)
-            am_match = re.search(r'\d\s*(am|a\.m\.|a)\b', incoming_msg, re.IGNORECASE)
+            # Detect AM vs PM from various formats (am, a.m., a, etc.) or standalone
+            am_match = re.search(r'(^|[\d\s])(am|a\.m\.?)(\b|$)', incoming_msg, re.IGNORECASE)
             am_pm = "AM" if am_match else "PM"
 
             try:
@@ -1824,6 +1827,15 @@ def process_single_action(ai_response, phone_number, incoming_msg):
         elif ai_response["action"] == "clarify_time":
             reminder_text = ai_response.get("reminder_text")
             time_mentioned = ai_response.get("time_mentioned")
+
+            # Fallback: extract time from response if time_mentioned is missing
+            if not time_mentioned:
+                response_text = ai_response.get("response", "")
+                # Look for patterns like "8:00", "8", "10:30" in the response
+                time_match = re.search(r'(\d{1,2}(?::\d{2})?)\s*(?:AM|PM)', response_text, re.IGNORECASE)
+                if time_match:
+                    time_mentioned = time_match.group(1)
+                    logger.info(f"Extracted time '{time_mentioned}' from AI response")
 
             create_or_update_user(
                 phone_number,

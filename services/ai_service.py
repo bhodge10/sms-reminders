@@ -341,7 +341,9 @@ RECURRING PATTERNS:
 - "on weekends at 9am" → recurrence_type: "weekends", time: "09:00"
 - "every month on the 1st at noon" → recurrence_type: "monthly", recurrence_day: 1, time: "12:00"
 - "monthly on the 15th at 3pm" → recurrence_type: "monthly", recurrence_day: 15, time: "15:00"
-IMPORTANT: For recurring reminders, ALWAYS require AM/PM or use 24-hour time. If AM/PM is missing, use "clarify_time" action.
+IMPORTANT: For recurring reminders, ALWAYS require AM/PM or use 24-hour time.
+- If time is given but AM/PM is missing (e.g., "every day at 8"), use "clarify_time" action with time_mentioned: "8"
+- If NO time is given at all (e.g., "remind me everyday to..."), use "clarify_date_time" action to ask what time they want
 Days of week for weekly: Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
 NOT SUPPORTED - If user asks for minute or hourly intervals (e.g., "every 5 minutes", "every 2 hours", "every hour"), return:
 {{
