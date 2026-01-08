@@ -1216,9 +1216,120 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # TIMEZONE COMMANDS
+        # DAILY SUMMARY COMMANDS
         # ==========================================
         msg_upper = incoming_msg.upper().strip()
+
+        # Enable daily summary: "SUMMARY ON", "DAILY SUMMARY ON"
+        if msg_upper in ["SUMMARY ON", "DAILY SUMMARY ON", "DAILY SUMMARY"]:
+            from models.user import get_daily_summary_settings
+
+            # Enable with default time (8:00 AM)
+            create_or_update_user(phone_number, daily_summary_enabled=True)
+
+            settings = get_daily_summary_settings(phone_number)
+            time_str = settings['time'] if settings else '08:00'
+
+            # Format for display
+            time_parts = time_str.split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            am_pm = 'AM' if hour < 12 else 'PM'
+            display_hour = hour if hour <= 12 else hour - 12
+            if display_hour == 0:
+                display_hour = 12
+            display_time = f"{display_hour}:{minute:02d} {am_pm}"
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(f"Daily summary enabled! You'll receive a summary of your day's reminders at {display_time}.\n\nTo change the time, text: SUMMARY TIME 7AM"))
+            log_interaction(phone_number, incoming_msg, "Daily summary enabled", "daily_summary_on", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Disable daily summary: "SUMMARY OFF", "DAILY SUMMARY OFF"
+        if msg_upper in ["SUMMARY OFF", "DAILY SUMMARY OFF"]:
+            create_or_update_user(phone_number, daily_summary_enabled=False)
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix("Daily summary disabled. You'll no longer receive daily reminder summaries."))
+            log_interaction(phone_number, incoming_msg, "Daily summary disabled", "daily_summary_off", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Check daily summary status: "MY SUMMARY", "SUMMARY STATUS"
+        if msg_upper in ["MY SUMMARY", "SUMMARY STATUS", "SUMMARY"]:
+            from models.user import get_daily_summary_settings
+
+            settings = get_daily_summary_settings(phone_number)
+
+            if settings and settings['enabled']:
+                time_str = settings['time']
+                time_parts = time_str.split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                am_pm = 'AM' if hour < 12 else 'PM'
+                display_hour = hour if hour <= 12 else hour - 12
+                if display_hour == 0:
+                    display_hour = 12
+                display_time = f"{display_hour}:{minute:02d} {am_pm}"
+
+                resp = MessagingResponse()
+                resp.message(staging_prefix(f"Daily summary: ON at {display_time}\n\nCommands:\n- SUMMARY OFF - Disable\n- SUMMARY TIME 7AM - Change time"))
+            else:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Daily summary: OFF\n\nTo enable, text: SUMMARY ON\nTo set a specific time: SUMMARY TIME 7AM"))
+
+            log_interaction(phone_number, incoming_msg, "Daily summary status", "daily_summary_status", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Set daily summary time: "SUMMARY TIME 7AM", "DAILY SUMMARY TIME 8:30AM"
+        import re
+        summary_time_match = re.match(
+            r'^(?:daily\s+)?summary\s+(?:time\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)$',
+            incoming_msg.strip(),
+            re.IGNORECASE
+        )
+
+        if summary_time_match:
+            hour = int(summary_time_match.group(1))
+            minute = int(summary_time_match.group(2)) if summary_time_match.group(2) else 0
+            am_pm = summary_time_match.group(3).upper()
+
+            # Convert to 24-hour format
+            if am_pm == 'PM' and hour != 12:
+                hour += 12
+            elif am_pm == 'AM' and hour == 12:
+                hour = 0
+
+            # Validate hour
+            if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Please enter a valid time like 7AM, 8:30AM, or 6PM"))
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Format for storage (HH:MM)
+            time_str = f"{hour:02d}:{minute:02d}"
+
+            # Enable and set time
+            create_or_update_user(
+                phone_number,
+                daily_summary_enabled=True,
+                daily_summary_time=time_str
+            )
+
+            # Format for display
+            display_am_pm = 'AM' if hour < 12 else 'PM'
+            display_hour = hour if hour <= 12 else hour - 12
+            if display_hour == 0:
+                display_hour = 12
+            display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(f"Daily summary set for {display_time}! You'll receive a summary of your day's reminders each morning."))
+            log_interaction(phone_number, incoming_msg, f"Daily summary time set to {time_str}", "daily_summary_time", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # TIMEZONE COMMANDS
+        # ==========================================
 
         # Show current timezone
         if msg_upper in ["MY TIMEZONE", "TIMEZONE", "MY TZ", "SHOW TIMEZONE"]:

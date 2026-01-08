@@ -451,3 +451,129 @@ def generate_recurring_reminders():
     except Exception as exc:
         logger.exception("Error in generate_recurring_reminders")
         raise
+
+
+# =====================================================
+# DAILY SUMMARY FUNCTIONS
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_daily_summaries(self):
+    """
+    Periodic task to send daily reminder summaries.
+    Runs every minute via Celery Beat.
+
+    For each minute, checks which users have their summary time set to
+    that minute (in their local timezone) and sends their daily summary.
+    """
+    import pytz
+    from datetime import datetime
+    from models.user import get_users_due_for_daily_summary, mark_daily_summary_sent
+    from models.reminder import get_reminders_for_date
+
+    try:
+        utc_now = datetime.now(pytz.UTC)
+
+        # Get users whose local time matches their summary time preference
+        due_users = get_users_due_for_daily_summary()
+
+        if not due_users:
+            logger.debug("No users due for daily summary")
+            return {"sent": 0}
+
+        logger.info(f"Sending daily summaries to {len(due_users)} users")
+
+        sent_count = 0
+        for user in due_users:
+            try:
+                phone_number = user['phone_number']
+                timezone_str = user['timezone']
+                first_name = user.get('first_name', '')
+
+                # Get user's local date
+                user_tz = pytz.timezone(timezone_str)
+                user_now = utc_now.astimezone(user_tz)
+                user_today = user_now.date()
+
+                # Get today's reminders
+                reminders = get_reminders_for_date(phone_number, user_today, timezone_str)
+
+                # Format and send summary
+                message = format_daily_summary(reminders, first_name, user_today, user_tz)
+                send_sms(phone_number, message)
+
+                # Mark as sent
+                mark_daily_summary_sent(phone_number)
+                sent_count += 1
+
+                logger.info(f"Sent daily summary to {phone_number[-4:]} ({len(reminders)} reminders)")
+
+            except Exception as e:
+                logger.error(f"Error sending daily summary to {user['phone_number'][-4:]}: {e}")
+                continue
+
+        return {"sent": sent_count}
+
+    except Exception as exc:
+        logger.exception("Error in send_daily_summaries")
+        raise self.retry(exc=exc)
+
+
+def format_daily_summary(reminders, first_name, date, user_tz):
+    """Format the daily summary message.
+
+    Args:
+        reminders: List of (id, reminder_text, reminder_date_utc) tuples
+        first_name: User's first name (may be None)
+        date: User's local date
+        user_tz: User's pytz timezone object
+
+    Returns:
+        Formatted summary message string
+    """
+    import pytz
+    from datetime import datetime
+
+    # Build greeting
+    greeting = f"Good morning{', ' + first_name if first_name else ''}!"
+
+    # Format date
+    date_str = date.strftime('%A, %B %d')
+
+    if not reminders:
+        return f"{greeting}\n\nNo reminders scheduled for today ({date_str}). Enjoy your day!"
+
+    # Build reminder list
+    lines = [
+        f"{greeting}",
+        "",
+        f"Your reminders for {date_str}:",
+        ""
+    ]
+
+    for i, (reminder_id, text, reminder_date_utc) in enumerate(reminders, 1):
+        # Convert UTC to local time for display
+        try:
+            if isinstance(reminder_date_utc, datetime):
+                utc_dt = reminder_date_utc
+                if utc_dt.tzinfo is None:
+                    utc_dt = pytz.UTC.localize(utc_dt)
+            else:
+                utc_dt = datetime.strptime(str(reminder_date_utc), '%Y-%m-%d %H:%M:%S')
+                utc_dt = pytz.UTC.localize(utc_dt)
+
+            local_dt = utc_dt.astimezone(user_tz)
+            time_str = local_dt.strftime('%I:%M %p').lstrip('0')
+        except:
+            time_str = "TBD"
+
+        lines.append(f"{i}. {time_str} - {text}")
+
+    lines.append("")
+    lines.append("(You'll still receive each reminder at its scheduled time)")
+
+    return "\n".join(lines)

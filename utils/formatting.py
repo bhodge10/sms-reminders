@@ -19,6 +19,12 @@ View: "Show my reminders"
 Delete: "Delete reminder about mom"
 Snooze: Reply SNOOZE when you get a reminder (adds 15 min), or "SNOOZE 1h" for 1 hour
 
+DAILY SUMMARY
+Enable: SUMMARY ON
+Set time: SUMMARY TIME 7AM
+Disable: SUMMARY OFF
+Status: MY SUMMARY
+
 LISTS
 Create: "Create a grocery list"
 Add: "Add milk, eggs, bread to grocery list"
@@ -31,6 +37,7 @@ QUICK COMMANDS
 MY LISTS - View all lists
 LIST ALL - View all memories
 SNOOZE - Snooze last reminder
+SUMMARY ON/OFF - Daily summary
 STOP - Pauses texts from Remyndrs (your account and data stay active, text START to resume)
 FEEDBACK: [message] - Send us feedback
 
@@ -46,7 +53,7 @@ def get_onboarding_prompt(step):
         2: "What's your last name?",
         3: "What's your email address?",
         4: "What's your ZIP code?",
-        5: "How did you hear about us? (Reply: Reddit, Facebook, Google, Friend, Ad, or skip)"
+        5: "Would you like a daily summary of your reminders each morning?\n\nReply YES for 8am, a time like 7AM, or NO to skip."
     }
     return prompts.get(step, "Let's continue your setup!")
 

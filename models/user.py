@@ -18,6 +18,7 @@ ALLOWED_USER_FIELDS = {
     'last_sent_reminder_id', 'last_sent_reminder_at', 'opted_out', 'opted_out_at',
     'stripe_customer_id', 'stripe_subscription_id', 'subscription_status',
     'pending_reminder_date', 'pending_list_create',
+    'daily_summary_enabled', 'daily_summary_time', 'daily_summary_last_sent',
 }
 
 
@@ -444,6 +445,145 @@ def is_user_opted_out(phone_number):
         return result and result[0] == True
     except Exception as e:
         logger.error(f"Error checking user opt-out status: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_daily_summary_settings(phone_number):
+    """Get user's daily summary settings.
+
+    Returns:
+        dict: {'enabled': bool, 'time': str (HH:MM), 'last_sent': date or None}
+        or None if user not found
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                'SELECT daily_summary_enabled, daily_summary_time, daily_summary_last_sent FROM users WHERE phone_hash = %s',
+                (phone_hash,)
+            )
+            result = c.fetchone()
+            if not result:
+                c.execute(
+                    'SELECT daily_summary_enabled, daily_summary_time, daily_summary_last_sent FROM users WHERE phone_number = %s',
+                    (phone_number,)
+                )
+                result = c.fetchone()
+        else:
+            c.execute(
+                'SELECT daily_summary_enabled, daily_summary_time, daily_summary_last_sent FROM users WHERE phone_number = %s',
+                (phone_number,)
+            )
+            result = c.fetchone()
+
+        if result:
+            return {
+                'enabled': result[0] or False,
+                'time': str(result[1]) if result[1] else '08:00',
+                'last_sent': result[2]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting daily summary settings: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_users_due_for_daily_summary():
+    """Get all users who should receive their daily summary now.
+
+    This function is timezone-aware: it finds users whose local time
+    matches their summary time preference and haven't received a summary today.
+
+    Returns:
+        List of dicts: [{'phone_number': str, 'timezone': str, 'first_name': str}]
+    """
+    import pytz
+    from datetime import datetime
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Get all users with daily summary enabled
+        c.execute('''
+            SELECT phone_number, timezone, first_name, daily_summary_time, daily_summary_last_sent
+            FROM users
+            WHERE daily_summary_enabled = TRUE
+              AND onboarding_complete = TRUE
+              AND (opted_out IS NULL OR opted_out = FALSE)
+        ''')
+
+        results = c.fetchall()
+        due_users = []
+
+        utc_now = datetime.now(pytz.UTC)
+
+        for row in results:
+            phone_number, user_tz_str, first_name, summary_time, last_sent = row
+
+            try:
+                user_tz = pytz.timezone(user_tz_str or 'America/New_York')
+                user_now = utc_now.astimezone(user_tz)
+
+                # Parse user's summary time preference
+                if summary_time:
+                    time_str = str(summary_time)
+                    time_parts = time_str.split(':')
+                    user_hour = int(time_parts[0])
+                    user_minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                else:
+                    user_hour, user_minute = 8, 0  # Default to 8:00 AM
+
+                # Check if current local time matches user's preference (within same minute)
+                if user_now.hour == user_hour and user_now.minute == user_minute:
+                    # Check if we already sent today (in user's local date)
+                    user_today = user_now.date()
+                    if last_sent != user_today:
+                        due_users.append({
+                            'phone_number': phone_number,
+                            'timezone': user_tz_str or 'America/New_York',
+                            'first_name': first_name
+                        })
+            except Exception as e:
+                logger.error(f"Error checking summary for user {phone_number[-4:]}: {e}")
+                continue
+
+        return due_users
+    except Exception as e:
+        logger.error(f"Error getting users for daily summary: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def mark_daily_summary_sent(phone_number):
+    """Mark that we sent the daily summary to this user today."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            'UPDATE users SET daily_summary_last_sent = CURRENT_DATE WHERE phone_number = %s',
+            (phone_number,)
+        )
+        conn.commit()
+        logger.info(f"Marked daily summary sent for {phone_number[-4:]}")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking daily summary sent: {e}")
         return False
     finally:
         if conn:

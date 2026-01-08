@@ -152,6 +152,81 @@ def get_pending_reminders(phone_number):
             return_db_connection(conn)
 
 
+def get_reminders_for_date(phone_number, target_date, timezone_str):
+    """Get all pending reminders for a user on a specific date.
+
+    Args:
+        phone_number: User's phone number
+        target_date: date object (user's local date)
+        timezone_str: User's timezone string (e.g., 'America/New_York')
+
+    Returns:
+        List of tuples: [(id, reminder_text, reminder_date)]
+    """
+    import pytz
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Calculate UTC range for the user's local date
+        user_tz = pytz.timezone(timezone_str)
+
+        # Start of day in user's timezone
+        day_start_local = user_tz.localize(datetime.combine(target_date, datetime.min.time()))
+        # End of day in user's timezone
+        day_end_local = day_start_local + timedelta(days=1)
+
+        # Convert to UTC for database query
+        day_start_utc = day_start_local.astimezone(pytz.UTC)
+        day_end_utc = day_end_local.astimezone(pytz.UTC)
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('''
+                SELECT id, reminder_text, reminder_date
+                FROM reminders
+                WHERE phone_hash = %s
+                  AND sent = FALSE
+                  AND reminder_date >= %s
+                  AND reminder_date < %s
+                ORDER BY reminder_date ASC
+            ''', (phone_hash, day_start_utc, day_end_utc))
+            results = c.fetchall()
+            if not results:
+                c.execute('''
+                    SELECT id, reminder_text, reminder_date
+                    FROM reminders
+                    WHERE phone_number = %s
+                      AND sent = FALSE
+                      AND reminder_date >= %s
+                      AND reminder_date < %s
+                    ORDER BY reminder_date ASC
+                ''', (phone_number, day_start_utc, day_end_utc))
+                results = c.fetchall()
+        else:
+            c.execute('''
+                SELECT id, reminder_text, reminder_date
+                FROM reminders
+                WHERE phone_number = %s
+                  AND sent = FALSE
+                  AND reminder_date >= %s
+                  AND reminder_date < %s
+                ORDER BY reminder_date ASC
+            ''', (phone_number, day_start_utc, day_end_utc))
+            results = c.fetchall()
+
+        return results
+    except Exception as e:
+        logger.error(f"Error getting reminders for date: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 def search_pending_reminders(phone_number, search_term):
     """Search pending reminders by keyword (case-insensitive)"""
     conn = None

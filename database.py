@@ -391,6 +391,10 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_date TEXT",
             # Pending list create for duplicate list handling
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_list_create TEXT",
+            # Daily summary feature: opt-in morning summary of day's reminders
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_enabled BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_time TIME DEFAULT '08:00'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_last_sent DATE",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -410,6 +414,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_recurring_reminders_phone ON recurring_reminders(phone_number)",
             "CREATE INDEX IF NOT EXISTS idx_recurring_reminders_active ON recurring_reminders(active, next_occurrence) WHERE active = TRUE",
             "CREATE INDEX IF NOT EXISTS idx_reminders_recurring_id ON reminders(recurring_id) WHERE recurring_id IS NOT NULL",
+            # Daily summary: index for efficient querying of users who need summary
+            "CREATE INDEX IF NOT EXISTS idx_users_daily_summary ON users(daily_summary_enabled) WHERE daily_summary_enabled = TRUE",
         ]
 
         for migration in migrations:

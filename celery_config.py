@@ -30,6 +30,14 @@ beat_schedule = {
         "task": "tasks.reminder_tasks.generate_recurring_reminders",
         "schedule": timedelta(hours=1),
     },
+    # Send daily summaries every minute (checks for users whose local time matches their preference)
+    "send-daily-summaries": {
+        "task": "tasks.reminder_tasks.send_daily_summaries",
+        "schedule": timedelta(minutes=1),
+        "options": {
+            "expires": 55,  # Task expires if not picked up in 55 seconds
+        },
+    },
 }
 
 # Note: All tasks use the default 'celery' queue for simplicity.
