@@ -1287,21 +1287,46 @@ async def resume_recurring_admin(recurring_id: int, admin: str = Depends(verify_
 
 @router.delete("/admin/recurring/{recurring_id}")
 async def delete_recurring_admin(recurring_id: int, admin: str = Depends(verify_admin)):
-    """Delete a recurring reminder"""
+    """Delete a recurring reminder and handle related reminders"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+
+        # First check if the recurring reminder exists
         c.execute(
-            "DELETE FROM recurring_reminders WHERE id = %s RETURNING id, reminder_text",
+            "SELECT id, reminder_text FROM recurring_reminders WHERE id = %s",
             (recurring_id,)
         )
         result = c.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Recurring reminder not found")
+
+        reminder_text = result[1]
+
+        # Delete pending (unsent) reminders linked to this recurring reminder
+        c.execute(
+            "DELETE FROM reminders WHERE recurring_id = %s AND sent = FALSE",
+            (recurring_id,)
+        )
+        deleted_pending = c.rowcount
+
+        # Set recurring_id to NULL for sent reminders (preserve history)
+        c.execute(
+            "UPDATE reminders SET recurring_id = NULL WHERE recurring_id = %s",
+            (recurring_id,)
+        )
+        unlinked_sent = c.rowcount
+
+        # Now delete the recurring reminder itself
+        c.execute(
+            "DELETE FROM recurring_reminders WHERE id = %s",
+            (recurring_id,)
+        )
+
         conn.commit()
-        logger.info(f"Admin deleted recurring reminder {recurring_id}: {result[1]}")
-        return {"success": True, "id": result[0], "text": result[1]}
+        logger.info(f"Admin deleted recurring reminder {recurring_id}: {reminder_text} (deleted {deleted_pending} pending, unlinked {unlinked_sent} sent)")
+        return {"success": True, "id": recurring_id, "text": reminder_text}
     except HTTPException:
         raise
     except Exception as e:
