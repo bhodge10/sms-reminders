@@ -2034,7 +2034,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 return reply_text
 
             save_memory(phone_number, memory_text, ai_response)
-            reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
+            # Echo back exactly what was saved for user trust
+            saved_text = ai_response.get("memory_text", "")
+            if saved_text:
+                reply_text = f'Got it! Saved: "{saved_text}"'
+            else:
+                reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
 
             # Check if this is user's first action and prompt for daily summary
             if should_prompt_daily_summary(phone_number):

@@ -577,3 +577,59 @@ def format_daily_summary(reminders, first_name, date, user_tz):
     lines.append("(You'll still receive each reminder at its scheduled time)")
 
     return "\n".join(lines)
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_abandoned_onboarding_followups(self):
+    """
+    Periodic task to send follow-up messages to abandoned onboardings.
+    Runs every hour via Celery Beat.
+    """
+    from services.onboarding_recovery_service import (
+        get_abandoned_onboardings_24h,
+        get_abandoned_onboardings_7d,
+        mark_followup_sent,
+        build_24h_followup_message,
+        build_7d_followup_message,
+    )
+
+    try:
+        sent_count = 0
+
+        # 24-hour follow-ups
+        abandoned_24h = get_abandoned_onboardings_24h()
+        for user in abandoned_24h:
+            try:
+                message = build_24h_followup_message(
+                    user['first_name'],
+                    user['current_step']
+                )
+                send_sms(user['phone_number'], message)
+                mark_followup_sent(user['phone_number'], '24h')
+                sent_count += 1
+                logger.info(f"Sent 24h onboarding followup to ...{user['phone_number'][-4:]}")
+            except Exception as e:
+                logger.error(f"Error sending 24h followup: {e}")
+
+        # 7-day follow-ups (final attempt)
+        abandoned_7d = get_abandoned_onboardings_7d()
+        for user in abandoned_7d:
+            try:
+                message = build_7d_followup_message(user['first_name'])
+                send_sms(user['phone_number'], message)
+                mark_followup_sent(user['phone_number'], '7d')
+                sent_count += 1
+                logger.info(f"Sent 7d onboarding followup to ...{user['phone_number'][-4:]}")
+            except Exception as e:
+                logger.error(f"Error sending 7d followup: {e}")
+
+        logger.info(f"Abandoned onboarding followups complete: {sent_count} sent")
+        return {"followups_sent": sent_count}
+
+    except Exception as exc:
+        logger.exception("Error in abandoned onboarding followups")
+        raise self.retry(exc=exc)

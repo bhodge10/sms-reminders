@@ -19,7 +19,7 @@ ALLOWED_USER_FIELDS = {
     'stripe_customer_id', 'stripe_subscription_id', 'subscription_status',
     'pending_reminder_date', 'pending_list_create',
     'daily_summary_enabled', 'daily_summary_time', 'daily_summary_last_sent',
-    'daily_summary_prompted',
+    'daily_summary_prompted', 'pending_daily_summary_time',
 }
 
 
