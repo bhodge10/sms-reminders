@@ -41,6 +41,7 @@ from models.list_model import (
 from services.sms_service import send_sms
 from services.ai_service import process_with_ai, parse_list_items
 from services.onboarding_service import handle_onboarding
+from services.first_action_service import should_prompt_daily_summary, mark_daily_summary_prompted, get_daily_summary_prompt_message, handle_daily_summary_response
 # NOTE: Reminder checking is now handled by Celery Beat (see tasks/reminder_tasks.py)
 from services.metrics_service import track_user_activity, increment_message_count
 from utils.timezone import get_user_current_time
@@ -424,6 +425,17 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return handle_onboarding(phone_number, incoming_msg)
 
         # ==========================================
+        # DAILY SUMMARY RESPONSE (after first action)
+        # ==========================================
+        # Check if user is responding to daily summary prompt
+        handled, response_text = handle_daily_summary_response(phone_number, incoming_msg)
+        if handled and response_text:
+            log_interaction(phone_number, incoming_msg, response_text, "daily_summary_setup", True)
+            resp = MessagingResponse()
+            resp.message(staging_prefix(response_text))
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # AM/PM CLARIFICATION RESPONSE
         # ==========================================
         # Check if user has a pending reminder and their message contains AM or PM
@@ -544,6 +556,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
                 # Clear pending reminder
                 create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
+
+                # Check if this is user's first action and prompt for daily summary
+                if should_prompt_daily_summary(phone_number):
+                    reply_text = get_daily_summary_prompt_message(reply_text)
+                    mark_daily_summary_prompted(phone_number)
 
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
                 resp = MessagingResponse()
@@ -2018,6 +2035,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
             save_memory(phone_number, memory_text, ai_response)
             reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
+
+            # Check if this is user's first action and prompt for daily summary
+            if should_prompt_daily_summary(phone_number):
+                reply_text = get_daily_summary_prompt_message(reply_text)
+                mark_daily_summary_prompted(phone_number)
+
             log_interaction(phone_number, incoming_msg, reply_text, "store", True)
 
         elif ai_response["action"] == "retrieve":
@@ -2163,6 +2186,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 save_reminder(phone_number, reminder_text, reminder_date)
 
             reply_text = ai_response.get("confirmation", "Got it! I'll remind you.")
+
+            # Check if this is user's first action and prompt for daily summary
+            if should_prompt_daily_summary(phone_number):
+                reply_text = get_daily_summary_prompt_message(reply_text)
+                mark_daily_summary_prompted(phone_number)
+
             log_interaction(phone_number, incoming_msg, reply_text, "reminder", True)
 
         elif ai_response["action"] == "reminder_relative":
@@ -2251,6 +2280,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 date_str = reminder_dt_local.strftime('%A, %B %d, %Y')
 
                 reply_text = f"Got it! I'll remind you on {date_str} at {time_str} to {reminder_text}."
+
+                # Check if this is user's first action and prompt for daily summary
+                if should_prompt_daily_summary(phone_number):
+                    reply_text = get_daily_summary_prompt_message(reply_text)
+                    mark_daily_summary_prompted(phone_number)
+
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_relative", True)
 
             except Exception as e:
@@ -2509,6 +2544,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                             reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}. ({len(items_to_add) - len(added_items)} items skipped - list full)"
                         else:
                             reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}"
+
+                        # Check if this is user's first action and prompt for daily summary
+                        if should_prompt_daily_summary(phone_number):
+                            reply_text = get_daily_summary_prompt_message(reply_text)
+                            mark_daily_summary_prompted(phone_number)
+
                 log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
 
         elif ai_response["action"] == "add_item_ask_list":
@@ -2549,6 +2590,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                         reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}. ({len(items_to_add) - len(added_items)} items skipped - list full)"
                     else:
                         reply_text = f"Added {len(added_items)} items to your {list_name}: {', '.join(added_items)}"
+
+                    # Check if this is user's first action and prompt for daily summary
+                    if should_prompt_daily_summary(phone_number):
+                        reply_text = get_daily_summary_prompt_message(reply_text)
+                        mark_daily_summary_prompted(phone_number)
+
             elif len(lists) > 1:
                 # Multiple lists, ask which one (store original text for parsing later)
                 create_or_update_user(phone_number, pending_list_item=item_text)

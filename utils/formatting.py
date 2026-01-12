@@ -56,8 +56,7 @@ def get_onboarding_prompt(step):
 (We only use this for important updates - no spam!)""",
         4: """ZIP code?
 
-(This helps me send reminders at the right time in your timezone)""",
-        5: "Would you like a daily summary of your reminders each morning?\n\nReply YES for 8am, a time like 7AM, or NO to skip."
+(This helps me send reminders at the right time in your timezone)"""
     }
     return prompts.get(step, "Let's continue your setup!")
 

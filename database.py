@@ -395,6 +395,8 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_enabled BOOLEAN DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_time TIME DEFAULT '08:00'",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_last_sent DATE",
+            # Track if user has been prompted for daily summary after first action
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_prompted BOOLEAN DEFAULT FALSE",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups

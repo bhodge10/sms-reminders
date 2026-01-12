@@ -104,16 +104,15 @@ def handle_onboarding(phone_number, message):
 
         # Handle help request during onboarding
         if message_lower in ['help', '?'] and step > 0:
-            resp.message(f"""I'm helping you set up your account! It's quick - just 5 questions total.
+            resp.message(f"""I'm helping you set up your account! It's quick - just 4 questions total.
 
-You're currently on step {step} of 5:
+You're currently on step {step} of 4:
 {get_onboarding_prompt(step)}
 
 Why I need this info:
 • Name: Personalize your experience
 • Email: Account recovery & important updates only
 • ZIP: Set your timezone for accurate reminders
-• Daily Summary: Optional morning reminder recap
 
 Text "cancel" to cancel setup, or just answer the question to continue!""")
             return Response(content=str(resp), media_type="application/xml")
@@ -153,11 +152,11 @@ What's your ZIP code?""")
 
         # Check if user is trying to use the service before completing onboarding
         if any(keyword in message_lower for keyword in service_keywords) and step > 0:
-            remaining = 5 - step + 1
+            remaining = 4 - step + 1
             question_word = "question" if remaining == 1 else "questions"
             resp.message(f"""⚠️ Almost there! Please finish setup first.
 
-You're on step {step} of 5 - just {remaining} more {question_word}!
+You're on step {step} of 4 - just {remaining} more {question_word}!
 
 {get_onboarding_prompt(step)}""")
             return Response(content=str(resp), media_type="application/xml")
@@ -174,7 +173,7 @@ Thanks for texting START!
 
 I help you remember anything - from grocery lists to important reminders.
 
-Just 5 quick questions to get started, then you're all set!
+Just 4 quick questions to get started (takes about 1 minute), then you're all set!
 
 What's your first name?""")
             else:
@@ -182,7 +181,7 @@ What's your first name?""")
 
 I help you remember anything - from grocery lists to important reminders.
 
-Just 5 quick questions to get started, then you're all set!
+Just 4 quick questions to get started (takes about 1 minute), then you're all set!
 
 What's your first name?""")
 
@@ -222,12 +221,12 @@ Email for account recovery?
                 return Response(content=str(resp), media_type="application/xml")
 
             create_or_update_user(phone_number, email=email, onboarding_step=4)
-            resp.message("""Perfect! ZIP code?
+            resp.message("""Perfect! Last question: ZIP code?
 
 (This helps me send reminders at the right time in your timezone)""")
 
         elif step == 4:
-            # Validate and store zip code, calculate timezone, ask about daily summary
+            # Validate and store zip code, calculate timezone, complete onboarding
             zip_code, error_type = validate_zip_code(message_stripped)
 
             if error_type:
@@ -237,102 +236,28 @@ Email for account recovery?
             # Get timezone from zip code
             timezone = get_timezone_from_zip(zip_code)
 
-            # Save zip and timezone, move to step 5
+            # Calculate trial end date
+            trial_end_date = datetime.utcnow() + timedelta(days=FREE_TRIAL_DAYS)
+
+            # Save zip, timezone, trial info, and mark onboarding complete
             create_or_update_user(
                 phone_number,
                 zip_code=zip_code,
                 timezone=timezone,
-                onboarding_step=5
+                onboarding_complete=True,
+                onboarding_step=5,
+                premium_status=TIER_PREMIUM,
+                trial_end_date=trial_end_date
             )
 
-            resp.message(f"""Got it! Your timezone is set to {timezone}.
-
-Last question: Would you like a daily summary of your reminders each morning?
-
-Reply YES for 8am summary, or a time like 7AM or 9:30AM.
-Reply NO to skip.""")
-
-        elif step == 5:
-            # Handle daily summary preference, complete onboarding
-            msg_lower = message.lower().strip()
-
-            # Calculate trial end date
-            trial_end_date = datetime.utcnow() + timedelta(days=FREE_TRIAL_DAYS)
-
-            summary_msg = ""
-
-            if msg_lower in ['yes', 'y', 'sure', 'ok', 'okay', 'yep', 'yeah']:
-                # Enable with default 8am
-                create_or_update_user(
-                    phone_number,
-                    daily_summary_enabled=True,
-                    daily_summary_time='08:00',
-                    onboarding_complete=True,
-                    onboarding_step=6,
-                    premium_status=TIER_PREMIUM,
-                    trial_end_date=trial_end_date
-                )
-                summary_msg = "Daily summary enabled for 8:00 AM!"
-            elif msg_lower in ['no', 'n', 'skip', 'nope', 'nah']:
-                create_or_update_user(
-                    phone_number,
-                    onboarding_complete=True,
-                    onboarding_step=6,
-                    premium_status=TIER_PREMIUM,
-                    trial_end_date=trial_end_date
-                )
-            else:
-                # Try to parse a time
-                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', msg_lower, re.IGNORECASE)
-                if time_match:
-                    hour = int(time_match.group(1))
-                    minute = int(time_match.group(2)) if time_match.group(2) else 0
-                    am_pm = time_match.group(3).upper()
-
-                    if am_pm == 'PM' and hour != 12:
-                        hour += 12
-                    elif am_pm == 'AM' and hour == 12:
-                        hour = 0
-
-                    time_str = f"{hour:02d}:{minute:02d}"
-
-                    # Format display time
-                    display_am_pm = 'AM' if hour < 12 else 'PM'
-                    display_hour = hour if hour <= 12 else hour - 12
-                    if display_hour == 0:
-                        display_hour = 12
-                    display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
-
-                    create_or_update_user(
-                        phone_number,
-                        daily_summary_enabled=True,
-                        daily_summary_time=time_str,
-                        onboarding_complete=True,
-                        onboarding_step=6,
-                        premium_status=TIER_PREMIUM,
-                        trial_end_date=trial_end_date
-                    )
-                    summary_msg = f"Daily summary enabled for {display_time}!"
-                else:
-                    # Unclear response, skip and complete
-                    create_or_update_user(
-                        phone_number,
-                        onboarding_complete=True,
-                        onboarding_step=6,
-                        premium_status=TIER_PREMIUM,
-                        trial_end_date=trial_end_date
-                    )
-
-            # Get user info for personalized message
+            # Get user's name for personalized message
             user = get_user(phone_number)
             first_name = user[1]
 
-            # Send welcome message with pricing transparency and first action prompt
-            welcome_msg = f"""You're all set, {first_name}! 🎉"""
-            if summary_msg:
-                welcome_msg += f"\n\n{summary_msg}"
+            # Send completion message with pricing transparency and first action prompt
+            resp.message(f"""Perfect! Your timezone is set to {timezone}.
 
-            welcome_msg += f"""
+You're all set, {first_name}! 🎉
 
 You have a FREE {FREE_TRIAL_DAYS}-day Premium trial starting now!
 
@@ -349,9 +274,7 @@ Now let's set your first reminder!
 What's something you need to remember?
 
 Try: "Remind me to call mom tomorrow at 2pm"
-Or: "Add milk and eggs to my grocery list\""""
-
-            resp.message(welcome_msg)
+Or: "Add milk and eggs to my grocery list\"""")
 
             # Send VCF contact card as separate follow-up MMS
             vcf_url = f"{APP_BASE_URL}/contact.vcf"
