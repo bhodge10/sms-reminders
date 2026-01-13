@@ -580,11 +580,56 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         pending_delete_data = get_pending_reminder_delete(phone_number)
         if pending_delete_data:
             # Handle CANCEL
-            if incoming_msg.strip().upper() == "CANCEL":
+            if incoming_msg.strip().upper() in ["CANCEL", "NO"]:
                 create_or_update_user(phone_number, pending_reminder_delete=None)
                 resp = MessagingResponse()
                 resp.message("Cancelled.")
                 return Response(content=str(resp), media_type="application/xml")
+
+            try:
+                delete_data = json.loads(pending_delete_data)
+            except json.JSONDecodeError:
+                delete_data = None
+
+            # Handle YES confirmation for single-item delete
+            if delete_data and isinstance(delete_data, dict) and delete_data.get('awaiting_confirmation'):
+                if incoming_msg.strip().upper() == "YES":
+                    delete_type = delete_data.get('type', 'reminder')
+                    reply_msg = None
+
+                    if delete_type == 'reminder':
+                        if delete_reminder(phone_number, delete_data['id']):
+                            reply_msg = f"Deleted reminder: {delete_data['text']}"
+                            # If this was a recurring reminder instance, also delete the recurring pattern
+                            recurring_id = delete_data.get('recurring_id')
+                            if recurring_id:
+                                if delete_recurring_reminder(recurring_id, phone_number):
+                                    reply_msg += " (and its recurring schedule)"
+                        else:
+                            reply_msg = "Couldn't delete that reminder."
+
+                    elif delete_type == 'recurring':
+                        if delete_recurring_reminder(delete_data['id'], phone_number):
+                            reply_msg = f"Deleted recurring reminder: {delete_data['text']}"
+                        else:
+                            reply_msg = "Couldn't delete that recurring reminder."
+
+                    elif delete_type == 'list_item':
+                        if delete_list_item(phone_number, delete_data['list_name'], delete_data['text']):
+                            reply_msg = f"Removed '{delete_data['text']}' from {delete_data['list_name']}"
+                        else:
+                            reply_msg = "Couldn't delete that item."
+
+                    create_or_update_user(phone_number, pending_reminder_delete=None)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(reply_msg))
+                    log_interaction(phone_number, incoming_msg, reply_msg, f"delete_{delete_type}_confirmed", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    # Not YES or CANCEL - remind user of options
+                    resp = MessagingResponse()
+                    resp.message("Reply YES to confirm delete, or CANCEL to keep it.")
+                    return Response(content=str(resp), media_type="application/xml")
 
             # Handle number selection
             if incoming_msg.strip().isdigit():
@@ -916,19 +961,21 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             # Check if user was viewing recurring reminders
             last_active = get_last_active_list(phone_number)
             if last_active == "__RECURRING__":
-                # Delete from recurring reminders list
+                # Delete from recurring reminders list - ask for confirmation first
                 recurring_list = get_recurring_reminders(phone_number, include_inactive=True)
                 if recurring_list and 1 <= item_num <= len(recurring_list):
                     r = recurring_list[item_num - 1]
-                    if delete_recurring_reminder(r['id'], phone_number):
-                        resp = MessagingResponse()
-                        resp.message(f"Deleted recurring reminder: {r['reminder_text']}")
-                        log_interaction(phone_number, incoming_msg, f"Deleted recurring {r['id']}", "delete_recurring", True)
-                    else:
-                        resp = MessagingResponse()
-                        resp.message("Couldn't delete that recurring reminder.")
-                    # Clear the recurring context
-                    create_or_update_user(phone_number, last_active_list=None)
+                    # Store pending delete and ask for confirmation
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'recurring',
+                        'id': r['id'],
+                        'text': r['reminder_text']
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data, last_active_list=None)
+                    resp = MessagingResponse()
+                    resp.message(f"Delete recurring reminder: {r['reminder_text']}?\n\nReply YES to confirm or CANCEL to keep it.")
+                    log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_recurring_confirm", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
                     resp = MessagingResponse()
@@ -1434,7 +1481,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         utc_dt = pytz.UTC.localize(utc_dt)
                     user_dt = utc_dt.astimezone(tz)
                     date_str = user_dt.strftime('%a, %b %d at %I:%M %p')
-                except:
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.debug(f"Date formatting failed: {e}")
                     date_str = ""
 
                 display_text = f"[R] {reminder_text}" if recurring_id else reminder_text
@@ -1510,8 +1558,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         next_local = next_dt.astimezone(tz)
                         next_str = next_local.strftime('%a, %b %d at %I:%M %p').replace(' 0', ' ')
                         lines.append(f"   Next: {next_str}")
-                    except:
-                        pass
+                    except (ValueError, TypeError, AttributeError, KeyError) as e:
+                        logger.debug(f"Next occurrence formatting failed: {e}")
 
                 lines.append("")  # Blank line between entries
 
@@ -2782,11 +2830,16 @@ def process_single_action(ai_response, phone_number, incoming_msg):
         elif ai_response["action"] == "delete_item":
             list_name = ai_response.get("list_name")
             item_text = ai_response.get("item_text")
-            if delete_list_item(phone_number, list_name, item_text):
-                reply_text = ai_response.get("confirmation", f"Removed {item_text} from your {list_name}")
-            else:
-                reply_text = f"Couldn't find '{item_text}' to remove."
-            log_interaction(phone_number, incoming_msg, reply_text, "delete_item", True)
+            # Ask for confirmation before deleting
+            confirm_data = json.dumps({
+                'awaiting_confirmation': True,
+                'type': 'list_item',
+                'list_name': list_name,
+                'text': item_text
+            })
+            create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+            reply_text = f"Remove '{item_text}' from {list_name}?\n\nReply YES to confirm or CANCEL to keep it."
+            log_interaction(phone_number, incoming_msg, "Asking delete_item confirmation", "delete_item_confirm", True)
 
         elif ai_response["action"] == "delete_list":
             list_name = ai_response.get("list_name")
@@ -2866,12 +2919,17 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             if len(matching_reminders) == 0:
                 reply_text = f"No pending reminders found matching '{search_term}'."
             elif len(matching_reminders) == 1:
-                # Single match - delete directly
+                # Single match - ask for confirmation first
                 reminder_id, reminder_text, reminder_date = matching_reminders[0]
-                if delete_reminder(phone_number, reminder_id):
-                    reply_text = f"Deleted your reminder: {reminder_text}"
-                else:
-                    reply_text = "Couldn't delete that reminder."
+                confirm_data = json.dumps({
+                    'awaiting_confirmation': True,
+                    'type': 'reminder',
+                    'id': reminder_id,
+                    'text': reminder_text
+                })
+                create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                reply_text = f"Delete reminder: {reminder_text}?\n\nReply YES to confirm or CANCEL to keep it."
+                log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_reminder_confirm", True)
             else:
                 # Multiple matches - ask user to choose
                 reminder_options = []

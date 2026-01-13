@@ -103,7 +103,7 @@ def format_reminders_list(reminders, user_tz):
                 completed.append((display_text, date_str))
             else:
                 scheduled.append((display_text, date_str))
-        except:
+        except (ValueError, TypeError, AttributeError):
             display_text = f"[R] {reminder_text}" if recurring_id else reminder_text
             if sent:
                 completed.append((display_text, ""))

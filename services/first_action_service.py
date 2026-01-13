@@ -263,7 +263,7 @@ def handle_daily_summary_response(phone_number, message):
     try:
         user_time = get_user_current_time(phone_number)
         current_time = user_time.strftime('%I:%M %p')
-    except:
+    except (ValueError, TypeError, AttributeError):
         current_time = ""
 
     # Check for pending evening confirmation first

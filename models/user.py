@@ -589,3 +589,49 @@ def mark_daily_summary_sent(phone_number):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def claim_user_for_daily_summary(phone_number, user_local_date):
+    """Atomically claim a user for daily summary to prevent duplicates.
+
+    Uses UPDATE ... WHERE to atomically check and update in one operation.
+    Only succeeds if the user hasn't already received summary today.
+
+    Args:
+        phone_number: User's phone number
+        user_local_date: The user's local date (for timezone-aware comparison)
+
+    Returns:
+        bool: True if successfully claimed, False if already sent today
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Atomic update: only updates if last_sent is different from user's local date
+        # This prevents race conditions where two workers claim the same user
+        c.execute('''
+            UPDATE users
+            SET daily_summary_last_sent = %s
+            WHERE phone_number = %s
+              AND (daily_summary_last_sent IS NULL OR daily_summary_last_sent != %s)
+            RETURNING phone_number
+        ''', (user_local_date, phone_number, user_local_date))
+
+        result = c.fetchone()
+        conn.commit()
+
+        if result:
+            logger.info(f"Claimed daily summary for {phone_number[-4:]}")
+            return True
+        else:
+            logger.debug(f"Daily summary already sent for {phone_number[-4:]}")
+            return False
+    except Exception as e:
+        logger.error(f"Error claiming daily summary for {phone_number[-4:]}: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)

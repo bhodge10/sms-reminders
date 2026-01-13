@@ -472,7 +472,7 @@ def send_daily_summaries(self):
     """
     import pytz
     from datetime import datetime
-    from models.user import get_users_due_for_daily_summary, mark_daily_summary_sent
+    from models.user import get_users_due_for_daily_summary, claim_user_for_daily_summary
     from models.reminder import get_reminders_for_date
 
     try:
@@ -485,7 +485,7 @@ def send_daily_summaries(self):
             logger.debug("No users due for daily summary")
             return {"sent": 0}
 
-        logger.info(f"Sending daily summaries to {len(due_users)} users")
+        logger.info(f"Checking daily summaries for {len(due_users)} candidates")
 
         sent_count = 0
         for user in due_users:
@@ -499,6 +499,11 @@ def send_daily_summaries(self):
                 user_now = utc_now.astimezone(user_tz)
                 user_today = user_now.date()
 
+                # Atomically claim this user to prevent duplicates from concurrent workers
+                if not claim_user_for_daily_summary(phone_number, user_today):
+                    # Already claimed by another worker or already sent today
+                    continue
+
                 # Get today's reminders
                 reminders = get_reminders_for_date(phone_number, user_today, timezone_str)
 
@@ -506,8 +511,6 @@ def send_daily_summaries(self):
                 message = format_daily_summary(reminders, first_name, user_today, user_tz)
                 send_sms(phone_number, message)
 
-                # Mark as sent
-                mark_daily_summary_sent(phone_number)
                 sent_count += 1
 
                 logger.info(f"Sent daily summary to {phone_number[-4:]} ({len(reminders)} reminders)")
@@ -568,7 +571,7 @@ def format_daily_summary(reminders, first_name, date, user_tz):
 
             local_dt = utc_dt.astimezone(user_tz)
             time_str = local_dt.strftime('%I:%M %p').lstrip('0')
-        except:
+        except (ValueError, TypeError, AttributeError):
             time_str = "TBD"
 
         lines.append(f"{i}. {time_str} - {text}")
