@@ -22,7 +22,7 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -360,13 +360,35 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if not has_pending_action and (incoming_msg.upper() in ["START", "UNSTOP"] or is_opted_out):
                 logger.info(f"START command received from {mask_phone_number(phone_number)}")
 
-                # Clear the opted_out flag
-                create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
-
-                resp = MessagingResponse()
-                resp.message("Welcome back to Remyndrs! You're now resubscribed and will receive messages again.")
-                log_interaction(phone_number, incoming_msg, "User resubscribed", "start", True)
-                return Response(content=str(resp), media_type="application/xml")
+                # Check if this is a brand new user or user who hasn't completed onboarding
+                # If so, let them fall through to the onboarding flow
+                if not user_check or not is_user_onboarded(phone_number):
+                    logger.info(f"New user or incomplete onboarding - routing to onboarding flow")
+                    # Fall through to onboarding check below
+                    pass
+                elif is_opted_out:
+                    # Returning user who was opted out - welcome back with resubscribe
+                    create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
+                    first_name = get_user_first_name(phone_number)
+                    if first_name:
+                        msg = f"Welcome back, {first_name}! You're now resubscribed and will receive messages again."
+                    else:
+                        msg = "Welcome back to Remyndrs! You're now resubscribed and will receive messages again."
+                    resp = MessagingResponse()
+                    resp.message(msg)
+                    log_interaction(phone_number, incoming_msg, "User resubscribed", "start", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    # Existing onboarded user just saying START - give them a friendly prompt
+                    first_name = get_user_first_name(phone_number)
+                    if first_name:
+                        msg = f"Hi {first_name}! What would you like help with today - a reminder, memory, or list?"
+                    else:
+                        msg = "Hi! What would you like help with today - a reminder, memory, or list?"
+                    resp = MessagingResponse()
+                    resp.message(msg)
+                    log_interaction(phone_number, incoming_msg, "User greeted", "start", True)
+                    return Response(content=str(resp), media_type="application/xml")
             # If has pending action or YES without opt-out, fall through to handle confirmation
 
         # ==========================================
