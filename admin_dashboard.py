@@ -204,6 +204,43 @@ async def get_broadcast_status(broadcast_id: int, admin: str = Depends(verify_ad
             return_db_connection(conn)
 
 
+@router.get("/admin/recent-messages")
+async def get_recent_user_messages(admin: str = Depends(verify_admin)):
+    """Get the last 10 messages received from users"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT l.id, l.phone_number, u.first_name, l.message_in, l.intent, l.created_at
+            FROM logs l
+            LEFT JOIN users u ON l.phone_number = u.phone_number
+            ORDER BY l.created_at DESC
+            LIMIT 10
+        ''')
+        results = c.fetchall()
+
+        messages = []
+        for row in results:
+            messages.append({
+                "id": row[0],
+                "phone_number": row[1][-4:] if row[1] else "****",  # Only show last 4 digits
+                "first_name": row[2] or "Unknown",
+                "message": row[3],
+                "intent": row[4],
+                "created_at": row[5].isoformat() if row[5] else None
+            })
+
+        return JSONResponse(content=messages)
+    except Exception as e:
+        logger.error(f"Error getting recent messages: {e}")
+        raise HTTPException(status_code=500, detail="Error getting recent messages")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
 BROADCAST_PREFIX = "[Remyndrs System Message] "
 
 def send_broadcast_messages(broadcast_id: int, phone_numbers: list, message: str):
@@ -2721,6 +2758,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 <body>
     <div class="nav-menu">
         <span class="nav-title">Remyndrs Dashboard</span>
+        <button onclick="showRecentMessages()" style="padding: 8px 16px; background: #9b59b6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500;">Recent Messages</button>
         <a href="#overview">Overview</a>
         <a href="#broadcast">Broadcast</a>
         <a href="#support">Support Tickets</a>
@@ -3456,6 +3494,19 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
     </div>
 
+    <!-- Recent Messages Modal -->
+    <div class="modal" id="recentMessagesModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <h3 style="color: #9b59b6; margin-bottom: 15px;">Recent User Messages</h3>
+            <div id="recentMessagesContent" style="max-height: 60vh; overflow-y: auto;">
+                <p style="color: #7f8c8d;">Loading...</p>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="hideRecentMessages()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Confirmation Modal -->
     <div class="modal" id="confirmModal">
         <div class="modal-content">
@@ -3894,6 +3945,46 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         function hideConfirmModal() {{
             document.getElementById('confirmModal').classList.remove('active');
+        }}
+
+        async function showRecentMessages() {{
+            document.getElementById('recentMessagesModal').classList.add('active');
+            document.getElementById('recentMessagesContent').innerHTML = '<p style="color: #7f8c8d;">Loading...</p>';
+
+            try {{
+                const response = await fetch('/admin/recent-messages');
+                if (!response.ok) throw new Error('Failed to fetch');
+                const messages = await response.json();
+
+                if (messages.length === 0) {{
+                    document.getElementById('recentMessagesContent').innerHTML = '<p style="color: #7f8c8d;">No messages found.</p>';
+                    return;
+                }}
+
+                let html = '<table style="width: 100%; border-collapse: collapse;">';
+                html += '<tr style="background: #f8f9fa;"><th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">User</th><th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Message</th><th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Intent</th><th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Time</th></tr>';
+
+                messages.forEach(m => {{
+                    const time = m.created_at ? new Date(m.created_at).toLocaleString() : 'Unknown';
+                    const intent = m.intent || '-';
+                    const msgPreview = m.message.length > 80 ? m.message.substring(0, 80) + '...' : m.message;
+                    html += `<tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 10px; vertical-align: top;"><strong>${{m.first_name}}</strong><br><span style="color: #7f8c8d; font-size: 0.85em;">...${{m.phone_number}}</span></td>
+                        <td style="padding: 10px; vertical-align: top;">${{msgPreview}}</td>
+                        <td style="padding: 10px; vertical-align: top;"><span style="background: #e8f4fd; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">${{intent}}</span></td>
+                        <td style="padding: 10px; vertical-align: top; font-size: 0.85em; color: #7f8c8d; white-space: nowrap;">${{time}}</td>
+                    </tr>`;
+                }});
+
+                html += '</table>';
+                document.getElementById('recentMessagesContent').innerHTML = html;
+            }} catch (e) {{
+                document.getElementById('recentMessagesContent').innerHTML = '<p style="color: #e74c3c;">Error loading messages.</p>';
+            }}
+        }}
+
+        function hideRecentMessages() {{
+            document.getElementById('recentMessagesModal').classList.remove('active');
         }}
 
         async function sendBroadcast() {{
