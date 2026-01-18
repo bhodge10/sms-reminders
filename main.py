@@ -496,7 +496,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         confirmation_msg = pending_confirmation.get('confirmation')
 
                         user_tz_str = get_user_timezone(phone_number)
-                        from models.reminder import save_reminder_with_local_time
                         reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date, user_tz_str)
 
                         if reminder_id:
@@ -530,7 +529,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                             reminder_dt = now_local + timedelta(hours=1)
 
                         reminder_date_str = reminder_dt.strftime('%Y-%m-%d %H:%M:%S')
-                        from models.reminder import save_reminder_with_local_time
                         reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date_str, user_tz_str)
 
                         if reminder_id:
