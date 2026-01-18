@@ -22,7 +22,7 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting, log_confidence
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -349,13 +349,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # Note: "YES" is also used for confirmations, so check if user has pending action first
         if incoming_msg.upper() in ["START", "YES", "UNSTOP"]:
-            # Check if user has a pending confirmation (delete, etc.)
+            # Check if user has a pending confirmation (delete, reminder confirmation, etc.)
             user_check = get_user(phone_number)
-            has_pending_action = user_check and user_check[9]  # pending_delete flag
+            pending_delete = get_pending_reminder_delete(phone_number)
+            pending_confirmation_check = get_pending_reminder_confirmation(phone_number)
+            has_pending_action = pending_delete or pending_confirmation_check
 
             # Only treat as START if no pending action AND message is START/UNSTOP (not YES)
             # OR if opted_out and saying YES to resubscribe
-            is_opted_out = user_check and user_check[10] if user_check else False
+            is_opted_out = is_user_opted_out(phone_number) if user_check else False
 
             if not has_pending_action and (incoming_msg.upper() in ["START", "UNSTOP"] or is_opted_out):
                 logger.info(f"START command received from {mask_phone_number(phone_number)}")
@@ -455,7 +457,9 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         # Check for undo/correction commands that should bypass all pending states
         msg_lower_strip = incoming_msg.strip().lower()
-        is_undo_command = msg_lower_strip in ['undo', "that's wrong", 'thats wrong', 'wrong', 'fix that', 'that was wrong', 'not what i meant', 'cancel']
+        # Also strip trailing punctuation for matching (handles "undo!", "undo...", etc.)
+        msg_lower_clean = re.sub(r'[.!?,;:\s]+$', '', msg_lower_strip)
+        is_undo_command = msg_lower_clean in ['undo', "that's wrong", 'thats wrong', 'wrong', 'fix that', 'that was wrong', 'not what i meant', 'cancel']
 
         # ==========================================
         # DAILY SUMMARY RESPONSE (after first action)
@@ -722,8 +726,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 user_time = get_user_current_time(phone_number)
                 user_tz = get_user_timezone(phone_number)
 
-                # Clean up the pending_time - remove any existing AM/PM
+                # Clean up the pending_time - remove any existing AM/PM and standalone letters
                 clean_time = pending_time.upper().replace("AM", "").replace("PM", "").replace("A.M.", "").replace("P.M.", "").strip()
+                # Also remove any trailing letters (handles "3P", "8A", etc.)
+                clean_time = re.sub(r'[AP]$', '', clean_time).strip()
 
                 # Parse the time
                 time_parts = clean_time.split(":")
@@ -769,8 +775,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
             except Exception as e:
                 logger.error(f"Error processing time: {e}")
+                # Clear pending states so user can start fresh
+                create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None, pending_reminder_date=None)
                 resp = MessagingResponse()
-                resp.message(staging_prefix("Sorry, I had trouble setting that reminder. Please try again."))
+                resp.message(staging_prefix("Sorry, I had trouble setting that reminder. Please try again with a clear time like '3pm' or '3:00 PM'."))
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
