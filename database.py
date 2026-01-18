@@ -291,6 +291,20 @@ def init_db():
             )
         ''')
 
+        # Confidence score logging for AI calibration tracking
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS confidence_logs (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT,
+                action_type TEXT NOT NULL,
+                confidence_score INTEGER NOT NULL,
+                threshold INTEGER NOT NULL,
+                confirmed BOOLEAN,
+                user_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Recurring reminders table
         c.execute('''
             CREATE TABLE IF NOT EXISTS recurring_reminders (
@@ -416,6 +430,8 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_summary_prompted BOOLEAN DEFAULT FALSE",
             # Store pending time when confirming evening daily summary preference
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_daily_summary_time TEXT",
+            # Store pending reminder for low-confidence confirmations (JSON with reminder details)
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_confirmation TEXT",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -544,6 +560,35 @@ def set_setting(key, value):
     except Exception as e:
         logger.error(f"Error setting {key}: {e}")
         return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def log_confidence(phone_number, action_type, confidence_score, threshold, confirmed=None, user_message=None):
+    """Log confidence score for AI calibration tracking.
+
+    Args:
+        phone_number: User's phone number
+        action_type: Type of action (reminder, reminder_relative, reminder_recurring)
+        confidence_score: AI's confidence score (0-100)
+        threshold: The threshold used for comparison
+        confirmed: True if user confirmed, False if rejected, None if no confirmation needed
+        user_message: The original user message (for debugging)
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO confidence_logs (phone_number, action_type, confidence_score, threshold, confirmed, user_message)
+               VALUES (%s, %s, %s, %s, %s, %s)''',
+            (phone_number, action_type, confidence_score, threshold, confirmed, user_message)
+        )
+        conn.commit()
+        logger.debug(f"Logged confidence: {action_type} score={confidence_score} threshold={threshold} confirmed={confirmed}")
+    except Exception as e:
+        logger.error(f"Error logging confidence: {e}")
     finally:
         if conn:
             return_db_connection(conn)

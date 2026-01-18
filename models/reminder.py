@@ -1069,3 +1069,47 @@ def update_recurring_reminders_timezone(phone_number, new_timezone):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def get_most_recent_reminder(phone_number):
+    """Get the most recently created reminder for a user (for undo functionality).
+
+    Returns:
+        tuple: (reminder_id, reminder_text, reminder_date) or None if no reminders
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                '''SELECT id, reminder_text, reminder_date
+                   FROM reminders
+                   WHERE (phone_hash = %s OR phone_number = %s) AND sent = FALSE
+                   ORDER BY created_at DESC
+                   LIMIT 1''',
+                (phone_hash, phone_number)
+            )
+        else:
+            c.execute(
+                '''SELECT id, reminder_text, reminder_date
+                   FROM reminders
+                   WHERE phone_number = %s AND sent = FALSE
+                   ORDER BY created_at DESC
+                   LIMIT 1''',
+                (phone_number,)
+            )
+
+        result = c.fetchone()
+        if result:
+            return (result[0], result[1], result[2])
+        return None
+    except Exception as e:
+        logger.error(f"Error getting most recent reminder: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)

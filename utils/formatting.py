@@ -60,6 +60,32 @@ def get_onboarding_prompt(step):
     }
     return prompts.get(step, "Let's continue your setup!")
 
+def format_reminder_confirmation(reminder_text):
+    """
+    Format reminder text for confirmation messages.
+    Handles cases where text starts with prepositions to avoid "to about" or "to for".
+
+    Examples:
+    - "call mom" -> "to call mom"
+    - "about the dentist" -> "about the dentist" (no "to" prefix)
+    - "for the meeting" -> "for the meeting" (no "to" prefix)
+    - "that I need groceries" -> "that I need groceries" (no "to" prefix)
+    """
+    if not reminder_text:
+        return ""
+
+    text = reminder_text.strip()
+    text_lower = text.lower()
+
+    # If text already starts with a preposition, don't add "to"
+    preposition_prefixes = ['about ', 'for ', 'that ', 'to ']
+    for prefix in preposition_prefixes:
+        if text_lower.startswith(prefix):
+            return text
+
+    return f"to {text}"
+
+
 def format_reminders_list(reminders, user_tz):
     """Format reminders list for display"""
     from datetime import datetime, timedelta

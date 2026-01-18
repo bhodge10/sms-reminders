@@ -232,6 +232,13 @@ Just 4 quick questions to get started (takes about 1 minute), then you're all se
 What's your first name?""")
 
         elif step == 1:
+            # Check if user sent START again (maybe trying to restart)
+            if message_lower in ['start', 'unstop', 'begin']:
+                resp.message("""You're already in setup! Let's continue.
+
+What's your first name?""")
+                return Response(content=str(resp), media_type="application/xml")
+
             # Check if user accidentally entered an email address
             if '@' in message_stripped and '.' in message_stripped:
                 resp.message("""That looks like an email address! I'll ask for that in a moment.
@@ -336,13 +343,17 @@ What's something you need to remember?
 Try: "Remind me to call mom tomorrow at 2pm"
 Or: "Add milk and eggs to my grocery list\"""")
 
-            # Send VCF contact card as separate follow-up MMS
-            vcf_url = f"{APP_BASE_URL}/contact.vcf"
-            send_sms(
-                phone_number,
-                "📱 Tap to save Remyndrs to your contacts!",
-                media_url=vcf_url
-            )
+            # Send VCF contact card as separate follow-up MMS (non-blocking)
+            try:
+                vcf_url = f"{APP_BASE_URL}/contact.vcf"
+                send_sms(
+                    phone_number,
+                    "📱 Tap to save Remyndrs to your contacts!",
+                    media_url=vcf_url
+                )
+            except Exception as vcf_error:
+                # Don't fail onboarding if VCF send fails
+                logger.warning(f"Could not send VCF card to {phone_number}: {vcf_error}")
 
         return Response(content=str(resp), media_type="application/xml")
 

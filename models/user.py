@@ -20,6 +20,7 @@ ALLOWED_USER_FIELDS = {
     'pending_reminder_date', 'pending_list_create',
     'daily_summary_enabled', 'daily_summary_time', 'daily_summary_last_sent',
     'daily_summary_prompted', 'pending_daily_summary_time',
+    'pending_reminder_confirmation',
 }
 
 
@@ -632,6 +633,41 @@ def claim_user_for_daily_summary(phone_number, user_local_date):
         if conn:
             conn.rollback()
         return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_pending_reminder_confirmation(phone_number):
+    """Get user's pending reminder confirmation (for low-confidence confirmations).
+
+    Returns:
+        dict: The parsed reminder details awaiting confirmation, or None if no pending confirmation
+    """
+    import json
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('SELECT pending_reminder_confirmation FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('SELECT pending_reminder_confirmation FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('SELECT pending_reminder_confirmation FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
+
+        if result and result[0]:
+            return json.loads(result[0])
+        return None
+    except Exception as e:
+        logger.error(f"Error getting pending reminder confirmation: {e}")
+        return None
     finally:
         if conn:
             return_db_connection(conn)

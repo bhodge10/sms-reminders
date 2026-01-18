@@ -25,6 +25,10 @@ def process_with_ai(message, phone_number, context):
         # Tuple format: (id, memory_text, parsed_data, created_at)
         memories = get_memories(phone_number)
         if memories:
+            # Get user's timezone for proper date display
+            user_tz_str = get_user_timezone(phone_number)
+            user_tz = pytz.timezone(user_tz_str)
+
             formatted_memories = []
             for m in memories[:MAX_MEMORIES_IN_CONTEXT]:
                 memory_text = m[1]
@@ -35,7 +39,12 @@ def process_with_ai(message, phone_number, context):
                         date_obj = created_date
                     else:
                         date_obj = datetime.strptime(str(created_date), '%Y-%m-%d %H:%M:%S')
-                    readable_date = date_obj.strftime('%B %d, %Y')
+
+                    # Convert from UTC to user's timezone for proper date display
+                    if date_obj.tzinfo is None:
+                        date_obj = pytz.utc.localize(date_obj)
+                    date_obj_local = date_obj.astimezone(user_tz)
+                    readable_date = date_obj_local.strftime('%B %d, %Y')
                     formatted_memories.append(f"- {memory_text} (recorded on {readable_date})")
                 except (ValueError, TypeError, AttributeError):
                     formatted_memories.append(f"- {memory_text}")
@@ -178,6 +187,15 @@ CAPABILITIES:
 9. SHOW LIST contents
 10. DELETE ITEMS from lists
 
+**PRIORITY CHECK FOR RECURRING REMINDERS**:
+BEFORE classifying any reminder request, check if it contains recurring keywords:
+- "every day", "daily" → use action "reminder_recurring" with recurrence_type: "daily"
+- "every [weekday]" (e.g., "every Monday", "every Sunday") → use action "reminder_recurring" with recurrence_type: "weekly"
+- "every weekday", "weekdays" → use action "reminder_recurring" with recurrence_type: "weekdays"
+- "every weekend", "weekends" → use action "reminder_recurring" with recurrence_type: "weekends"
+- "every month", "monthly" → use action "reminder_recurring" with recurrence_type: "monthly"
+If ANY of these patterns are found, use "reminder_recurring" - NOT "reminder" or "reminder_relative"!
+
 For reminder requests with SPECIFIC TIMES:
 - If time includes AM/PM in ANY format: Process normally with action "reminder"
   Examples that HAVE AM/PM (use action "reminder"): "9pm", "9 pm", "9PM", "4:00pm", "4:00PM", "4:00 pm", "3:30am", "3:30 a.m.", "3:30AM", "3:30 A.M."
@@ -308,7 +326,8 @@ For SETTING REMINDERS WITH CLEAR TIME (specific time given):
     "action": "reminder",
     "reminder_text": "what to remind them about",
     "reminder_date": "YYYY-MM-DD HH:MM:SS format (this will be in {user_tz} timezone)",
-    "confirmation": "I'll remind you on [readable date/time including day of week] to [action]"
+    "confirmation": "I'll remind you on [readable date/time including day of week] to [action]",
+    "confidence": number 0-100 (how confident you are about the date/time parsing)
 }}
 
 For SETTING REMINDERS WITH RELATIVE TIME ("in X minutes/hours/days/weeks/months"):
@@ -318,7 +337,8 @@ For SETTING REMINDERS WITH RELATIVE TIME ("in X minutes/hours/days/weeks/months"
     "offset_minutes": number (optional - for minutes/hours, e.g., 30 for "30 minutes", 120 for "2 hours"),
     "offset_days": number (optional - for days, e.g., 3 for "3 days"),
     "offset_weeks": number (optional - for weeks, e.g., 2 for "2 weeks"),
-    "offset_months": number (optional - for months, e.g., 5 for "5 months")
+    "offset_months": number (optional - for months, e.g., 5 for "5 months"),
+    "confidence": number 0-100 (how confident you are about the time parsing)
 }}
 IMPORTANT: Use this action for ANY relative time request. Only include ONE offset type. The server will calculate the exact date/time.
 
@@ -328,8 +348,16 @@ For RECURRING REMINDERS ("every day", "every Sunday", "weekdays", etc.):
     "reminder_text": "what to remind them about",
     "recurrence_type": "daily" | "weekly" | "weekdays" | "weekends" | "monthly",
     "recurrence_day": number (for weekly: 0=Monday through 6=Sunday, for monthly: day of month 1-31, null for others),
-    "time": "HH:MM" (24-hour format)
+    "time": "HH:MM" (24-hour format),
+    "confidence": number 0-100 (how confident you are about the recurrence pattern and time)
 }}
+
+CONFIDENCE SCORING GUIDELINES:
+- 90-100: Clear, unambiguous request (e.g., "remind me tomorrow at 3pm to call mom")
+- 70-89: Mostly clear but minor ambiguity (e.g., "remind me Saturday morning to exercise" - morning is slightly vague)
+- 50-69: Moderate ambiguity (e.g., "remind me next week about the thing" - which day? what thing?)
+- Below 50: High ambiguity, unclear intent (e.g., "set something for later about stuff")
+Be honest about confidence - it's better to confirm than to set the wrong reminder.
 RECURRING PATTERNS:
 - "every day at 7pm" → recurrence_type: "daily", time: "19:00"
 - "daily at 8am" → recurrence_type: "daily", time: "08:00"
@@ -372,6 +400,12 @@ WHEN TO USE clarify_date_time:
 - "Remind me next week to pay bills" → No time given, ask what time
 - "Remind me January 15th to renew license" → No time given, ask what time
 IMPORTANT: If user says a date/day without ANY time (no AM/PM, no "at X", no "in X hours"), use clarify_date_time to ask what time they want.
+
+DO NOT USE clarify_date_time when time IS specified:
+- "Remind me December 31st 2026 at 11pm for new years" → Use action "reminder" (11pm IS specified!)
+- "Remind me January 15th at 9am to renew license" → Use action "reminder" (9am IS specified!)
+- "Remind me next Tuesday at 2pm about meeting" → Use action "reminder" (2pm IS specified!)
+CRITICAL: If the message contains "at [time]am" or "at [time]pm" ANYWHERE, extract that time and use action "reminder" - do NOT ask for time again!
 
 For UNCLEAR requests or GREETINGS:
 {{

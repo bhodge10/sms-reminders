@@ -21,8 +21,8 @@ from collections import defaultdict
 import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
-from database import init_db, log_interaction, get_setting
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name
+from database import init_db, log_interaction, get_setting, log_confidence
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -45,7 +45,7 @@ from services.first_action_service import should_prompt_daily_summary, mark_dail
 # NOTE: Reminder checking is now handled by Celery Beat (see tasks/reminder_tasks.py)
 from services.metrics_service import track_user_activity, increment_message_count
 from utils.timezone import get_user_current_time
-from utils.formatting import get_help_text, format_reminders_list
+from utils.formatting import get_help_text, format_reminders_list, format_reminder_confirmation
 from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning
 from admin_dashboard import router as dashboard_router, start_broadcast_checker
 from cs_portal import router as cs_router
@@ -447,15 +447,180 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return handle_onboarding(phone_number, incoming_msg)
 
         # ==========================================
+        # NEW REMINDER REQUEST DETECTION (must come first)
+        # ==========================================
+        # Check if message is a NEW reminder request - if so, don't treat as clarification response
+        # This prevents "remind me tomorrow at 10am" from being caught by daily summary handler
+        is_new_reminder_request = bool(re.search(r'\bremind\b', incoming_msg, re.IGNORECASE))
+
+        # Check for undo/correction commands that should bypass all pending states
+        msg_lower_strip = incoming_msg.strip().lower()
+        is_undo_command = msg_lower_strip in ['undo', "that's wrong", 'thats wrong', 'wrong', 'fix that', 'that was wrong', 'not what i meant', 'cancel']
+
+        # ==========================================
         # DAILY SUMMARY RESPONSE (after first action)
         # ==========================================
         # Check if user is responding to daily summary prompt
-        handled, response_text = handle_daily_summary_response(phone_number, incoming_msg)
-        if handled and response_text:
-            log_interaction(phone_number, incoming_msg, response_text, "daily_summary_setup", True)
-            resp = MessagingResponse()
-            resp.message(staging_prefix(response_text))
-            return Response(content=str(resp), media_type="application/xml")
+        # Skip this if it's a new reminder request or undo command to avoid false positives
+        if not is_new_reminder_request and not is_undo_command:
+            handled, response_text = handle_daily_summary_response(phone_number, incoming_msg)
+            if handled and response_text:
+                log_interaction(phone_number, incoming_msg, response_text, "daily_summary_setup", True)
+                resp = MessagingResponse()
+                resp.message(staging_prefix(response_text))
+                return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # LOW-CONFIDENCE REMINDER CONFIRMATION
+        # ==========================================
+        # Check if user is responding to a confirmation request for a low-confidence reminder
+        pending_confirmation = get_pending_reminder_confirmation(phone_number)
+        if pending_confirmation and not is_new_reminder_request:
+            msg_lower = incoming_msg.strip().lower()
+
+            # User confirms the reminder is correct
+            if msg_lower in ['yes', 'y', 'correct', 'right', 'yep', 'yeah', 'ok', 'okay']:
+                # Log confirmation for calibration tracking
+                stored_confidence = pending_confirmation.get('confidence')
+                if stored_confidence is not None:
+                    CONFIDENCE_THRESHOLD = int(get_setting('confidence_threshold', 70))
+                    log_confidence(phone_number, pending_confirmation.get('action', 'reminder'), stored_confidence, CONFIDENCE_THRESHOLD, confirmed=True, user_message=None)
+
+                # Create the reminder as originally parsed
+                try:
+                    action = pending_confirmation.get('action')
+                    if action == 'reminder':
+                        # Standard reminder
+                        reminder_text = pending_confirmation.get('reminder_text')
+                        reminder_date = pending_confirmation.get('reminder_date')
+                        confirmation_msg = pending_confirmation.get('confirmation')
+
+                        user_tz_str = get_user_timezone(phone_number)
+                        from models.reminder import save_reminder_with_local_time
+                        reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date, user_tz_str)
+
+                        if reminder_id:
+                            reply_text = confirmation_msg or f"Got it! I'll remind you about {reminder_text}."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
+                        else:
+                            reply_text = "Sorry, I couldn't save that reminder. Please try again."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
+
+                    elif action == 'reminder_relative':
+                        # Relative time reminder
+                        reminder_text = pending_confirmation.get('reminder_text')
+                        offset_minutes = pending_confirmation.get('offset_minutes')
+                        offset_days = pending_confirmation.get('offset_days')
+                        offset_weeks = pending_confirmation.get('offset_weeks')
+                        offset_months = pending_confirmation.get('offset_months')
+
+                        user_tz_str = get_user_timezone(phone_number)
+                        tz = pytz.timezone(user_tz_str)
+                        now_local = datetime.now(tz)
+
+                        if offset_minutes:
+                            reminder_dt = now_local + timedelta(minutes=offset_minutes)
+                        elif offset_days:
+                            reminder_dt = now_local + timedelta(days=offset_days)
+                        elif offset_weeks:
+                            reminder_dt = now_local + timedelta(weeks=offset_weeks)
+                        elif offset_months:
+                            reminder_dt = now_local + timedelta(days=offset_months * 30)
+                        else:
+                            reminder_dt = now_local + timedelta(hours=1)
+
+                        reminder_date_str = reminder_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        from models.reminder import save_reminder_with_local_time
+                        reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date_str, user_tz_str)
+
+                        if reminder_id:
+                            readable_date = reminder_dt.strftime('%A, %B %d, %Y at %-I:%M %p')
+                            reply_text = f"Got it! I'll remind you on {readable_date} {format_reminder_confirmation(reminder_text)}."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
+                        else:
+                            reply_text = "Sorry, I couldn't save that reminder. Please try again."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
+
+                    elif action == 'reminder_recurring':
+                        # Recurring reminder
+                        reminder_text = pending_confirmation.get('reminder_text')
+                        recurrence_type = pending_confirmation.get('recurrence_type')
+                        recurrence_day = pending_confirmation.get('recurrence_day')
+                        time_str = pending_confirmation.get('time')
+
+                        user_tz_str = get_user_timezone(phone_number)
+                        recurring_id = save_recurring_reminder(phone_number, reminder_text, recurrence_type, recurrence_day, time_str, user_tz_str)
+
+                        if recurring_id:
+                            reply_text = f"Got it! I'll remind you {recurrence_type} at {time_str} {format_reminder_confirmation(reminder_text)}."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
+                        else:
+                            reply_text = "Sorry, I couldn't save that recurring reminder. Please try again."
+                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
+                    else:
+                        reply_text = "Sorry, something went wrong. Please try again."
+                        log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
+
+                    # Clear the pending confirmation
+                    create_or_update_user(phone_number, pending_reminder_confirmation=None)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(reply_text))
+                    return Response(content=str(resp), media_type="application/xml")
+
+                except Exception as e:
+                    logger.error(f"Error processing confirmed reminder: {e}")
+                    create_or_update_user(phone_number, pending_reminder_confirmation=None)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix("Sorry, something went wrong. Please try again."))
+                    return Response(content=str(resp), media_type="application/xml")
+
+            # User says it's wrong - ask for clarification
+            elif msg_lower in ['no', 'n', 'wrong', 'nope', "that's wrong", 'thats wrong', 'incorrect', 'not right']:
+                # Log rejection for calibration tracking
+                stored_confidence = pending_confirmation.get('confidence')
+                if stored_confidence is not None:
+                    CONFIDENCE_THRESHOLD = int(get_setting('confidence_threshold', 70))
+                    log_confidence(phone_number, pending_confirmation.get('action', 'reminder'), stored_confidence, CONFIDENCE_THRESHOLD, confirmed=False, user_message=None)
+
+                create_or_update_user(phone_number, pending_reminder_confirmation=None)
+                resp = MessagingResponse()
+                resp.message(staging_prefix("No problem! Please tell me again what you'd like to be reminded about, and when.\n\nTip: Try something like \"remind me Tuesday at 3pm to call the dentist\""))
+                log_interaction(phone_number, incoming_msg, "Reminder confirmation rejected", "reminder_rejected", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # User provides a correction directly - treat as new request
+            # (If they say something other than yes/no, assume it's a new/corrected request and let it fall through)
+
+        # ==========================================
+        # UNDO / THAT'S WRONG FALLBACK COMMANDS
+        # ==========================================
+        # Allow users to undo or correct mistakes at any time
+        if is_undo_command:
+            # First check if there's a pending confirmation to cancel
+            if pending_confirmation:
+                create_or_update_user(phone_number, pending_reminder_confirmation=None)
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Got it, cancelled! Please tell me what you'd like instead."))
+                log_interaction(phone_number, incoming_msg, "Pending confirmation cancelled via undo", "undo", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # No pending confirmation - check if we can offer to undo the last reminder
+            from models.reminder import get_most_recent_reminder
+            recent_reminder = get_most_recent_reminder(phone_number)
+            if recent_reminder:
+                reminder_id, reminder_text, reminder_date = recent_reminder
+                # Store for confirmation
+                confirm_data = json.dumps({'type': 'delete_recent', 'reminder_id': reminder_id, 'reminder_text': reminder_text})
+                create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                resp = MessagingResponse()
+                resp.message(staging_prefix(f"Delete your most recent reminder: \"{reminder_text}\"?\n\nReply YES to delete or NO to keep it."))
+                log_interaction(phone_number, incoming_msg, "Offered to undo recent reminder", "undo_offer", True)
+                return Response(content=str(resp), media_type="application/xml")
+            else:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Nothing to undo! How can I help you?"))
+                log_interaction(phone_number, incoming_msg, "No recent reminder to undo", "undo_nothing", True)
+                return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # AM/PM CLARIFICATION RESPONSE
@@ -466,9 +631,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Check for AM/PM in various formats: "8am", "8 am", "8:00am", "8a", "8:00a", "a.m.", etc.
         has_am_pm = bool(re.search(r'\d\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', incoming_msg, re.IGNORECASE))
 
+        # If it's a new reminder request, clear any pending reminder states to avoid context bleed
+        if is_new_reminder_request:
+            create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None, pending_reminder_date=None)
+
         # Check clarify_date_time flow FIRST (pending_reminder_date set)
+        # Only if NOT a new reminder request (user is answering a clarification question)
         pending_date_data = get_pending_reminder_date(phone_number)
-        if pending_date_data and has_am_pm:
+        if pending_date_data and has_am_pm and not is_new_reminder_request:
             pending_text = pending_date_data['text']
             pending_date = pending_date_data['date']  # YYYY-MM-DD format
 
@@ -512,7 +682,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
                     # Format confirmation
                     readable_date = aware_dt.strftime('%A, %B %d at %I:%M %p')
-                    reply_text = f"I'll remind you on {readable_date} to {pending_text}."
+                    reply_text = f"I'll remind you on {readable_date} {format_reminder_confirmation(pending_text)}."
 
                     # Clear pending reminder data
                     create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_date=None)
@@ -532,7 +702,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Check for AM/PM with number (8am) OR standalone AM/PM response
         is_standalone_am_pm = bool(re.match(r'^(am|pm|a\.m\.|p\.m\.)\.?$', incoming_msg.strip(), re.IGNORECASE))
 
-        if user and len(user) > 11 and user[10] and user[11] and (has_am_pm or is_standalone_am_pm):  # pending_reminder_text AND pending_reminder_time exist
+        # Note: is_new_reminder_request was already defined and pending states were cleared above
+        if user and len(user) > 11 and user[10] and user[11] and (has_am_pm or is_standalone_am_pm) and not is_new_reminder_request:  # pending_reminder_text AND pending_reminder_time exist, but NOT a new reminder request
             pending_text = user[10]
             pending_time = user[11]
 
@@ -574,7 +745,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
                 # Format confirmation
                 readable_date = reminder_datetime.strftime('%A, %B %d at %I:%M %p')
-                reply_text = f"I'll remind you on {readable_date} to {pending_text}."
+                reply_text = f"I'll remind you on {readable_date} {format_reminder_confirmation(pending_text)}."
 
                 # Clear pending reminder
                 create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
@@ -2188,7 +2359,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
                 # Format confirmation
                 readable_date = reminder_datetime.strftime('%A, %B %d at %I:%M %p')
-                reply_text = f"I'll remind you on {readable_date} to {reminder_text}."
+                reply_text = f"I'll remind you on {readable_date} {format_reminder_confirmation(reminder_text)}."
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_safeguard", True)
             else:
                 # No AM/PM in original - proceed with clarification
@@ -2227,6 +2398,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
         elif ai_response["action"] == "reminder":
             reminder_date = ai_response.get("reminder_date")
             reminder_text = ai_response.get("reminder_text")
+            confidence = ai_response.get("confidence", 100)  # Default to 100 if not provided
 
             # Check for sensitive data (staging only)
             if ENVIRONMENT == "staging":
@@ -2248,6 +2420,36 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 reply_text = limit_msg
                 log_interaction(phone_number, incoming_msg, reply_text, "reminder_limit_reached", False)
                 return reply_text
+
+            # LOW CONFIDENCE: Ask for confirmation before creating reminder
+            CONFIDENCE_THRESHOLD = int(get_setting('confidence_threshold', 70))
+            if confidence < CONFIDENCE_THRESHOLD:
+                # Log low confidence for calibration tracking
+                log_confidence(phone_number, 'reminder', confidence, CONFIDENCE_THRESHOLD, confirmed=None, user_message=incoming_msg)
+                try:
+                    user_tz_str = get_user_timezone(phone_number)
+                    tz = pytz.timezone(user_tz_str)
+                    naive_dt = datetime.strptime(reminder_date, '%Y-%m-%d %H:%M:%S')
+                    time_str = naive_dt.strftime('%I:%M %p').lstrip('0')
+                    date_str = naive_dt.strftime('%A, %B %d, %Y')
+
+                    # Store the pending reminder for confirmation (including confidence for later logging)
+                    pending_data = json.dumps({
+                        'action': 'reminder',
+                        'reminder_text': reminder_text,
+                        'reminder_date': reminder_date,
+                        'confirmation': ai_response.get('confirmation'),
+                        'confidence': confidence
+                    })
+                    create_or_update_user(phone_number, pending_reminder_confirmation=pending_data)
+
+                    # Ask for confirmation
+                    reply_text = f"I understood: Reminder on {date_str} at {time_str} {format_reminder_confirmation(reminder_text)}.\n\nIs that right? Reply YES or tell me what to change."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmation_needed", True)
+                    return reply_text
+                except Exception as e:
+                    logger.error(f"Error preparing confirmation: {e}")
+                    # Fall through to create reminder anyway
 
             try:
                 user_tz_str = get_user_timezone(phone_number)
@@ -2272,7 +2474,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 # (AI sometimes miscalculates day names for dates)
                 time_str = naive_dt.strftime('%I:%M %p').lstrip('0')
                 date_str = naive_dt.strftime('%A, %B %d, %Y')
-                reply_text = f"Got it! I'll remind you on {date_str} at {time_str} to {reminder_text}."
+                reply_text = f"Got it! I'll remind you on {date_str} at {time_str} {format_reminder_confirmation(reminder_text)}."
 
             except Exception as e:
                 logger.error(f"Error converting reminder time to UTC: {e}")
@@ -2292,6 +2494,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             from dateutil.relativedelta import relativedelta
 
             reminder_text = ai_response.get("reminder_text", "your reminder")
+            confidence = ai_response.get("confidence", 100)  # Default to 100 if not provided
 
             # Check for sensitive data (staging only)
             if ENVIRONMENT == "staging":
@@ -2359,6 +2562,35 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 )
                 reminder_date_utc = reminder_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
 
+                # LOW CONFIDENCE: Ask for confirmation before creating reminder
+                CONFIDENCE_THRESHOLD = int(get_setting('confidence_threshold', 70))
+                if confidence < CONFIDENCE_THRESHOLD:
+                    # Log low confidence for calibration tracking
+                    log_confidence(phone_number, 'reminder_relative', confidence, CONFIDENCE_THRESHOLD, confirmed=None, user_message=incoming_msg)
+
+                    user_tz_str = get_user_timezone(phone_number)
+                    tz = pytz.timezone(user_tz_str)
+                    reminder_dt_local = pytz.UTC.localize(reminder_dt_utc).astimezone(tz)
+                    time_str = reminder_dt_local.strftime('%I:%M %p').lstrip('0')
+                    date_str = reminder_dt_local.strftime('%A, %B %d, %Y')
+
+                    # Store the pending reminder for confirmation (including confidence for later logging)
+                    pending_data = json.dumps({
+                        'action': 'reminder_relative',
+                        'reminder_text': reminder_text,
+                        'offset_minutes': offset_minutes,
+                        'offset_days': offset_days,
+                        'offset_weeks': offset_weeks,
+                        'offset_months': offset_months,
+                        'confidence': confidence
+                    })
+                    create_or_update_user(phone_number, pending_reminder_confirmation=pending_data)
+
+                    # Ask for confirmation
+                    reply_text = f"I understood: Reminder on {date_str} at {time_str} {format_reminder_confirmation(reminder_text)}.\n\nIs that right? Reply YES or tell me what to change."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmation_needed", True)
+                    return reply_text
+
                 # Save the reminder
                 save_reminder(phone_number, reminder_text, reminder_date_utc)
 
@@ -2371,7 +2603,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 time_str = reminder_dt_local.strftime('%I:%M %p').lstrip('0')
                 date_str = reminder_dt_local.strftime('%A, %B %d, %Y')
 
-                reply_text = f"Got it! I'll remind you on {date_str} at {time_str} to {reminder_text}."
+                reply_text = f"Got it! I'll remind you on {date_str} at {time_str} {format_reminder_confirmation(reminder_text)}."
 
                 # Check if this is user's first action and prompt for daily summary
                 if should_prompt_daily_summary(phone_number):
@@ -2391,6 +2623,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             recurrence_type = ai_response.get("recurrence_type")
             recurrence_day = ai_response.get("recurrence_day")
             time_str = ai_response.get("time")  # HH:MM format
+            confidence = ai_response.get("confidence", 100)  # Default to 100 if not provided
 
             # Check for sensitive data (staging only)
             if ENVIRONMENT == "staging":
@@ -2441,6 +2674,51 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 # Get user's timezone
                 user_tz_str = get_user_timezone(phone_number)
 
+                # LOW CONFIDENCE: Ask for confirmation before creating recurring reminder
+                CONFIDENCE_THRESHOLD = int(get_setting('confidence_threshold', 70))
+                if confidence < CONFIDENCE_THRESHOLD:
+                    # Log low confidence for calibration tracking
+                    log_confidence(phone_number, 'reminder_recurring', confidence, CONFIDENCE_THRESHOLD, confirmed=None, user_message=incoming_msg)
+
+                    # Format time for display
+                    try:
+                        hour, minute = map(int, time_str.split(':'))
+                        display_time = datetime(2000, 1, 1, hour, minute).strftime('%I:%M %p').lstrip('0')
+                    except:
+                        display_time = time_str
+
+                    # Format recurrence pattern for display
+                    if recurrence_type == 'daily':
+                        pattern_desc = 'every day'
+                    elif recurrence_type == 'weekly':
+                        day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                        day_name = day_names[recurrence_day] if recurrence_day is not None else 'the specified day'
+                        pattern_desc = f'every {day_name}'
+                    elif recurrence_type == 'weekdays':
+                        pattern_desc = 'every weekday'
+                    elif recurrence_type == 'weekends':
+                        pattern_desc = 'every weekend'
+                    elif recurrence_type == 'monthly':
+                        pattern_desc = f'monthly on the {recurrence_day}{"st" if recurrence_day == 1 else "nd" if recurrence_day == 2 else "rd" if recurrence_day == 3 else "th"}'
+                    else:
+                        pattern_desc = recurrence_type
+
+                    # Store the pending reminder for confirmation (including confidence for later logging)
+                    pending_data = json.dumps({
+                        'action': 'reminder_recurring',
+                        'reminder_text': reminder_text,
+                        'recurrence_type': recurrence_type,
+                        'recurrence_day': recurrence_day,
+                        'time': time_str,
+                        'confidence': confidence
+                    })
+                    create_or_update_user(phone_number, pending_reminder_confirmation=pending_data)
+
+                    # Ask for confirmation
+                    reply_text = f"I understood: Recurring reminder {pattern_desc} at {display_time} {format_reminder_confirmation(reminder_text)}.\n\nIs that right? Reply YES or tell me what to change."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmation_needed", True)
+                    return reply_text
+
                 # Save the recurring reminder
                 recurring_id = save_recurring_reminder(
                     phone_number=phone_number,
@@ -2486,7 +2764,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                         suffix = 'rd'
                     pattern_text = f"on the {recurrence_day}{suffix} of every month"
 
-                reply_text = f"Got it! I'll remind you {pattern_text} at {display_time} to {reminder_text}.\n\n"
+                reply_text = f"Got it! I'll remind you {pattern_text} at {display_time} {format_reminder_confirmation(reminder_text)}.\n\n"
 
                 if next_occurrence:
                     # Format next occurrence
