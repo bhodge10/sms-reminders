@@ -340,7 +340,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             mark_user_opted_out(phone_number)
 
             resp = MessagingResponse()
-            resp.message("You have been unsubscribed from Remyndrs and will no longer receive messages. Reply START to resubscribe.")
+            resp.message("You have successfully been unsubscribed from Remyndrs SMS messages. Your account and data are still active. Please visit remyndrs.com/account to manage your account or text START to continue receiving messages from Remyndrs.")
             log_interaction(phone_number, incoming_msg, "User opted out", "stop", True)
             return Response(content=str(resp), media_type="application/xml")
 
@@ -373,9 +373,9 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
                     first_name = get_user_first_name(phone_number)
                     if first_name:
-                        msg = f"Welcome back, {first_name}! You're now resubscribed and will receive messages again."
+                        msg = f"Welcome back, {first_name}! You've been resubscribed to Remyndrs. Your reminders, lists, and memories are right where you left them. Just text me anytime to pick up where you left off."
                     else:
-                        msg = "Welcome back to Remyndrs! You're now resubscribed and will receive messages again."
+                        msg = "Welcome back! You've been resubscribed to Remyndrs. Your reminders, lists, and memories are right where you left them. Just text me anytime to pick up where you left off."
                     resp = MessagingResponse()
                     resp.message(msg)
                     log_interaction(phone_number, incoming_msg, "User resubscribed", "start", True)
@@ -2260,6 +2260,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 resp.message(reply)
                 log_interaction(phone_number, incoming_msg, reply, "show_list", True)
                 return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # HELP COMMAND (Twilio reserved keyword)
+        # ==========================================
+        if incoming_msg.upper() == "HELP":
+            resp = MessagingResponse()
+            resp.message("Remyndrs Help: Text ? for commands and tips on using the service. Visit remyndrs.com/account to manage your account, billing, or cancel. Reply STOP to unsubscribe from texts.")
+            log_interaction(phone_number, incoming_msg, "Help info sent", "help_keyword", True)
+            return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # INFO COMMAND (Help Guide)
