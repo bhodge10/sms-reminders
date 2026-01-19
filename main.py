@@ -330,18 +330,17 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # STOP/UNSUBSCRIBE COMMAND (Twilio compliance)
+        # STOP - Twilio reserved keyword (handled by Twilio Messaging Service)
+        # Return empty response so only Twilio's message is sent
         # ==========================================
-        # Handle all standard Twilio opt-out keywords
-        if incoming_msg.upper() in ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"]:
+        if incoming_msg.upper() == "STOP":
             logger.info(f"STOP command received from {mask_phone_number(phone_number)}")
 
             # Mark user as opted out in our database
             mark_user_opted_out(phone_number)
 
+            log_interaction(phone_number, incoming_msg, "[Handled by Twilio]", "stop", True)
             resp = MessagingResponse()
-            resp.message("You have successfully been unsubscribed from Remyndrs SMS messages. Your account and data are still active. Please visit remyndrs.com/account to manage your account or text START to continue receiving messages from Remyndrs.")
-            log_interaction(phone_number, incoming_msg, "User opted out", "stop", True)
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
