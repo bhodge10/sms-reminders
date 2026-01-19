@@ -2329,10 +2329,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if pending_reminder_del:
             try:
                 del_data = json.loads(pending_reminder_del)
-                if del_data.get('awaiting_confirmation'):
-                    pending_states['reminder_delete_confirmation'] = del_data
-                elif 'options' in del_data or isinstance(del_data, list):
+                if isinstance(del_data, list):
+                    # It's a list of options for selection
                     pending_states['reminder_delete_selection'] = del_data
+                elif isinstance(del_data, dict):
+                    if del_data.get('awaiting_confirmation'):
+                        pending_states['reminder_delete_confirmation'] = del_data
+                    elif 'options' in del_data:
+                        pending_states['reminder_delete_selection'] = del_data
             except json.JSONDecodeError:
                 pass
 
@@ -2341,10 +2345,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if pending_memory_del:
             try:
                 mem_data = json.loads(pending_memory_del)
-                if mem_data.get('awaiting_confirmation'):
-                    pending_states['memory_delete_confirmation'] = mem_data
-                elif 'options' in mem_data:
+                if isinstance(mem_data, list):
+                    # It's a list of options for selection
                     pending_states['memory_delete_selection'] = mem_data
+                elif isinstance(mem_data, dict):
+                    if mem_data.get('awaiting_confirmation'):
+                        pending_states['memory_delete_confirmation'] = mem_data
+                    elif 'options' in mem_data:
+                        pending_states['memory_delete_selection'] = mem_data
             except json.JSONDecodeError:
                 pass
 
