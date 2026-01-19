@@ -4,10 +4,14 @@ Handles all memory-related database operations
 """
 
 import json
+from datetime import datetime
+from typing import Any, Optional
+
 from database import get_db_connection, return_db_connection
 from config import logger, ENCRYPTION_ENABLED
 
-def save_memory(phone_number, memory_text, parsed_data):
+
+def save_memory(phone_number: str, memory_text: str, parsed_data: dict[str, Any]) -> None:
     """Save a new memory to the database with optional encryption"""
     conn = None
     try:
@@ -37,7 +41,7 @@ def save_memory(phone_number, memory_text, parsed_data):
         if conn:
             return_db_connection(conn)
 
-def get_memories(phone_number):
+def get_memories(phone_number: str) -> list[tuple[int, str, str, datetime]]:
     """Get all memories for a user"""
     conn = None
     try:
@@ -74,7 +78,7 @@ def get_memories(phone_number):
         if conn:
             return_db_connection(conn)
 
-def delete_all_memories(phone_number):
+def delete_all_memories(phone_number: str) -> None:
     """Delete all memories for a user"""
     conn = None
     try:
@@ -98,7 +102,7 @@ def delete_all_memories(phone_number):
             return_db_connection(conn)
 
 
-def search_memories(phone_number, search_term):
+def search_memories(phone_number: str, search_term: str) -> list[tuple[int, str, datetime]]:
     """Search memories by keyword (case-insensitive)"""
     conn = None
     try:
@@ -144,7 +148,7 @@ def search_memories(phone_number, search_term):
             return_db_connection(conn)
 
 
-def delete_memory(phone_number, memory_id):
+def delete_memory(phone_number: str, memory_id: int) -> bool:
     """Delete a specific memory by ID"""
     conn = None
     try:

@@ -4,11 +4,14 @@ Helper functions for timezone conversions and formatting
 """
 
 from datetime import datetime
+from typing import Optional
+
 import pytz
 from models.user import get_user_timezone
 from config import logger
 
-def get_timezone_from_zip(zip_code):
+
+def get_timezone_from_zip(zip_code: str) -> str:
     """Convert zip code to timezone using first digit mapping"""
     try:
         first_digit = zip_code[0]
@@ -29,14 +32,14 @@ def get_timezone_from_zip(zip_code):
         logger.error(f"Error getting timezone from zip: {e}")
         return 'America/New_York'
 
-def get_user_current_time(phone_number):
+def get_user_current_time(phone_number: str) -> datetime:
     """Get current time in user's timezone"""
     tz_str = get_user_timezone(phone_number)
     user_tz = pytz.timezone(tz_str)
     return datetime.now(user_tz)
 
 
-def parse_timezone_input(tz_input):
+def parse_timezone_input(tz_input: Optional[str]) -> Optional[str]:
     """
     Parse user timezone input and return a valid pytz timezone string.
 

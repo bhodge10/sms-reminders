@@ -3,8 +3,12 @@ User Model
 Handles all user-related database operations
 """
 
+from datetime import date
+from typing import Any, Optional, Tuple
+
 from database import get_db_connection, return_db_connection
 from config import logger, ENCRYPTION_ENABLED
+from utils.db_helpers import USER_COLUMNS
 
 # Whitelist of allowed fields for SQL updates (prevents SQL injection via kwargs)
 ALLOWED_USER_FIELDS = {
@@ -24,7 +28,7 @@ ALLOWED_USER_FIELDS = {
 }
 
 
-def get_user(phone_number):
+def get_user(phone_number: str) -> Optional[Tuple[Any, ...]]:
     """Get user info from database"""
     conn = None
     try:
@@ -35,14 +39,14 @@ def get_user(phone_number):
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
             # Try phone_hash first, fallback to phone_number for existing users
-            c.execute('SELECT * FROM users WHERE phone_hash = %s', (phone_hash,))
+            c.execute(f'SELECT {USER_COLUMNS} FROM users WHERE phone_hash = %s', (phone_hash,))
             result = c.fetchone()
             if not result:
                 # Fallback for users created before encryption was enabled
-                c.execute('SELECT * FROM users WHERE phone_number = %s', (phone_number,))
+                c.execute(f'SELECT {USER_COLUMNS} FROM users WHERE phone_number = %s', (phone_number,))
                 result = c.fetchone()
         else:
-            c.execute('SELECT * FROM users WHERE phone_number = %s', (phone_number,))
+            c.execute(f'SELECT {USER_COLUMNS} FROM users WHERE phone_number = %s', (phone_number,))
             result = c.fetchone()
 
         return result
@@ -53,21 +57,21 @@ def get_user(phone_number):
         if conn:
             return_db_connection(conn)
 
-def is_user_onboarded(phone_number):
+def is_user_onboarded(phone_number: str) -> bool:
     """Check if user has completed onboarding"""
     user = get_user(phone_number)
     if user:
         return user[6]  # onboarding_complete column
     return False
 
-def get_onboarding_step(phone_number):
+def get_onboarding_step(phone_number: str) -> int:
     """Get current onboarding step"""
     user = get_user(phone_number)
     if user:
         return user[7]  # onboarding_step column
     return 0
 
-def create_or_update_user(phone_number, **kwargs):
+def create_or_update_user(phone_number: str, **kwargs: Any) -> None:
     """Create or update user record with optional encryption"""
     conn = None
     try:
@@ -140,7 +144,7 @@ def create_or_update_user(phone_number, **kwargs):
         if conn:
             return_db_connection(conn)
 
-def get_user_timezone(phone_number):
+def get_user_timezone(phone_number: str) -> str:
     """Get user's timezone"""
     user = get_user(phone_number)
     if user and user[5]:  # timezone column
@@ -148,7 +152,7 @@ def get_user_timezone(phone_number):
     return 'America/New_York'  # Default
 
 
-def update_user_timezone(phone_number, new_timezone):
+def update_user_timezone(phone_number: str, new_timezone: str) -> Tuple[bool, Optional[str]]:
     """
     Update user's timezone setting.
 
@@ -189,7 +193,7 @@ def update_user_timezone(phone_number, new_timezone):
             return_db_connection(conn)
 
 
-def get_user_first_name(phone_number):
+def get_user_first_name(phone_number: str) -> Optional[str]:
     """Get user's first name"""
     conn = None
     try:
@@ -224,7 +228,7 @@ def get_user_first_name(phone_number):
             return_db_connection(conn)
 
 
-def get_last_active_list(phone_number):
+def get_last_active_list(phone_number: str) -> Optional[str]:
     """Get user's last active list name"""
     conn = None
     try:
@@ -254,7 +258,7 @@ def get_last_active_list(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_list_item(phone_number):
+def get_pending_list_item(phone_number: str) -> Optional[str]:
     """Get user's pending list item (for list selection or deletion)"""
     conn = None
     try:
@@ -284,7 +288,7 @@ def get_pending_list_item(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_reminder_delete(phone_number):
+def get_pending_reminder_delete(phone_number: str) -> Optional[str]:
     """Get user's pending reminder delete data (stores matching reminder IDs when multiple found)"""
     conn = None
     try:
@@ -314,7 +318,7 @@ def get_pending_reminder_delete(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_memory_delete(phone_number):
+def get_pending_memory_delete(phone_number: str) -> Optional[str]:
     """Get user's pending memory delete data (stores matching memory IDs when multiple found or awaiting confirmation)"""
     conn = None
     try:
@@ -344,7 +348,7 @@ def get_pending_memory_delete(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_reminder_date(phone_number):
+def get_pending_reminder_date(phone_number: str) -> Optional[dict[str, Any]]:
     """Get user's pending reminder date (for clarify_date_time flow - date without time)"""
     conn = None
     try:
@@ -374,7 +378,7 @@ def get_pending_reminder_date(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_list_create(phone_number):
+def get_pending_list_create(phone_number: str) -> Optional[str]:
     """Get user's pending list create data (for duplicate list handling)"""
     conn = None
     try:
@@ -404,7 +408,7 @@ def get_pending_list_create(phone_number):
             return_db_connection(conn)
 
 
-def mark_user_opted_out(phone_number):
+def mark_user_opted_out(phone_number: str) -> bool:
     """Mark a user as opted out (STOP command compliance)"""
     conn = None
     try:
@@ -425,7 +429,7 @@ def mark_user_opted_out(phone_number):
             return_db_connection(conn)
 
 
-def is_user_opted_out(phone_number):
+def is_user_opted_out(phone_number: str) -> bool:
     """Check if a user has opted out"""
     conn = None
     try:
@@ -453,7 +457,7 @@ def is_user_opted_out(phone_number):
             return_db_connection(conn)
 
 
-def get_daily_summary_settings(phone_number):
+def get_daily_summary_settings(phone_number: str) -> Optional[dict[str, Any]]:
     """Get user's daily summary settings.
 
     Returns:
@@ -501,7 +505,7 @@ def get_daily_summary_settings(phone_number):
             return_db_connection(conn)
 
 
-def get_users_due_for_daily_summary():
+def get_users_due_for_daily_summary() -> list[dict[str, Any]]:
     """Get all users who should receive their daily summary now.
 
     This function is timezone-aware: it finds users whose local time
@@ -571,7 +575,7 @@ def get_users_due_for_daily_summary():
             return_db_connection(conn)
 
 
-def mark_daily_summary_sent(phone_number):
+def mark_daily_summary_sent(phone_number: str) -> bool:
     """Mark that we sent the daily summary to this user today."""
     conn = None
     try:
@@ -592,7 +596,7 @@ def mark_daily_summary_sent(phone_number):
             return_db_connection(conn)
 
 
-def claim_user_for_daily_summary(phone_number, user_local_date):
+def claim_user_for_daily_summary(phone_number: str, user_local_date: date) -> bool:
     """Atomically claim a user for daily summary to prevent duplicates.
 
     Uses UPDATE ... WHERE to atomically check and update in one operation.
@@ -638,7 +642,7 @@ def claim_user_for_daily_summary(phone_number, user_local_date):
             return_db_connection(conn)
 
 
-def get_pending_reminder_confirmation(phone_number):
+def get_pending_reminder_confirmation(phone_number: str) -> Optional[dict[str, Any]]:
     """Get user's pending reminder confirmation (for low-confidence confirmations).
 
     Returns:

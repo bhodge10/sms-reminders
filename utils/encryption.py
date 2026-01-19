@@ -7,6 +7,8 @@ import os
 import base64
 import hashlib
 import hmac
+from typing import Tuple
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from config import logger
 
@@ -39,7 +41,7 @@ def _get_hash_key() -> bytes:
     return _hash_key
 
 
-def generate_keys():
+def generate_keys() -> Tuple[bytes, bytes]:
     """Generate new encryption and hash keys (run once for setup)"""
     encryption_key = os.urandom(32)  # 256 bits for AES-256
     hash_key = os.urandom(32)  # 256 bits for HMAC

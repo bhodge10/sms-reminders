@@ -134,6 +134,18 @@ def validate_daily_summary_time(time_input):
     msg = time_input.strip()
     msg_lower = msg.lower()
 
+    # Check for command-like messages that should NOT be handled as daily summary responses
+    # These should fall through to normal AI processing
+    command_patterns = [
+        'remind', 'delete', 'remove', 'add', 'show', 'list', 'memory', 'cancel',
+        'nevermind', 'never mind', 'forget', 'help', 'stop', 'what', 'where', 'when',
+        'who', 'how', 'my ', 'the ', 'undo', 'snooze', 'check', 'uncheck', 'create'
+    ]
+    for pattern in command_patterns:
+        if pattern in msg_lower:
+            # This looks like a command, not a time - don't handle
+            return (False, None, False, False, None, None)
+
     # Pattern for time with AM/PM (flexible matching)
     full_time_pattern = r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)'
     # Pattern for bare time without AM/PM

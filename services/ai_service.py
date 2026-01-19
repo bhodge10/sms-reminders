@@ -4,6 +4,8 @@ Handles all OpenAI API interactions and natural language processing
 """
 
 import json
+from typing import Any, Optional
+
 from openai import OpenAI
 from datetime import datetime, timedelta
 import pytz
@@ -16,7 +18,8 @@ from models.list_model import get_lists, get_list_items
 from utils.timezone import get_user_current_time
 from database import log_api_usage
 
-def process_with_ai(message, phone_number, context):
+
+def process_with_ai(message: str, phone_number: str, context: dict[str, Any]) -> dict[str, Any]:
     """Process user message with OpenAI and determine action"""
     try:
         logger.info(f"Processing message with AI for {phone_number}")

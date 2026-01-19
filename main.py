@@ -754,11 +754,35 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     logger.error(f"Error processing vague time follow-up: {e}")
                     # Fall through to AI processing
 
-            # Complex time like "in 30 minutes" or "tomorrow at 9am"
-            # Reconstruct the request and let AI process it
-            incoming_msg = f"remind me to {pending_text} {incoming_msg}"
-            create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
-            # Fall through to AI processing with reconstructed message
+            # Check for cancel commands
+            cancel_phrases = ['cancel', 'nevermind', 'never mind', 'skip', 'forget it', 'no thanks']
+            if incoming_msg.strip().lower() in cancel_phrases:
+                create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Got it, cancelled. What would you like to do?"))
+                log_interaction(phone_number, incoming_msg, "Pending reminder cancelled", "pending_cancel", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Check if message looks like a complex time (e.g., "in 30 minutes", "tomorrow", etc.)
+            # These should be processed by AI with the pending reminder context
+            looks_like_time = bool(re.search(
+                r'\b(in\s+\d+|tomorrow|tonight|today|next\s+\w+|this\s+(morning|afternoon|evening)|at\s+\d)',
+                incoming_msg, re.IGNORECASE
+            ))
+
+            if looks_like_time:
+                # Complex time like "in 30 minutes" or "tomorrow at 9am"
+                # Reconstruct the request and let AI process it
+                incoming_msg = f"remind me to {pending_text} {incoming_msg}"
+                create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
+                # Fall through to AI processing with reconstructed message
+            else:
+                # Message is unrelated - remind user about the pending time clarification
+                reminder = f"I still need a time for your reminder: '{pending_text}'\n\nWhat time works? (e.g., '3pm', 'in 30 minutes')\n\n(Say 'cancel' to skip)"
+                resp = MessagingResponse()
+                resp.message(staging_prefix(reminder))
+                log_interaction(phone_number, incoming_msg, reminder, "pending_state_reminder", True)
+                return Response(content=str(resp), media_type="application/xml")
 
         # clarify_time flow - only if pending_reminder_time is set (not pending_reminder_date)
         # Check for AM/PM with number (8am) OR standalone AM/PM response
@@ -2264,6 +2288,161 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             resp.message(get_help_text())
             log_interaction(phone_number, incoming_msg, "Help guide sent", "help_command", True)
             return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # PENDING STATE REMINDER (Context Switch Protection)
+        # ==========================================
+        # Check if user has any pending state that requires their response
+        # If they send an unrelated message, remind them of the pending question
+
+        # Check for cancel commands first
+        cancel_phrases = ['cancel', 'nevermind', 'never mind', 'skip', 'forget it', 'no thanks', 'nope', 'stop']
+        is_cancel_command = incoming_msg.strip().lower() in cancel_phrases
+
+        # Get user for pending state checks
+        user_for_pending_check = get_user(phone_number)
+
+        # Gather all pending states
+        pending_states = {}
+
+        # Check for AM/PM clarification (pending_reminder_text + pending_reminder_time, time is NOT "NEEDS_TIME")
+        if user_for_pending_check and len(user_for_pending_check) > 11:
+            pending_text = user_for_pending_check[10]  # pending_reminder_text
+            pending_time = user_for_pending_check[11]  # pending_reminder_time
+            if pending_text and pending_time and pending_time != "NEEDS_TIME":
+                pending_states['ampm_clarification'] = {
+                    'text': pending_text,
+                    'time': pending_time
+                }
+            elif pending_text and pending_time == "NEEDS_TIME":
+                pending_states['time_needed'] = {
+                    'text': pending_text
+                }
+
+        # Check for date clarification
+        pending_date_check = get_pending_reminder_date(phone_number)
+        if pending_date_check:
+            pending_states['date_clarification'] = pending_date_check
+
+        # Check for reminder delete confirmation
+        pending_reminder_del = get_pending_reminder_delete(phone_number)
+        if pending_reminder_del:
+            try:
+                del_data = json.loads(pending_reminder_del)
+                if del_data.get('awaiting_confirmation'):
+                    pending_states['reminder_delete_confirmation'] = del_data
+                elif 'options' in del_data or isinstance(del_data, list):
+                    pending_states['reminder_delete_selection'] = del_data
+            except json.JSONDecodeError:
+                pass
+
+        # Check for memory delete confirmation
+        pending_memory_del = get_pending_memory_delete(phone_number)
+        if pending_memory_del:
+            try:
+                mem_data = json.loads(pending_memory_del)
+                if mem_data.get('awaiting_confirmation'):
+                    pending_states['memory_delete_confirmation'] = mem_data
+                elif 'options' in mem_data:
+                    pending_states['memory_delete_selection'] = mem_data
+            except json.JSONDecodeError:
+                pass
+
+        # Check for list item selection (pending_list_item without pending_delete)
+        pending_list_item_check = get_pending_list_item(phone_number)
+        if pending_list_item_check and not (user_for_pending_check and user_for_pending_check[9]):
+            pending_states['list_selection'] = {
+                'item': pending_list_item_check
+            }
+
+        # Check for pending list create (duplicate name handling)
+        pending_list_create_check = get_pending_list_create(phone_number)
+        if pending_list_create_check:
+            pending_states['list_create_duplicate'] = {
+                'list_name': pending_list_create_check
+            }
+
+        # Check for low-confidence reminder confirmation
+        pending_confirm_check = get_pending_reminder_confirmation(phone_number)
+        if pending_confirm_check:
+            pending_states['reminder_confirmation'] = pending_confirm_check
+
+        # If user wants to cancel, clear all pending states
+        if is_cancel_command and pending_states:
+            # Clear all pending states
+            create_or_update_user(
+                phone_number,
+                pending_reminder_text=None,
+                pending_reminder_time=None,
+                pending_reminder_date=None,
+                pending_list_item=None,
+                pending_list_create=None,
+                pending_delete=False,
+                pending_reminder_delete=None,
+                pending_memory_delete=None,
+                pending_reminder_confirmation=None
+            )
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix("Got it, cancelled. What would you like to do?"))
+            log_interaction(phone_number, incoming_msg, "Pending state cancelled", "pending_cancel", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # If user has a pending state and message doesn't look like a valid response, remind them
+        if pending_states:
+            # Check if message looks like a valid response to the pending question
+            msg_stripped = incoming_msg.strip()
+            msg_lower = msg_stripped.lower()
+
+            # Valid responses: YES/NO, numbers, AM/PM patterns, times
+            is_yes_no = msg_lower in ['yes', 'y', 'no', 'n', 'yep', 'yeah', 'nope', 'ok', 'okay', 'correct', 'right', 'wrong', 'incorrect']
+            is_number = msg_stripped.isdigit()
+            is_ampm = bool(re.match(r'^(am|pm|a\.m\.|p\.m\.)\.?$', msg_stripped, re.IGNORECASE))
+            has_time_pattern = bool(re.search(r'\d+\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', msg_stripped, re.IGNORECASE))
+            is_time_response = bool(re.match(r'^(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m?\.?)?$', msg_stripped, re.IGNORECASE))
+
+            # Consider it a valid response if it matches expected patterns
+            is_valid_response = is_yes_no or is_number or is_ampm or has_time_pattern or is_time_response
+
+            # If not a valid response, remind user about the pending question
+            if not is_valid_response:
+                # Build reminder message based on which pending state is active
+                if 'ampm_clarification' in pending_states:
+                    state = pending_states['ampm_clarification']
+                    reminder = f"I still need to know: Did you mean {state['time']} AM or PM for '{state['text']}'?\n\n(Say 'cancel' to skip this reminder)"
+                elif 'time_needed' in pending_states:
+                    state = pending_states['time_needed']
+                    reminder = f"I still need a time for your reminder: '{state['text']}'\n\nWhat time works? (e.g., '3pm', 'in 30 minutes')\n\n(Say 'cancel' to skip)"
+                elif 'date_clarification' in pending_states:
+                    state = pending_states['date_clarification']
+                    reminder = f"I still need to know what time for '{state['text']}' on {state['date']}.\n\nWhat time? (e.g., '9am', '3:30pm')\n\n(Say 'cancel' to skip)"
+                elif 'reminder_delete_confirmation' in pending_states:
+                    state = pending_states['reminder_delete_confirmation']
+                    reminder = f"I still need your confirmation: Delete reminder '{state.get('text', 'your reminder')}'?\n\nReply YES to delete or NO to keep it. (Say 'cancel' to skip)"
+                elif 'reminder_delete_selection' in pending_states:
+                    reminder = "I still need you to select which reminder to delete.\n\nReply with the number of the reminder to delete, or say 'cancel' to skip."
+                elif 'memory_delete_confirmation' in pending_states:
+                    state = pending_states['memory_delete_confirmation']
+                    reminder = f"I still need your confirmation: Delete this memory?\n\nReply YES to delete or NO to keep it. (Say 'cancel' to skip)"
+                elif 'memory_delete_selection' in pending_states:
+                    reminder = "I still need you to select which memory to delete.\n\nReply with the number of the memory to delete, or say 'cancel' to skip."
+                elif 'list_selection' in pending_states:
+                    state = pending_states['list_selection']
+                    reminder = f"I still need to know which list to add '{state['item']}' to.\n\nReply with the list number, or say 'cancel' to skip."
+                elif 'list_create_duplicate' in pending_states:
+                    state = pending_states['list_create_duplicate']
+                    reminder = f"A list named '{state['list_name']}' already exists. Reply YES to create a new numbered version, or NO to use the existing list.\n\n(Say 'cancel' to skip)"
+                elif 'reminder_confirmation' in pending_states:
+                    state = pending_states['reminder_confirmation']
+                    reminder_text = state.get('reminder_text', 'your reminder')
+                    reminder = f"I need your confirmation: Is this reminder correct?\n\n'{reminder_text}'\n\nReply YES to confirm or NO to re-enter. (Say 'cancel' to skip)"
+                else:
+                    reminder = "I have a pending question for you. Please answer it or say 'cancel' to skip."
+
+                resp = MessagingResponse()
+                resp.message(staging_prefix(reminder))
+                log_interaction(phone_number, incoming_msg, reminder, "pending_state_reminder", True)
+                return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # PROCESS WITH AI

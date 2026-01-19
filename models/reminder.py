@@ -3,11 +3,13 @@ Reminder Model
 Handles all reminder-related database operations
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, time
+from typing import Any, Optional
+
 from database import get_db_connection, return_db_connection
 from config import logger, ENCRYPTION_ENABLED
 
-def save_reminder(phone_number, reminder_text, reminder_date):
+def save_reminder(phone_number: str, reminder_text: str, reminder_date: datetime) -> None:
     """Save a new reminder to the database with optional encryption"""
     conn = None
     try:
@@ -37,7 +39,7 @@ def save_reminder(phone_number, reminder_text, reminder_date):
         if conn:
             return_db_connection(conn)
 
-def get_due_reminders():
+def get_due_reminders() -> list[tuple[int, str, str]]:
     """Get all reminders that are due to be sent"""
     conn = None
     try:
@@ -57,7 +59,7 @@ def get_due_reminders():
         if conn:
             return_db_connection(conn)
 
-def mark_reminder_sent(reminder_id):
+def mark_reminder_sent(reminder_id: int) -> None:
     """Mark a reminder as sent. Raises exception on failure to trigger retry."""
     conn = None
     try:
@@ -73,7 +75,7 @@ def mark_reminder_sent(reminder_id):
         if conn:
             return_db_connection(conn)
 
-def get_user_reminders(phone_number):
+def get_user_reminders(phone_number: str) -> list[tuple[int, datetime, str, Optional[int], bool]]:
     """Get all reminders for a user (both pending and sent)
 
     Returns tuples of: (id, reminder_date, reminder_text, recurring_id, sent)
@@ -114,7 +116,7 @@ def get_user_reminders(phone_number):
             return_db_connection(conn)
 
 
-def get_pending_reminders(phone_number):
+def get_pending_reminders(phone_number: str) -> list[tuple[int, str, datetime]]:
     """Get all pending (not yet sent) reminders for a user with IDs"""
     conn = None
     try:
@@ -152,7 +154,7 @@ def get_pending_reminders(phone_number):
             return_db_connection(conn)
 
 
-def get_reminders_for_date(phone_number, target_date, timezone_str):
+def get_reminders_for_date(phone_number: str, target_date: date, timezone_str: str) -> list[tuple[int, str, datetime]]:
     """Get all pending reminders for a user on a specific date.
 
     Args:
@@ -227,7 +229,7 @@ def get_reminders_for_date(phone_number, target_date, timezone_str):
             return_db_connection(conn)
 
 
-def search_pending_reminders(phone_number, search_term):
+def search_pending_reminders(phone_number: str, search_term: str) -> list[tuple[int, str, datetime]]:
     """Search pending reminders by keyword (case-insensitive)"""
     conn = None
     try:
@@ -273,7 +275,7 @@ def search_pending_reminders(phone_number, search_term):
             return_db_connection(conn)
 
 
-def delete_reminder(phone_number, reminder_id):
+def delete_reminder(phone_number: str, reminder_id: int) -> bool:
     """Delete a specific pending reminder by ID (only if not sent)"""
     conn = None
     try:
@@ -313,7 +315,7 @@ def delete_reminder(phone_number, reminder_id):
             return_db_connection(conn)
 
 
-def update_reminder_time(phone_number, reminder_id, new_date_utc, local_time=None, timezone=None):
+def update_reminder_time(phone_number: str, reminder_id: int, new_date_utc: datetime, local_time: Optional[str] = None, timezone: Optional[str] = None) -> bool:
     """Update the time of a specific pending reminder by ID (only if not sent)"""
     conn = None
     try:
@@ -377,7 +379,7 @@ def update_reminder_time(phone_number, reminder_id, new_date_utc, local_time=Non
             return_db_connection(conn)
 
 
-def update_last_sent_reminder(phone_number, reminder_id):
+def update_last_sent_reminder(phone_number: str, reminder_id: int) -> None:
     """Update the last sent reminder for a user (for snooze detection)"""
     conn = None
     try:
@@ -395,7 +397,7 @@ def update_last_sent_reminder(phone_number, reminder_id):
             return_db_connection(conn)
 
 
-def get_last_sent_reminder(phone_number, max_age_minutes=30):
+def get_last_sent_reminder(phone_number: str, max_age_minutes: int = 30) -> Optional[dict[str, Any]]:
     """Get the last sent reminder for a user if within the snooze window"""
     conn = None
     try:
@@ -442,7 +444,7 @@ def get_last_sent_reminder(phone_number, max_age_minutes=30):
             return_db_connection(conn)
 
 
-def mark_reminder_snoozed(reminder_id):
+def mark_reminder_snoozed(reminder_id: int) -> None:
     """Mark a reminder as snoozed"""
     conn = None
     try:
@@ -457,7 +459,7 @@ def mark_reminder_snoozed(reminder_id):
             return_db_connection(conn)
 
 
-def claim_due_reminders(batch_size=10):
+def claim_due_reminders(batch_size: int = 10) -> list[dict[str, Any]]:
     """
     Atomically claim due reminders using SELECT FOR UPDATE SKIP LOCKED.
 
@@ -524,7 +526,7 @@ def claim_due_reminders(batch_size=10):
             return_db_connection(conn)
 
 
-def release_stale_claims(timeout_minutes=5):
+def release_stale_claims(timeout_minutes: int = 5) -> int:
     """
     Release reminders that were claimed but not processed.
 
@@ -565,7 +567,7 @@ def release_stale_claims(timeout_minutes=5):
 # RECURRING REMINDER FUNCTIONS
 # =====================================================
 
-def save_recurring_reminder(phone_number, reminder_text, recurrence_type, recurrence_day, reminder_time, timezone):
+def save_recurring_reminder(phone_number: str, reminder_text: str, recurrence_type: str, recurrence_day: Optional[int], reminder_time: str, timezone: str) -> Optional[int]:
     """
     Save a new recurring reminder.
 
@@ -603,7 +605,7 @@ def save_recurring_reminder(phone_number, reminder_text, recurrence_type, recurr
             return_db_connection(conn)
 
 
-def get_recurring_reminders(phone_number, include_inactive=False):
+def get_recurring_reminders(phone_number: str, include_inactive: bool = False) -> list[dict[str, Any]]:
     """
     Get all recurring reminders for a user.
 
@@ -661,7 +663,7 @@ def get_recurring_reminders(phone_number, include_inactive=False):
             return_db_connection(conn)
 
 
-def get_recurring_reminder_by_id(recurring_id, phone_number=None):
+def get_recurring_reminder_by_id(recurring_id: int, phone_number: Optional[str] = None) -> Optional[dict[str, Any]]:
     """
     Get a specific recurring reminder by ID.
 
@@ -717,7 +719,7 @@ def get_recurring_reminder_by_id(recurring_id, phone_number=None):
             return_db_connection(conn)
 
 
-def pause_recurring_reminder(recurring_id, phone_number):
+def pause_recurring_reminder(recurring_id: int, phone_number: str) -> bool:
     """Pause a recurring reminder (set active=FALSE)"""
     conn = None
     try:
@@ -740,7 +742,7 @@ def pause_recurring_reminder(recurring_id, phone_number):
             return_db_connection(conn)
 
 
-def resume_recurring_reminder(recurring_id, phone_number):
+def resume_recurring_reminder(recurring_id: int, phone_number: str) -> bool:
     """Resume a paused recurring reminder (set active=TRUE)"""
     conn = None
     try:
@@ -763,7 +765,7 @@ def resume_recurring_reminder(recurring_id, phone_number):
             return_db_connection(conn)
 
 
-def delete_recurring_reminder(recurring_id, phone_number):
+def delete_recurring_reminder(recurring_id: int, phone_number: str) -> bool:
     """Delete a recurring reminder and its pending occurrences"""
     conn = None
     try:
@@ -812,7 +814,7 @@ def delete_recurring_reminder(recurring_id, phone_number):
             return_db_connection(conn)
 
 
-def get_all_active_recurring_reminders():
+def get_all_active_recurring_reminders() -> list[dict[str, Any]]:
     """
     Get all active recurring reminders (for the generation task).
 
@@ -852,7 +854,7 @@ def get_all_active_recurring_reminders():
             return_db_connection(conn)
 
 
-def update_recurring_reminder_generated(recurring_id, last_generated_date, next_occurrence):
+def update_recurring_reminder_generated(recurring_id: int, last_generated_date: date, next_occurrence: datetime) -> None:
     """
     Update the last_generated_date and next_occurrence after generating reminders.
 
@@ -879,7 +881,7 @@ def update_recurring_reminder_generated(recurring_id, last_generated_date, next_
             return_db_connection(conn)
 
 
-def save_reminder_with_local_time(phone_number, reminder_text, reminder_date, local_time, timezone, recurring_id=None):
+def save_reminder_with_local_time(phone_number: str, reminder_text: str, reminder_date: datetime, local_time: str, timezone: str, recurring_id: Optional[int] = None) -> Optional[int]:
     """
     Save a new reminder with local time info for timezone recalculation.
 
@@ -933,7 +935,7 @@ def save_reminder_with_local_time(phone_number, reminder_text, reminder_date, lo
             return_db_connection(conn)
 
 
-def check_reminder_exists_for_recurring(recurring_id, target_date):
+def check_reminder_exists_for_recurring(recurring_id: int, target_date: date) -> bool:
     """
     Check if a reminder already exists for a recurring reminder on a specific date.
 
@@ -962,7 +964,7 @@ def check_reminder_exists_for_recurring(recurring_id, target_date):
             return_db_connection(conn)
 
 
-def recalculate_pending_reminders_for_timezone(phone_number, new_timezone):
+def recalculate_pending_reminders_for_timezone(phone_number: str, new_timezone: str) -> int:
     """
     Recalculate all pending reminders when user changes timezone.
 
@@ -1038,7 +1040,7 @@ def recalculate_pending_reminders_for_timezone(phone_number, new_timezone):
             return_db_connection(conn)
 
 
-def update_recurring_reminders_timezone(phone_number, new_timezone):
+def update_recurring_reminders_timezone(phone_number: str, new_timezone: str) -> int:
     """
     Update timezone for all recurring reminders when user changes timezone.
 
@@ -1071,7 +1073,7 @@ def update_recurring_reminders_timezone(phone_number, new_timezone):
             return_db_connection(conn)
 
 
-def get_most_recent_reminder(phone_number):
+def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, datetime]]:
     """Get the most recently created reminder for a user (for undo functionality).
 
     Returns:

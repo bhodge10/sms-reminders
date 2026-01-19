@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remyndrs - Never Forget Anything Again</title>
+    <link rel="icon" type="image/svg+xml" href="remyndrs-logo.svg">
+    <link rel="alternate icon" type="image/png" href="remyndrs-logo.png">
+    <meta name="description" content="Your personal memory assistant via SMS. Just text it, and we'll remember it for you.">
+    
+    <style>
+        :root {
+            --primary-blue: #4A90A4;
+            --success-green: #50B688;
+            --text-dark: #3D4F5C;
+            --bg-light: #f8f9fa;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: var(--text-dark);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        /* Header */
+        header {
+            background: white;
+            padding: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--primary-blue);
+        }
+        
+        .logo img {
+            height: 50px;
+            width: auto;
+            display: block;
+        }
+        
+        nav a {
+            margin-left: 30px;
+            text-decoration: none;
+            color: var(--text-dark);
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+        
+        nav a:hover {
+            color: var(--primary-blue);
+        }
+        
+        /* Hero Section */
+        .hero-logo {
+            width: 150px;
+            height: auto;
+            margin: 0 auto 30px;
+            display: block;
+        }
+        
+        .hero {
+            background: linear-gradient(135deg, var(--primary-blue) 0%, #6BA8BC 100%);
+            color: white;
+            padding: 80px 0;
+            text-align: center;
+        }
+        
+        .hero h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+        
+        .hero p {
+            font-size: 24px;
+            margin-bottom: 40px;
+            opacity: 0.95;
+        }
+        
+        .beta-badge {
+            display: inline-block;
+            background: #FF6B35;
+            color: white;
+            padding: 14px 32px;
+            border-radius: 25px;
+            font-weight: 700;
+            margin-bottom: 30px;
+            font-size: 20px;
+            box-shadow: 0 4px 12px rgba(255, 107, 53, 0.4);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            background: var(--success-green);
+            color: white;
+            padding: 16px 40px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 18px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(80, 182, 136, 0.4);
+        }
+        
+        .cta-white {
+            background: white;
+            color: var(--primary-blue);
+        }
+        
+        .cta-white:hover {
+            box-shadow: 0 4px 12px rgba(255, 255, 255, 0.3);
+        }
+        
+        /* QR Code Section - NEW */
+        .qr-section {
+            background: var(--bg-light);
+            padding: 60px 0;
+            text-align: center;
+        }
+        
+        .qr-section h2 {
+            font-size: 36px;
+            color: var(--text-dark);
+            margin-bottom: 20px;
+        }
+        
+        .qr-section p {
+            font-size: 18px;
+            color: var(--text-dark);
+            margin-bottom: 40px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .qr-container {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: inline-block;
+            max-width: 400px;
+        }
+        
+        .qr-container img {
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+        }
+        
+        .qr-info {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 2px solid var(--bg-light);
+        }
+        
+        .qr-info p {
+            font-size: 16px;
+            color: var(--text-dark);
+            margin-bottom: 10px;
+        }
+        
+        .phone-number {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--primary-blue);
+            margin: 10px 0;
+        }
+        
+        /* Why Remyndrs Section */
+        .why-remyndrs {
+            padding: 80px 0;
+            background: white;
+        }
+        
+        .why-remyndrs h2 {
+            text-align: center;
+            font-size: 42px;
+            margin-bottom: 60px;
+            color: var(--text-dark);
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 50px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        
+        .feature {
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .feature-icon {
+            font-size: 60px;
+            margin-bottom: 25px;
+            display: block;
+        }
+        
+        .feature h3 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            color: var(--text-dark);
+            font-weight: 700;
+        }
+        
+        .feature p {
+            font-size: 16px;
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        /* How It Works */
+        .how-it-works {
+            padding: 80px 0;
+            background: white;
+        }
+        
+        .how-it-works h2 {
+            text-align: center;
+            font-size: 42px;
+            margin-bottom: 60px;
+            color: var(--text-dark);
+        }
+        
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+        }
+        
+        .step {
+            text-align: center;
+        }
+        
+        .step-number {
+            width: 60px;
+            height: 60px;
+            background: var(--primary-blue);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: 700;
+            margin: 0 auto 20px;
+        }
+        
+        .step h3 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            color: var(--text-dark);
+        }
+        
+        .step p {
+            font-size: 16px;
+            color: #666;
+        }
+        
+        /* Commands Quick Reference */
+        .commands-quick {
+            background: white;
+            padding: 60px 0;
+            text-align: center;
+        }
+        
+        .commands-quick h2 {
+            font-size: 36px;
+            margin-bottom: 20px;
+            color: var(--text-dark);
+        }
+        
+        .commands-quick p {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .commands-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 25px;
+            margin-top: 40px;
+            text-align: left;
+        }
+        
+        .command-category {
+            background: var(--bg-light);
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 4px solid var(--primary-blue);
+        }
+        
+        .command-category h3 {
+            font-size: 20px;
+            color: var(--primary-blue);
+            margin-bottom: 15px;
+        }
+        
+        .command-category ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .command-category li {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 8px;
+            padding-left: 20px;
+            position: relative;
+        }
+        
+        .command-category li:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            color: var(--success-green);
+            font-weight: bold;
+        }
+        
+        .view-all-commands {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 12px 30px;
+            background: var(--primary-blue);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .view-all-commands:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(74, 144, 164, 0.4);
+        }
+        
+        
+        /* Testimonial Section */
+        .testimonial {
+            background: var(--bg-light);
+            padding: 60px 0;
+            text-align: center;
+        }
+        
+        .testimonial blockquote {
+            font-size: 24px;
+            font-style: italic;
+            color: var(--text-dark);
+            max-width: 800px;
+            margin: 0 auto 20px;
+            line-height: 1.6;
+            font-weight: 500;
+        }
+        
+        .testimonial cite {
+            font-size: 16px;
+            color: #666;
+            font-style: normal;
+        }
+        
+        /* Use Cases */
+        .use-cases {
+            padding: 80px 0;
+        }
+        
+        .use-cases h2 {
+            text-align: center;
+            font-size: 42px;
+            margin-bottom: 60px;
+        }
+        
+        .cases-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+            row-gap: 50px; /* Smaller default gap */
+            transition: row-gap 0.4s ease-out;
+        }
+        
+        .case {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.3s, box-shadow 0.3s, margin-bottom 0.4s;
+            position: relative;
+            cursor: pointer;
+            overflow: visible;
+            margin-bottom: 0;
+        }
+        
+        .case:hover,
+        .case.active {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            margin-bottom: 550px; /* Push down content below when conversation is showing */
+        }
+        
+        .case-hint {
+            font-size: 12px;
+            color: #999;
+            margin-top: 10px;
+            display: none;
+        }
+        
+        /* Show hint on mobile/tablet */
+        @media (max-width: 1024px) {
+            .case-hint {
+                display: block;
+            }
+        }
+        
+        /* Animated conversation - Phone Style */
+        .case-conversation {
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 320px;
+            background: #f5f5f5;
+            border-radius: 35px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            padding: 15px;
+            margin-top: 15px;
+            z-index: 100;
+            max-height: 0;
+            overflow: hidden;
+            opacity: 0;
+            transition: max-height 0.4s ease-out, opacity 0.4s ease-out;
+            border: 8px solid #2c3e50;
+        }
+        
+        /* Phone notch/status bar */
+        .case-conversation::before {
+            content: '';
+            position: absolute;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 20px;
+            background: #2c3e50;
+            border-radius: 0 0 15px 15px;
+            z-index: 1;
+        }
+        
+        /* Close button */
+        .conversation-close {
+            position: fixed;
+            top: auto;
+            right: auto;
+            width: 44px;
+            height: 44px;
+            background: #FF4757;
+            border-radius: 50%;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 9999;
+            font-size: 26px;
+            color: white;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            -webkit-tap-highlight-color: rgba(255,71,87,0.3);
+            touch-action: manipulation;
+            user-select: none;
+            pointer-events: auto !important;
+        }
+        
+        /* Show close button when conversation is active */
+        .case.active .conversation-close {
+            display: flex;
+            position: absolute;
+            top: 20px;
+            right: 10px;
+        }
+        
+        .conversation-close:active {
+            background: #EE2E3E;
+            transform: scale(0.9);
+        }
+        
+        /* SMS app header */
+        .case-conversation::after {
+            content: 'Remyndrs';
+            position: absolute;
+            top: 35px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-weight: 700;
+            font-size: 14px;
+            color: #333;
+            padding: 10px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #ddd;
+            z-index: 1;
+        }
+        
+        .case.active .case-conversation,
+        .case:hover .case-conversation {
+            max-height: 650px;
+            opacity: 1;
+            overflow: visible;
+            padding-top: 70px; /* Space for header */
+        }
+        
+        .conversation-message {
+            margin-bottom: 8px;
+            padding: 10px 14px;
+            border-radius: 18px;
+            max-width: 75%;
+            font-size: 14px;
+            line-height: 1.4;
+            opacity: 0;
+            transform: translateY(10px);
+            word-wrap: break-word;
+            clear: both;
+            position: relative;
+        }
+        
+        /* Trigger animations when conversation is visible */
+        .case.active .conversation-message,
+        .case:hover .conversation-message {
+            animation: messageSlideIn 0.4s ease-out forwards;
+        }
+        
+        .conversation-message.user {
+            background: var(--primary-blue);
+            color: white;
+            margin-left: auto;
+            margin-right: 5px;
+            text-align: left;
+            float: right;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .conversation-message.bot {
+            background: #e5e5ea;
+            color: #000;
+            margin-right: auto;
+            margin-left: 5px;
+            float: left;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .conversation-messages {
+            overflow: auto;
+            padding: 10px 5px;
+        }
+        
+        .conversation-messages::after {
+            content: '';
+            display: table;
+            clear: both;
+        }
+        
+        /* Stagger the animations */
+        .case.active .conversation-message:nth-child(1),
+        .case:hover .conversation-message:nth-child(1) {
+            animation-delay: 0.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(2),
+        .case:hover .conversation-message:nth-child(2) {
+            animation-delay: 1.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(3),
+        .case:hover .conversation-message:nth-child(3) {
+            animation-delay: 2.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(4),
+        .case:hover .conversation-message:nth-child(4) {
+            animation-delay: 3.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(5),
+        .case:hover .conversation-message:nth-child(5) {
+            animation-delay: 4.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(6),
+        .case:hover .conversation-message:nth-child(6) {
+            animation-delay: 5.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(7),
+        .case:hover .conversation-message:nth-child(7) {
+            animation-delay: 6.2s;
+        }
+        
+        .case.active .conversation-message:nth-child(8),
+        .case:hover .conversation-message:nth-child(8) {
+            animation-delay: 7.2s;
+        }
+        
+        @keyframes messageSlideIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .case-icon {
+            font-size: 40px;
+            margin-bottom: 20px;
+        }
+        
+        .case h3 {
+            font-size: 22px;
+            margin-bottom: 15px;
+            color: var(--primary-blue);
+        }
+        
+        .case p {
+            color: #666;
+            font-size: 16px;
+        }
+        
+        /* Privacy Section */
+        .privacy {
+            background: var(--bg-light);
+            padding: 80px 0;
+        }
+        
+        .privacy h2 {
+            font-size: 42px;
+            margin-bottom: 40px;
+        }
+        
+        .privacy h3 {
+            font-size: 24px;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            color: var(--primary-blue);
+        }
+        
+        .privacy p, .privacy ul {
+            font-size: 16px;
+            margin-bottom: 20px;
+            color: #666;
+            line-height: 1.8;
+        }
+        
+        .privacy ul {
+            padding-left: 30px;
+        }
+        
+        .privacy li {
+            margin-bottom: 10px;
+        }
+        
+        /* CTA Section */
+        .cta-section {
+            background: linear-gradient(135deg, var(--success-green) 0%, #6BCFA0 100%);
+            color: white;
+            padding: 80px 0;
+            text-align: center;
+        }
+        
+        .cta-section h2 {
+            font-size: 42px;
+            margin-bottom: 20px;
+        }
+        
+        .cta-section p {
+            font-size: 20px;
+            margin-bottom: 40px;
+            opacity: 0.95;
+        }
+        
+        /* Footer */
+        footer {
+            background: var(--text-dark);
+            color: white;
+            padding: 40px 0;
+            text-align: center;
+        }
+        
+        footer p {
+            opacity: 0.8;
+        }
+        
+        /* SMS Disclaimer */
+        .sms-disclaimer {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 12px;
+            text-align: center;
+            line-height: 1.4;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 36px;
+            }
+            
+            .hero p {
+                font-size: 18px;
+            }
+            
+            nav {
+                display: none;
+            }
+            
+            .steps, .cases-grid, .features-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .qr-container {
+                max-width: 300px;
+                padding: 30px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <img src="remyndrs-logo.svg" alt="Remyndrs">
+                </div>
+                <nav>
+                    <a href="#how-it-works">How It Works</a>
+                    <a href="/commands.html">Commands</a>
+                    <a href="#use-cases">Use Cases</a>
+                    <a href="#privacy">Privacy</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <img src="remyndrs-logo.svg" alt="Remyndrs" class="hero-logo">
+            <!-- OPTION 1: Softer "Early Access" Badge -->
+            <div class="beta-badge">Early Access</div>
+            
+            <!-- OPTION 2: No Badge, Add Subtitle (UNCOMMENT TO USE):
+            <div class="beta-badge" style="display:none;"></div>
+            -->
+            
+            <!-- CURRENT HEADLINE: -->
+            <h1>Never Forget Anything Again</h1>
+            
+            <!-- OPTION 2: Subtitle version (UNCOMMENT TO USE):
+            <p>Your personal memory assistant via SMS • Actively improving based on your feedback</p>
+            -->
+            
+            <!-- CURRENT SUBTITLE: -->
+            <p>Your personal memory assistant via SMS. Just text it, and we'll remember it for you.</p>
+            
+            <!-- ALTERNATIVE HEADLINE FOR A/B TESTING:
+            <h1>Stop holding everything in your head.</h1>
+            <p>Your external memory, via text. No app. No signup. Just text.</p>
+            -->
+            <a href="sms:8555521950" class="cta-button">Text Us Now: (855) 552-1950</a>
+            <p class="sms-disclaimer">By texting, you consent to receive SMS messages from Remyndrs. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+        </div>
+    </section>
+
+    <!-- QR Code Section - NEW -->
+    <section class="qr-section" id="qr-code">
+        <div class="container">
+            <h2>Scan to Get Started</h2>
+            <p>Point your phone camera at the QR code below to instantly start texting with Remyndrs</p>
+            
+            <div class="qr-container">
+                <!-- This QR code will automatically open SMS to your number -->
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=sms:8555521950&bgcolor=f8f9fa&color=4A90A4&qzone=2" 
+                     alt="Scan to text Remyndrs"
+                     loading="lazy">
+                
+                <div class="qr-info">
+                    <p><strong>Scan with your phone camera</strong></p>
+                    <p>or text directly:</p>
+                    <div class="phone-number">(855) 552-1950</div>
+                    <p class="sms-disclaimer">By texting, you consent to receive SMS messages from Remyndrs. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Why Remyndrs Section -->
+    <section class="why-remyndrs">
+        <div class="container">
+            <h2>Why Remyndrs?</h2>
+            
+            <div class="features-grid">
+                <div class="feature">
+                    <span class="feature-icon">📱</span>
+                    <h3>No App Required</h3>
+                    <p>Works on any phone via SMS. No downloads, no accounts, no hassle. Just text like you normally would.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">🧠</span>
+                    <h3>Natural Language</h3>
+                    <p>Talk to Remyndrs like a friend. No commands to memorize. Just say what you need to remember.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">⏰</span>
+                    <h3>Smart Reminders</h3>
+                    <p>Set reminders for anything. Get reminded at exactly the right time, right to your phone.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">🔒</span>
+                    <h3>Private & Secure</h3>
+                    <p>Your data is encrypted and never shared. You can delete everything anytime.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">💡</span>
+                    <h3>Always Accessible</h3>
+                    <p>Works 24/7. No internet required beyond basic SMS. Perfect for anyone, any age.</p>
+                </div>
+                
+                <div class="feature">
+                    <span class="feature-icon">✨</span>
+                    <h3>Constantly Learning</h3>
+                    <p>We're in beta and actively improving based on user feedback. Help shape the future!</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="how-it-works" id="how-it-works">
+        <div class="container">
+            <h2>How It Works</h2>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Text Your Reminder</h3>
+                    <p>Send a message about anything you want to remember: appointments, tasks, or notes.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>We Process It</h3>
+                    <p>Our AI understands your message and schedules reminders automatically.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Get Reminded</h3>
+                    <p>Receive a text at the perfect time. Never miss what matters.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Commands Quick Reference -->
+    <section class="commands-quick">
+        <div class="container">
+            <h2>What Can You Ask?</h2>
+            <p>Just text naturally. Here are some examples:</p>
+            
+            <div class="commands-grid">
+                <div class="command-category">
+                    <h3>⏰ Set Reminders</h3>
+                    <ul>
+                        <li>"Remind me to call mom tomorrow at 2pm"</li>
+                        <li>"Remind me about the meeting in 3 hours"</li>
+                        <li>"Remind me every Monday to take out trash"</li>
+                    </ul>
+                </div>
+                
+                <div class="command-category">
+                    <h3>📝 Create Lists</h3>
+                    <ul>
+                        <li>"Add milk and eggs to my grocery list"</li>
+                        <li>"Show me my grocery list"</li>
+                        <li>"Remove bread from my list"</li>
+                    </ul>
+                </div>
+                
+                <div class="command-category">
+                    <h3>💾 Save Info</h3>
+                    <ul>
+                        <li>"Remember: WiFi password is Home2024"</li>
+                        <li>"Save my vet's number: 555-0199"</li>
+                        <li>"Garage door code is 4829"</li>
+                    </ul>
+                </div>
+                
+                <div class="command-category">
+                    <h3>🔍 Retrieve Info</h3>
+                    <ul>
+                        <li>"What's my WiFi password?"</li>
+                        <li>"Where did I park?"</li>
+                        <li>"Show all my reminders"</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <a href="/commands.html" class="view-all-commands">View All Commands →</a>
+        </div>
+    </section>
+
+    <!-- Testimonial Section -->
+    <section class="testimonial">
+        <div class="container">
+            <blockquote>
+                "It feels like texting a helper instead of managing a tool. I love the personal feeling of its responses."
+            </blockquote>
+            <cite>— Beta tester</cite>
+        </div>
+    </section>
+
+    <!-- Use Cases -->
+    <section class="use-cases" id="use-cases">
+        <div class="container">
+            <h2>Perfect For...</h2>
+            <div class="cases-grid">
+                <div class="case">
+                    <div class="case-icon">📝</div>
+                    <h3>Lists</h3>
+                    <p>Grocery lists, shopping lists, packing lists, to-do lists</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Add milk and eggs to my grocery list</div>
+                            <div class="conversation-message bot">✓ Got it! Added milk and eggs to your grocery list</div>
+                            <div class="conversation-message user">Also add bread and butter</div>
+                            <div class="conversation-message bot">✓ Added bread and butter to your list</div>
+                            <div class="conversation-message user">What's on my grocery list?</div>
+                            <div class="conversation-message bot">Here's your grocery list:
+• Milk
+• Eggs
+• Bread
+• Butter</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="case">
+                    <div class="case-icon">🎂</div>
+                    <h3>Special Dates</h3>
+                    <p>Birthdays, anniversaries, important milestones</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Remind me about Mom's birthday on Feb 8th</div>
+                        <div class="conversation-message bot">✓ Got it! I'll remind you on February 8th about Mom's birthday</div>
+                        <div class="conversation-message user">Also remind me 2 days before</div>
+                        <div class="conversation-message bot">✓ Perfect! I'll remind you on Feb 6th and Feb 8th</div>
+                        <div class="conversation-message user">What reminders do I have for February?</div>
+                        <div class="conversation-message bot">Your February reminders:
+• Feb 6th - Mom's birthday (2 day reminder)
+• Feb 8th - Mom's birthday</div>
+                        </div></div></div>
+                <div class="case">
+                    <div class="case-icon">💊</div>
+                    <h3>Health Tracking</h3>
+                    <p>Medication refills, doctor appointments, prescriptions</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Remind me to refill my prescription in 2 weeks</div>
+                        <div class="conversation-message bot">✓ Got it! I'll remind you on January 24th to refill your prescription</div>
+                        <div class="conversation-message user">Save my pharmacy number: 555-0123</div>
+                        <div class="conversation-message bot">✓ Saved your pharmacy number: 555-0123</div>
+                        <div class="conversation-message user">What's my pharmacy number?</div>
+                        <div class="conversation-message bot">Your pharmacy number is 555-0123</div>
+                        </div></div></div>
+                <div class="case">
+                    <div class="case-icon">🐕</div>
+                    <h3>Pet Care</h3>
+                    <p>Vet appointments, medication schedules, pet sitter info</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Save my vet's number: 555-0199</div>
+                            <div class="conversation-message bot">✓ Saved your vet's number: 555-0199</div>
+                            <div class="conversation-message user">Remember Max's medication is 2 pills every morning</div>
+                            <div class="conversation-message bot">✓ Got it! Saved: Max's medication is 2 pills every morning</div>
+                            <div class="conversation-message user">What's my vet's number?</div>
+                            <div class="conversation-message bot">Your vet's number is 555-0199</div>
+                        </div></div></div>
+                <div class="case">
+                    <div class="case-icon">💼</div>
+                    <h3>Work Tasks</h3>
+                    <p>Follow-ups, deadlines, recurring meetings</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Remind me to follow up with John tomorrow at 2pm</div>
+                        <div class="conversation-message bot">✓ Got it! I'll remind you tomorrow at 2:00 PM to follow up with John</div>
+                        <div class="conversation-message user">Also send proposal to Sarah by Friday</div>
+                        <div class="conversation-message bot">✓ Perfect! I'll remind you Friday to send the proposal to Sarah</div>
+                        <div class="conversation-message user">What work tasks do I have?</div>
+                        <div class="conversation-message bot">Your work tasks:
+• Tomorrow 2:00 PM - Follow up with John
+• Friday - Send proposal to Sarah</div>
+                        </div></div></div>
+                <div class="case">
+                    <div class="case-icon">📦</div>
+                    <h3>Random Notes</h3>
+                    <p>Where you stored things, product recommendations, random thoughts</p>
+                    <p class="case-hint">👆 Tap to see example</p>
+                    <div class="conversation-close">×</div>
+                    <div class="case-conversation">
+                        <div class="conversation-messages">
+                            <div class="conversation-message user">Remember: spare garage key is in the blue toolbox</div>
+                        <div class="conversation-message bot">✓ Got it! Saved: Spare garage key is in the blue toolbox</div>
+                        <div class="conversation-message user">Also, WiFi password is Home2024!</div>
+                        <div class="conversation-message bot">✓ Saved your WiFi password: Home2024!</div>
+                        <div class="conversation-message user">Where's the spare garage key?</div>
+                        <div class="conversation-message bot">Your spare garage key is in the blue toolbox</div>
+                        </div></div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Privacy Policy -->
+    <section class="privacy" id="privacy">
+        <div class="container">
+            <h2>Your Privacy Matters</h2>
+            
+            <h3>What We Collect</h3>
+            <p>We only collect what's necessary to provide the service:</p>
+            <ul>
+                <li>Your phone number (to send/receive messages)</li>
+                <li>Your reminder text and scheduled times</li>
+                <li>Basic usage data to improve the service</li>
+            </ul>
+
+            <h3>How We Use Your Data</h3>
+            <p>Your information is used exclusively to:</p>
+            <ul>
+                <li>Send you the reminders you request</li>
+                <li>Improve our natural language processing</li>
+                <li>Provide customer support if needed</li>
+            </ul>
+
+            <h3>How We Protect Your Data</h3>
+            <ul>
+                <li><strong>Encryption:</strong> All data is encrypted in transit and at rest</li>
+                <li><strong>No Selling:</strong> We never sell your data. Ever.</li>
+                <li><strong>No Ads:</strong> We don't serve ads or share data with advertisers</li>
+                <li><strong>Minimal Retention:</strong> Completed reminders are automatically deleted after 90 days</li>
+            </ul>
+
+            <h3>Your Rights</h3>
+            <p>You have complete control:</p>
+            <ul>
+                <li>View all your data anytime (text "show all")</li>
+                <li>Delete specific reminders (text "delete [reminder]")</li>
+                <li>Delete your entire account (text "delete account")</li>
+                <li>Export your data (contact us at <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="21525451514e53556153444c584f4553520f424e4c">[email&#160;protected]</a>)</li>
+            </ul>
+
+            <h3>Questions?</h3>
+            <p>Contact us at <strong><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="47343237372835330735222a3e292335346924282a">[email&#160;protected]</a></strong> or text "Support: [your message here]..." to (855) 552-1950</p>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <div class="container">
+            <h2>Ready to Remember Everything?</h2>
+            <a href="sms:8555521950" class="cta-button cta-white">Text Us Now: (855) 552-1950</a>
+            <p class="sms-disclaimer" style="color: rgba(255,255,255,0.8);">By texting, you consent to receive SMS messages from Remyndrs. Msg & data rates may apply. Reply STOP to unsubscribe.</p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <img src="remyndrs-logo.svg" alt="Remyndrs" style="width: 100px; height: auto; margin: 0 auto 20px; display: block; opacity: 0.8;">
+            <p>&copy; 2026 Remyndrs. All rights reserved.</p>
+            <p style="margin-top: 10px;">Built with ❤️ to help you remember what matters</p>
+        </div>
+    </footer>
+
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const caseCards = document.querySelectorAll('.case');
+            
+            function resetAnimations(card) {
+                const messages = card.querySelectorAll('.conversation-message');
+                messages.forEach(msg => {
+                    msg.style.animation = 'none';
+                    msg.offsetHeight;
+                    msg.style.animation = null;
+                });
+            }
+            
+            function closeAllConversations() {
+                caseCards.forEach(c => c.classList.remove('active'));
+            }
+            
+            // Handle close buttons - try EVERYTHING
+            document.querySelectorAll('.conversation-close').forEach(btn => {
+                // Try touchend (what works for outside tap)
+                btn.addEventListener('touchend', function(e) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    const card = this.closest('.case');
+                    if (card) {
+                        card.classList.remove('active');
+                    }
+                }, { passive: false });
+                
+                // Also try touchstart
+                btn.addEventListener('touchstart', function(e) {
+                    e.stopPropagation();
+                    const card = this.closest('.case');
+                    if (card) {
+                        card.classList.remove('active');
+                    }
+                }, { passive: true });
+                
+                // And click
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    const card = this.closest('.case');
+                    if (card) {
+                        card.classList.remove('active');
+                    }
+                });
+            });
+            
+            // Handle card taps
+            caseCards.forEach(card => {
+                const conversation = card.querySelector('.case-conversation');
+                
+                // Desktop hover
+                if (window.innerWidth > 1024) {
+                    card.addEventListener('mouseenter', function() {
+                        resetAnimations(this);
+                    });
+                }
+                
+                // Mobile card tap
+                card.addEventListener('touchstart', function(e) {
+                    if (window.innerWidth > 1024) return;
+                    
+                    // Ignore if tapping conversation when it's open
+                    if (conversation && conversation.contains(e.target) && this.classList.contains('active')) {
+                        return;
+                    }
+                    
+                    // Toggle
+                    const wasActive = this.classList.contains('active');
+                    closeAllConversations();
+                    
+                    if (!wasActive) {
+                        this.classList.add('active');
+                        resetAnimations(this);
+                    }
+                });
+            });
+            
+            // Tap outside to close
+            document.addEventListener('touchstart', function(e) {
+                if (window.innerWidth <= 1024 && !e.target.closest('.case')) {
+                    closeAllConversations();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
