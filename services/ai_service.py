@@ -676,16 +676,17 @@ CRITICAL RULES:
                 logger.error(f"JSON Parse Error (attempt {attempt + 1}): {e}")
                 logger.error(f"OpenAI Response: {response.choices[0].message.content[:500]}")
                 if attempt < max_retries:
-                    logger.info(f"Retrying AI call...")
+                    logger.info(f"Retrying AI call (JSON parse error)...")
                     continue
             except Exception as e:
-                last_error = e
+                # Don't retry on timeouts/network errors - fail fast to avoid Twilio webhook timeout
                 import traceback
-                logger.error(f"OpenAI Error (attempt {attempt + 1}): {e}")
-                if attempt < max_retries:
-                    logger.info(f"Retrying AI call...")
-                    continue
+                logger.error(f"OpenAI Error: {e}")
                 logger.error(f"Full traceback: {traceback.format_exc()}")
+                return {
+                    "action": "error",
+                    "response": "Sorry, I'm having trouble right now. Please try again in a moment."
+                }
 
         # All retries failed
         logger.error(f"All AI retries failed. Last error: {last_error}")
