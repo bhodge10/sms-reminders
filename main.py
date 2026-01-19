@@ -1097,7 +1097,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         pending_item = get_pending_list_item(phone_number)
         user_for_pending = get_user(phone_number)
         pending_delete_flag = user_for_pending and user_for_pending[9] if user_for_pending else False
-        logger.info(f"DEBUG pending_list_item check: pending_item={pending_item}, pending_delete_flag={pending_delete_flag}, isdigit={incoming_msg.strip().isdigit()}")
         if pending_item and not pending_delete_flag:
             if incoming_msg.strip().isdigit():
                 list_num = int(incoming_msg.strip())
@@ -3380,7 +3379,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             elif len(lists) > 1:
                 # Multiple lists, ask which one (store original text for parsing later)
                 # Clear pending_delete flag to avoid blocking the list selection handler
-                logger.info(f"DEBUG setting pending_list_item={item_text} for phone {mask_phone_number(phone_number)}")
                 create_or_update_user(phone_number, pending_list_item=item_text, pending_delete=False)
                 list_options = "\n".join([f"{i+1}. {l[1]}" for i, l in enumerate(lists)])
                 reply_text = f"Which list would you like to add these to?\n\n{list_options}\n\nReply with a number:"
