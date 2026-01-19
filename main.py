@@ -1098,6 +1098,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         user_for_pending = get_user(phone_number)
         pending_delete_flag = user_for_pending and user_for_pending[9] if user_for_pending else False
         if pending_item and not pending_delete_flag:
+            # Handle CANCEL for pending list item
+            if incoming_msg.strip().upper() in ["CANCEL", "NO", "NEVERMIND", "NEVER MIND"]:
+                create_or_update_user(phone_number, pending_list_item=None)
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Cancelled."))
+                log_interaction(phone_number, incoming_msg, "Cancelled pending list item", "cancel_list_item", True)
+                return Response(content=str(resp), media_type="application/xml")
             if incoming_msg.strip().isdigit():
                 list_num = int(incoming_msg.strip())
                 lists = get_lists(phone_number)
