@@ -3379,8 +3379,9 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
             elif len(lists) > 1:
                 # Multiple lists, ask which one (store original text for parsing later)
+                # Clear pending_delete flag to avoid blocking the list selection handler
                 logger.info(f"DEBUG setting pending_list_item={item_text} for phone {mask_phone_number(phone_number)}")
-                create_or_update_user(phone_number, pending_list_item=item_text)
+                create_or_update_user(phone_number, pending_list_item=item_text, pending_delete=False)
                 list_options = "\n".join([f"{i+1}. {l[1]}" for i, l in enumerate(lists)])
                 reply_text = f"Which list would you like to add these to?\n\n{list_options}\n\nReply with a number:"
             else:
