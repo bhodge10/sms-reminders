@@ -947,6 +947,12 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                             else:
                                 reply_msg = "Couldn't delete that memory."
 
+                        elif delete_type == 'list':
+                            if delete_list(phone_number, selected['text']):
+                                reply_msg = f"Deleted list: {selected['text']}"
+                            else:
+                                reply_msg = "Couldn't delete that list."
+
                         # Clear pending delete
                         create_or_update_user(phone_number, pending_reminder_delete=None)
 
@@ -1247,6 +1253,84 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             resp = MessagingResponse()
             resp.message(staging_prefix(reply_msg))
             log_interaction(phone_number, incoming_msg, "Showing delete reminders list", "delete_reminders_list", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # DELETE MEMORIES (show list to pick from)
+        # ==========================================
+        # Handle "Delete memories", "Forget memories", etc. - shows numbered list
+        if msg_upper in ["DELETE MEMORIES", "DELETE MY MEMORIES", "FORGET MEMORIES", "FORGET MY MEMORIES", "REMOVE MEMORIES", "REMOVE MY MEMORIES"]:
+            memories = get_memories(phone_number)
+
+            if not memories:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("You don't have any memories to delete."))
+                log_interaction(phone_number, incoming_msg, "No memories to delete", "delete_memories_list", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Build numbered list and store options for selection
+            # Tuple format: (id, memory_text, parsed_data, created_at)
+            lines = ["Which memory would you like to delete?\n"]
+            delete_options = []
+
+            for i, memory in enumerate(memories[:20], 1):  # Limit to 20 for readability
+                memory_id, memory_text, parsed_data, created_at = memory
+                # Truncate long memories for display
+                display_text = memory_text[:50] + "..." if len(memory_text) > 50 else memory_text
+                lines.append(f"{i}. {display_text}")
+                delete_options.append({
+                    'type': 'memory',
+                    'id': memory_id,
+                    'text': memory_text
+                })
+
+            lines.append("\nReply with a number to delete, or CANCEL")
+            reply_msg = "\n".join(lines)
+
+            # Store options for number selection (reuses pending_reminder_delete)
+            create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options))
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(reply_msg))
+            log_interaction(phone_number, incoming_msg, "Showing delete memories list", "delete_memories_list", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # DELETE LISTS (show list to pick from)
+        # ==========================================
+        # Handle "Delete lists", "Remove lists", etc. - shows numbered list of lists
+        if msg_upper in ["DELETE LISTS", "DELETE MY LISTS", "REMOVE LISTS", "REMOVE MY LISTS"]:
+            lists = get_lists(phone_number)
+
+            if not lists:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("You don't have any lists to delete."))
+                log_interaction(phone_number, incoming_msg, "No lists to delete", "delete_lists_list", True)
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Build numbered list and store options for selection
+            # get_lists returns: (list_id, list_name, item_count, completed_count)
+            lines = ["Which list would you like to delete?\n"]
+            delete_options = []
+
+            for i, lst in enumerate(lists, 1):
+                list_id, list_name, item_count, completed_count = lst
+                lines.append(f"{i}. {list_name} ({item_count} items)")
+                delete_options.append({
+                    'type': 'list',
+                    'id': list_id,
+                    'text': list_name
+                })
+
+            lines.append("\nReply with a number to delete, or CANCEL")
+            reply_msg = "\n".join(lines)
+
+            # Store options for number selection (reuses pending_reminder_delete)
+            create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options))
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(reply_msg))
+            log_interaction(phone_number, incoming_msg, "Showing delete lists list", "delete_lists_list", True)
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
