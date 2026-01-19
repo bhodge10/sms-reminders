@@ -2262,8 +2262,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # HELP - Twilio reserved keyword (handled by Twilio Messaging Service)
+        # Return empty response so only Twilio's message is sent
+        # ==========================================
+        if incoming_msg.upper() == "HELP":
+            log_interaction(phone_number, incoming_msg, "[Handled by Twilio]", "help_twilio", True)
+            resp = MessagingResponse()
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # INFO COMMAND (Help Guide)
-        # Note: HELP is a Twilio reserved keyword handled by Twilio Messaging Service
         # ==========================================
         if incoming_msg.upper() in ["INFO", "GUIDE", "COMMANDS", "?"]:
             resp = MessagingResponse()
