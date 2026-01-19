@@ -2262,16 +2262,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # HELP COMMAND (Twilio reserved keyword)
-        # ==========================================
-        if incoming_msg.upper() == "HELP":
-            resp = MessagingResponse()
-            resp.message("Remyndrs Help: Text ? for commands and tips on using the service. Visit remyndrs.com/account to manage your account, billing, or cancel. Reply STOP to unsubscribe from texts.")
-            log_interaction(phone_number, incoming_msg, "Help info sent", "help_keyword", True)
-            return Response(content=str(resp), media_type="application/xml")
-
-        # ==========================================
         # INFO COMMAND (Help Guide)
+        # Note: HELP is a Twilio reserved keyword handled by Twilio Messaging Service
         # ==========================================
         if incoming_msg.upper() in ["INFO", "GUIDE", "COMMANDS", "?"]:
             resp = MessagingResponse()
