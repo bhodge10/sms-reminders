@@ -587,7 +587,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # UNDO / THAT'S WRONG FALLBACK COMMANDS
         # ==========================================
         # Allow users to undo or correct mistakes at any time
-        if is_undo_command:
+        # But skip if there's a pending_list_item for adding (not deleting) - let that handler deal with cancel
+        pending_list_item_for_add = get_pending_list_item(phone_number)
+        user_for_undo = get_user(phone_number)
+        pending_delete_for_undo = user_for_undo and user_for_undo[9] if user_for_undo else False
+        has_pending_add = pending_list_item_for_add and not pending_delete_for_undo
+
+        if is_undo_command and not has_pending_add:
             # First check if there's a pending confirmation to cancel
             if pending_confirmation:
                 create_or_update_user(phone_number, pending_reminder_confirmation=None)
