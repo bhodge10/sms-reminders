@@ -2449,7 +2449,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # If they send an unrelated message, remind them of the pending question
 
         # Check for cancel commands first
-        cancel_phrases = ['cancel', 'nevermind', 'never mind', 'skip', 'forget it', 'no thanks', 'nope', 'stop']
+        cancel_phrases = ['cancel', 'nevermind', 'never mind', 'skip', 'forget it', 'no thanks', 'nope', 'stop', 'undo']
         is_cancel_command = incoming_msg.strip().lower() in cancel_phrases
 
         # Get user for pending state checks
