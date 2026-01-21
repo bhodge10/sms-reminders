@@ -446,19 +446,12 @@ def get_user_subscription(phone_number: str) -> dict:
 def send_subscription_confirmation(phone_number: str, tier: str):
     """Send SMS confirmation of subscription."""
     try:
-        from twilio.rest import Client
-        from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
-
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        from services.sms_service import send_sms
 
         plan_name = "Premium" if tier == TIER_PREMIUM else "Family Plan"
         message = f"Welcome to Remyndrs {plan_name}! You now have access to unlimited reminders, recurring reminders, and priority support. Enjoy!"
 
-        client.messages.create(
-            body=message,
-            from_=TWILIO_PHONE_NUMBER,
-            to=phone_number
-        )
+        send_sms(phone_number, message)
         logger.info(f"Sent subscription confirmation to {phone_number[-4:]}")
     except Exception as e:
         logger.error(f"Error sending subscription confirmation: {e}")
@@ -467,18 +460,11 @@ def send_subscription_confirmation(phone_number: str, tier: str):
 def send_cancellation_notice(phone_number: str):
     """Send SMS notice of subscription cancellation."""
     try:
-        from twilio.rest import Client
-        from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
-
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        from services.sms_service import send_sms
 
         message = "Your Remyndrs subscription has been cancelled. You've been moved to the free plan. Text UPGRADE anytime to resubscribe!"
 
-        client.messages.create(
-            body=message,
-            from_=TWILIO_PHONE_NUMBER,
-            to=phone_number
-        )
+        send_sms(phone_number, message)
         logger.info(f"Sent cancellation notice to {phone_number[-4:]}")
     except Exception as e:
         logger.error(f"Error sending cancellation notice: {e}")
@@ -487,18 +473,11 @@ def send_cancellation_notice(phone_number: str):
 def send_payment_failed_notice(phone_number: str):
     """Send SMS notice of failed payment."""
     try:
-        from twilio.rest import Client
-        from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
-
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        from services.sms_service import send_sms
 
         message = "We couldn't process your Remyndrs payment. Please update your payment method to keep your premium features. Text ACCOUNT to manage your subscription."
 
-        client.messages.create(
-            body=message,
-            from_=TWILIO_PHONE_NUMBER,
-            to=phone_number
-        )
+        send_sms(phone_number, message)
         logger.info(f"Sent payment failed notice to {phone_number[-4:]}")
     except Exception as e:
         logger.error(f"Error sending payment failed notice: {e}")

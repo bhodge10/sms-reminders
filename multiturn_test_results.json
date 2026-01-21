@@ -1,0 +1,315 @@
+{
+  "timestamp": "2026-01-18T10:53:02.205925",
+  "api_url": "http://localhost:8000/sms",
+  "summary": {
+    "total": 10,
+    "passed": 3,
+    "failed": 7
+  },
+  "results": [
+    {
+      "flow": "Undo -> Yes (confirm deletion)",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "undo",
+          "response": "Delete your most recent reminder: \"test undo\"?\n\nReply YES to delete or NO to keep it.",
+          "expected": [
+            "delete",
+            "yes"
+          ],
+          "found": [
+            "delete",
+            "yes"
+          ],
+          "missing": [],
+          "passed": true
+        },
+        {
+          "step": 2,
+          "message": "yes",
+          "response": "Hi Multitest! How can I help you today?",
+          "expected": [
+            "deleted"
+          ],
+          "found": [],
+          "missing": [
+            "deleted"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Undo -> No (cancel deletion)",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "undo",
+          "response": "Delete your most recent reminder: \"test undo\"?\n\nReply YES to delete or NO to keep it.",
+          "expected": [
+            "delete"
+          ],
+          "found": [
+            "delete"
+          ],
+          "missing": [],
+          "passed": true
+        },
+        {
+          "step": 2,
+          "message": "no",
+          "response": "No problem! You can always enable it later by texting \"daily summary on\"\n\nHere's what I can do:\n\n📝 Lists: \"Add milk to grocery list\"\n🧠 Memories: \"Remember: garage code is 4582\"\n⏰ Reminders: \"Remind me",
+          "expected": [
+            "cancelled"
+          ],
+          "found": [],
+          "missing": [
+            "cancelled"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Delete Reminder -> Yes",
+      "passed": true,
+      "details": [
+        {
+          "step": 1,
+          "message": "delete test delete flow",
+          "response": "Delete reminder: test delete flow?\n\nReply YES to confirm or CANCEL to keep it.",
+          "expected": [
+            "delete",
+            "yes"
+          ],
+          "found": [
+            "delete",
+            "yes"
+          ],
+          "missing": [],
+          "passed": true
+        },
+        {
+          "step": 2,
+          "message": "yes",
+          "response": "Deleted reminder: test delete flow",
+          "expected": [
+            "deleted"
+          ],
+          "found": [
+            "deleted"
+          ],
+          "missing": [],
+          "passed": true
+        }
+      ]
+    },
+    {
+      "flow": "Delete Reminder -> Cancel",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "delete test cancel flow",
+          "response": "I didn't understand that time. Please enter something like 8AM, 7:30AM, or 9PM.",
+          "expected": [
+            "delete"
+          ],
+          "found": [],
+          "missing": [
+            "delete"
+          ],
+          "passed": false
+        },
+        {
+          "step": 2,
+          "message": "no",
+          "response": "No problem! You can always enable it later by texting \"daily summary on\"\n\nHere's what I can do:\n\n📝 Lists: \"Add milk to grocery list\"\n🧠 Memories: \"Remember: garage code is 4582\"\n⏰ Reminders: \"Remind me",
+          "expected": [
+            "cancelled"
+          ],
+          "found": [],
+          "missing": [
+            "cancelled"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Reminder -> Time Clarification -> Created",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "remind me tomorrow to call the bank",
+          "response": "I'll remind you on Monday, January 19th to call the bank. What time would you like the reminder?",
+          "expected": [
+            "time"
+          ],
+          "found": [
+            "time"
+          ],
+          "missing": [],
+          "passed": true
+        },
+        {
+          "step": 2,
+          "message": "2pm",
+          "response": "Sorry, I had trouble setting that reminder. Please try again with a time like '8am' or '3:30pm'.",
+          "expected": [
+            "remind",
+            "bank"
+          ],
+          "found": [
+            "remind"
+          ],
+          "missing": [
+            "bank"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Ambiguous Time -> AM/PM Clarification",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "remind me tomorrow at 8 to exercise",
+          "response": "Got it! I'll remind you on Monday, January 19, 2026 at 8:00 AM to exercise.",
+          "expected": [
+            "8"
+          ],
+          "found": [
+            "8"
+          ],
+          "missing": [],
+          "passed": true
+        },
+        {
+          "step": 2,
+          "message": "am",
+          "response": "Hi Multitest! How can I help you today?",
+          "expected": [
+            "8"
+          ],
+          "found": [],
+          "missing": [
+            "8"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Add to List Flow",
+      "passed": true,
+      "details": [
+        {
+          "step": 1,
+          "message": "add milk to grocery list",
+          "response": "Added milk to your grocery list\n\nYou're getting the hang of it!\n\nQuick question: Want a daily text each morning with your reminders for the day?\n\nThis helps you plan ahead and never miss anything.\n\nRe",
+          "expected": [
+            "added",
+            "milk",
+            "grocery"
+          ],
+          "found": [
+            "added",
+            "milk",
+            "grocery"
+          ],
+          "missing": [],
+          "passed": true
+        }
+      ]
+    },
+    {
+      "flow": "Delete List Item -> Yes",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "delete test item from shopping",
+          "response": "I didn't understand that time. Please enter something like 8AM, 7:30AM, or 9PM.",
+          "expected": [
+            "remove",
+            "yes"
+          ],
+          "found": [],
+          "missing": [
+            "remove",
+            "yes"
+          ],
+          "passed": false
+        },
+        {
+          "step": 2,
+          "message": "yes",
+          "response": "Great! You'll get your daily summary at 8:00 AM each morning. 📅\n\nHere's what I can do:\n\n📝 Lists: \"Add milk to grocery list\"\n🧠 Memories: \"Remember: garage code is 4582\"\n⏰ Reminders: \"Remind me every Mo",
+          "expected": [
+            "removed"
+          ],
+          "found": [],
+          "missing": [
+            "removed"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Save Memory Flow",
+      "passed": false,
+      "details": [
+        {
+          "step": 1,
+          "message": "remember my favorite color is blue",
+          "response": "I didn't understand that time. Please enter something like 8AM, 7:30AM, or 9PM.",
+          "expected": [
+            "saved",
+            "blue"
+          ],
+          "found": [],
+          "missing": [
+            "saved",
+            "blue"
+          ],
+          "passed": false
+        }
+      ]
+    },
+    {
+      "flow": "Recurring Reminder Flow",
+      "passed": true,
+      "details": [
+        {
+          "step": 1,
+          "message": "remind me every day at 7am to stretch",
+          "response": "Got it! I'll remind you every day at 7:00 AM to stretch.\n\nNext reminder: Monday, January 19 at 7:00 AM\n\n(Text 'SHOW RECURRING' to see all, 'DELETE RECURRING [#]' to remove)",
+          "expected": [
+            "every day",
+            "7",
+            "am",
+            "stretch",
+            "recurring"
+          ],
+          "found": [
+            "every day",
+            "7",
+            "am",
+            "stretch",
+            "recurring"
+          ],
+          "missing": [],
+          "passed": true
+        }
+      ]
+    }
+  ]
+}

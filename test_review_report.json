@@ -1,0 +1,209 @@
+{
+  "review_metadata": {
+    "reviewer": "QA Automated Review",
+    "review_date": "2026-01-17",
+    "test_run_date": "2026-01-17",
+    "test_context": {
+      "today": "Saturday, January 17, 2026",
+      "tomorrow": "Sunday, January 18, 2026",
+      "timezone": "America/Los_Angeles (Pacific)"
+    },
+    "total_tests": 36,
+    "tests_with_critical_issues": 3,
+    "tests_with_moderate_issues": 5,
+    "tests_with_minor_issues": 0,
+    "tests_passed": 28,
+    "pass_rate_no_critical": "91.7%",
+    "pass_rate_all_clean": "77.8%"
+  },
+  "issues": [
+    {
+      "severity": "🔴",
+      "test_number": 2,
+      "issue_type": "parsing_error",
+      "user_message": "remind me tomorrow at 10am to take my vitamins",
+      "system_response": "Great! You'll get your daily summary at 10:00 AM each morning...",
+      "problem": "Complete misinterpretation. User requested a one-time reminder for tomorrow at 10am, but system interpreted this as setting the daily summary time. The reminder was never created.",
+      "expected": "Should create a reminder for Sunday, January 18, 2026 at 10:00 AM with text 'take my vitamins'",
+      "recommendation": "Review AI prompt engineering. The phrase 'remind me tomorrow at 10am' should NEVER trigger daily summary settings. Likely needs stricter intent classification or keyword priority."
+    },
+    {
+      "severity": "🔴",
+      "test_number": 13,
+      "issue_type": "parsing_error",
+      "user_message": "remind me December 31st 2026 at 11pm for new years countdown",
+      "system_response": "I'll remind you on Thursday, December 31st, 2026 to new years countdown. What time would you like the reminder?",
+      "problem": "User explicitly specified 'at 11pm' but system ignored the time and asks for it again.",
+      "expected": "Should create a reminder for Thursday, December 31, 2026 at 11:00 PM without asking for time",
+      "recommendation": "Improve time extraction regex/NLP. The pattern 'at 11pm' should be captured even when embedded in complex date expressions."
+    },
+    {
+      "severity": "🔴",
+      "test_number": 29,
+      "issue_type": "parsing_error",
+      "user_message": "remind me every day at 8am to take medication",
+      "system_response": "I'll remind you on Sunday, January 18 at 08:00 AM to take medication.",
+      "problem": "User requested a DAILY RECURRING reminder ('every day') but system created a one-time reminder for just the next day.",
+      "expected": "Should create a daily recurring reminder at 8:00 AM with text 'take medication', showing 'I'll remind you every day at 8:00 AM'",
+      "recommendation": "Check AI prompt for recurring reminder detection. 'every day' is a clear signal for recurrence_type='daily' but it was missed."
+    },
+    {
+      "severity": "🟡",
+      "test_number": 8,
+      "issue_type": "ux",
+      "user_message": "set a reminder for the meeting on January 25th at 2pm",
+      "system_response": "Got it! I'll remind you on Sunday, January 25, 2026 at 2:00 PM to meeting.",
+      "problem": "Reminder text reduced to just 'meeting', losing the context 'for the meeting'. Grammatically awkward: 'to meeting'.",
+      "expected": "Should say 'for the meeting' or 'about the meeting'",
+      "recommendation": "Extend format_reminder_confirmation() to also handle cases where text is just a noun (add 'about' prefix for single-word nouns)."
+    },
+    {
+      "severity": "🟡",
+      "test_number": 10,
+      "issue_type": "ux",
+      "user_message": "tomorrow morning remind me to call the insurance company",
+      "system_response": "I'll remind you on Sunday, January 18th to call the insurance company. What time would you like the reminder?",
+      "problem": "User said 'tomorrow morning' which implies a reasonable morning time (8-9am), but system asks for specific time instead of defaulting.",
+      "expected": "Should default to a morning time (e.g., 8:00 AM or 9:00 AM) when user says 'morning'",
+      "recommendation": "Add time-of-day mappings in AI prompt: 'morning'=8-9am, 'afternoon'=12-2pm, 'evening'=5-6pm, 'night'=8-9pm"
+    },
+    {
+      "severity": "🟡",
+      "test_number": 24,
+      "issue_type": "ux",
+      "user_message": "snooze the dentist reminder for 1 hour",
+      "system_response": "No recent reminder to snooze. You can only snooze within 30 minutes of receiving a reminder.",
+      "problem": "While technically correct, the user wanted to reschedule a future reminder. The response doesn't offer an alternative solution.",
+      "expected": "Could offer to 'reschedule' or 'move' the reminder, or suggest the syntax for updating a reminder time",
+      "recommendation": "Add 'reschedule' command as alternative, or improve error message to suggest: 'To move a future reminder, try: change my dentist reminder to [new time]'"
+    },
+    {
+      "severity": "🟡",
+      "test_number": 26,
+      "issue_type": "date_inconsistency",
+      "user_message": "what's my wifi password?",
+      "system_response": "Your wifi password is BlueHouse2024. (recorded on January 18, 2026)",
+      "problem": "Memory shows 'recorded on January 18, 2026' but tests ran on January 17, 2026. The date is one day ahead.",
+      "expected": "Should show 'recorded on January 17, 2026'",
+      "recommendation": "Check timezone handling for memory timestamps. Likely storing in UTC but displaying without proper timezone conversion to user's local time."
+    },
+    {
+      "severity": "🟡",
+      "test_number": 28,
+      "issue_type": "ux",
+      "user_message": "create a todo list for today: call dentist, buy groceries, pick up package, reply to emails",
+      "system_response": "Created your todo list!",
+      "problem": "User specified 4 items after the colon but response only confirms list creation. Unclear if items were added or just an empty list was created.",
+      "expected": "Should confirm: 'Created your todo list with 4 items: call dentist, buy groceries, pick up package, reply to emails'",
+      "recommendation": "When user provides items in the create command, parse them automatically and confirm in the response. May need AI prompt update to recognize inline items."
+    }
+  ],
+  "pattern_analysis": {
+    "time_parsing_failures": {
+      "affected_tests": [2, 13],
+      "description": "Explicit times in messages are sometimes ignored or misinterpreted, leading to wrong actions or follow-up questions.",
+      "root_cause": "AI/NLP extraction may miss times when they're embedded in complex sentences, or may misclassify intent when time patterns overlap with other features (like daily summary).",
+      "priority": "HIGH - Causes user frustration and lost reminders"
+    },
+    "recurring_reminder_detection": {
+      "affected_tests": [29],
+      "description": "'every day' was not recognized as a recurring reminder pattern.",
+      "root_cause": "AI may have classified this as a one-time reminder instead of recurring. The prompt instructions for recurring reminders may need reinforcement.",
+      "priority": "HIGH - Users expect 'every day' to create recurring reminders"
+    },
+    "timezone_date_display": {
+      "affected_tests": [26],
+      "description": "Memory recorded date shows next day instead of current day.",
+      "root_cause": "Timestamps may be stored in UTC but displayed without timezone conversion.",
+      "priority": "MEDIUM - Confusing but doesn't affect functionality"
+    },
+    "context_extraction": {
+      "affected_tests": [8, 28],
+      "description": "Some reminder/list text loses context from user's original message.",
+      "root_cause": "AI extracts minimal text instead of preserving full context.",
+      "priority": "MEDIUM - Affects clarity of confirmations"
+    }
+  },
+  "improvements_since_last_run": {
+    "fixed_issues": [
+      {
+        "issue": "Context bleed between messages",
+        "was": "Test 11 showed 'call the insurance company' instead of 'lock the doors'",
+        "now": "Test 11 correctly shows 'lock the doors'"
+      },
+      {
+        "issue": "START command parsed as name",
+        "was": "Onboarding saved 'Start' as user's first name",
+        "now": "Shows proper welcome message and asks for name"
+      },
+      {
+        "issue": "ZIP code error",
+        "was": "'Sorry, something went wrong' on valid ZIP",
+        "now": "Completes onboarding with correct timezone"
+      },
+      {
+        "issue": "Grammar 'to about'",
+        "was": "'to about the dentist appointment'",
+        "now": "'about the dentist appointment'"
+      }
+    ]
+  },
+  "priority_ranking": [
+    {
+      "rank": 1,
+      "issue": "Reminder misinterpreted as daily summary (Test 2)",
+      "affected_tests": [2],
+      "impact": "User's reminder is completely lost - they expected a vitamins reminder but got daily summary setting",
+      "effort": "Medium - requires AI prompt tuning to prioritize reminder intent"
+    },
+    {
+      "rank": 2,
+      "issue": "'every day' not recognized as recurring (Test 29)",
+      "affected_tests": [29],
+      "impact": "User expects daily recurring reminder but only gets one-time",
+      "effort": "Medium - check AI prompt for recurring patterns"
+    },
+    {
+      "rank": 3,
+      "issue": "Time 'at 11pm' ignored in complex date (Test 13)",
+      "affected_tests": [13],
+      "impact": "User has to re-enter time, friction in UX",
+      "effort": "Medium - improve time extraction"
+    },
+    {
+      "rank": 4,
+      "issue": "Memory date off by one day (Test 26)",
+      "affected_tests": [26],
+      "impact": "Confusing metadata but doesn't affect core function",
+      "effort": "Low - timezone conversion fix"
+    },
+    {
+      "rank": 5,
+      "issue": "No default time for 'morning' (Test 10)",
+      "affected_tests": [10],
+      "impact": "Extra interaction required",
+      "effort": "Low - add time-of-day mappings"
+    },
+    {
+      "rank": 6,
+      "issue": "Lost context in reminder text (Test 8)",
+      "affected_tests": [8],
+      "impact": "Awkward confirmation message",
+      "effort": "Low - extend format_reminder_confirmation()"
+    },
+    {
+      "rank": 7,
+      "issue": "Snooze error unhelpful (Test 24)",
+      "affected_tests": [24],
+      "impact": "User doesn't know alternative",
+      "effort": "Low - improve error message"
+    },
+    {
+      "rank": 8,
+      "issue": "List items not confirmed (Test 28)",
+      "affected_tests": [28],
+      "impact": "User uncertainty",
+      "effort": "Medium - AI prompt update"
+    }
+  ]
+}

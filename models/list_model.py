@@ -3,11 +3,13 @@ List Model
 Handles all list-related database operations
 """
 
+from typing import Any, Optional
+
 from database import get_db_connection, return_db_connection
 from config import logger, ENCRYPTION_ENABLED
 
 
-def create_list(phone_number, list_name):
+def create_list(phone_number: str, list_name: str) -> Optional[int]:
     """Create a new list for a user"""
     conn = None
     try:
@@ -39,7 +41,7 @@ def create_list(phone_number, list_name):
             return_db_connection(conn)
 
 
-def get_lists(phone_number):
+def get_lists(phone_number: str) -> list[tuple[int, str, int, int]]:
     """Get all lists for a user with item counts"""
     conn = None
     try:
@@ -95,7 +97,7 @@ def get_lists(phone_number):
             return_db_connection(conn)
 
 
-def get_list_by_name(phone_number, list_name):
+def get_list_by_name(phone_number: str, list_name: str) -> Optional[tuple[int, str]]:
     """Find a list by name (case-insensitive)"""
     conn = None
     try:
@@ -133,7 +135,7 @@ def get_list_by_name(phone_number, list_name):
             return_db_connection(conn)
 
 
-def get_next_available_list_name(phone_number, base_name):
+def get_next_available_list_name(phone_number: str, base_name: str) -> str:
     """Get next available list name (e.g., 'Grocery list #2' if 'Grocery list' exists)"""
     conn = None
     try:
@@ -188,7 +190,7 @@ def get_next_available_list_name(phone_number, base_name):
             return_db_connection(conn)
 
 
-def get_list_by_id(list_id, phone_number):
+def get_list_by_id(list_id: int, phone_number: str) -> Optional[tuple[int, str]]:
     """Get a list by ID (with ownership check)"""
     conn = None
     try:
@@ -218,7 +220,7 @@ def get_list_by_id(list_id, phone_number):
             return_db_connection(conn)
 
 
-def get_list_items(list_id):
+def get_list_items(list_id: int) -> list[tuple[int, str, bool]]:
     """Get all items in a list"""
     conn = None
     try:
@@ -238,7 +240,7 @@ def get_list_items(list_id):
             return_db_connection(conn)
 
 
-def add_list_item(list_id, phone_number, item_text):
+def add_list_item(list_id: int, phone_number: str, item_text: str) -> Optional[int]:
     """Add an item to a list"""
     conn = None
     try:
@@ -272,7 +274,7 @@ def add_list_item(list_id, phone_number, item_text):
             return_db_connection(conn)
 
 
-def mark_item_complete(phone_number, list_name, item_text):
+def mark_item_complete(phone_number: str, list_name: str, item_text: str) -> bool:
     """Mark an item as complete (case-insensitive match)"""
     conn = None
     try:
@@ -314,7 +316,7 @@ def mark_item_complete(phone_number, list_name, item_text):
             return_db_connection(conn)
 
 
-def mark_item_incomplete(phone_number, list_name, item_text):
+def mark_item_incomplete(phone_number: str, list_name: str, item_text: str) -> bool:
     """Mark an item as incomplete (case-insensitive match)"""
     conn = None
     try:
@@ -356,7 +358,7 @@ def mark_item_incomplete(phone_number, list_name, item_text):
             return_db_connection(conn)
 
 
-def find_item_in_any_list(phone_number, item_text):
+def find_item_in_any_list(phone_number: str, item_text: str) -> list[tuple[int, str, int, str]]:
     """Find an item across all user's lists (for check off without specifying list)"""
     conn = None
     try:
@@ -390,7 +392,7 @@ def find_item_in_any_list(phone_number, item_text):
             return_db_connection(conn)
 
 
-def delete_list_item(phone_number, list_name, item_text):
+def delete_list_item(phone_number: str, list_name: str, item_text: str) -> bool:
     """Delete an item from a list"""
     conn = None
     try:
@@ -431,7 +433,7 @@ def delete_list_item(phone_number, list_name, item_text):
             return_db_connection(conn)
 
 
-def delete_list(phone_number, list_name):
+def delete_list(phone_number: str, list_name: str) -> bool:
     """Delete an entire list and all its items"""
     conn = None
     try:
@@ -475,7 +477,7 @@ def delete_list(phone_number, list_name):
             return_db_connection(conn)
 
 
-def rename_list(phone_number, old_name, new_name):
+def rename_list(phone_number: str, old_name: str, new_name: str) -> bool:
     """Rename a list"""
     conn = None
     try:
@@ -508,7 +510,7 @@ def rename_list(phone_number, old_name, new_name):
             return_db_connection(conn)
 
 
-def clear_list(phone_number, list_name):
+def clear_list(phone_number: str, list_name: str) -> bool:
     """Remove all items from a list (but keep the list)"""
     conn = None
     try:
@@ -546,7 +548,7 @@ def clear_list(phone_number, list_name):
             return_db_connection(conn)
 
 
-def get_list_count(phone_number):
+def get_list_count(phone_number: str) -> int:
     """Get the number of lists a user has"""
     conn = None
     try:
@@ -571,7 +573,7 @@ def get_list_count(phone_number):
             return_db_connection(conn)
 
 
-def get_item_count(list_id):
+def get_item_count(list_id: int) -> int:
     """Get the number of items in a list"""
     conn = None
     try:

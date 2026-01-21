@@ -1584,3 +1584,37 @@ async def cs_add_customer_note(phone_number: str, request: Request, user: str = 
     finally:
         if conn:
             return_db_connection(conn)
+
+
+@router.post("/cs/customer/{phone_number}/clear-pending")
+async def cs_clear_pending_states(phone_number: str, user: str = Depends(verify_cs_auth)):
+    """Clear all pending states for a customer (fixes stuck confirmation loops)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Clear all pending state fields
+        c.execute("""
+            UPDATE users SET
+                pending_reminder_delete = NULL,
+                pending_memory_delete = NULL,
+                pending_reminder_text = NULL,
+                pending_reminder_time = NULL,
+                pending_reminder_date = NULL,
+                pending_reminder_confirmation = NULL,
+                pending_list_item = NULL,
+                pending_list_create = NULL,
+                pending_daily_summary_time = NULL
+            WHERE phone_number = %s
+        """, (phone_number,))
+        conn.commit()
+
+        logger.info(f"Cleared pending states for {phone_number[-4:]} by {user}")
+        return {'success': True, 'message': 'All pending states cleared'}
+    except Exception as e:
+        logger.error(f"Error clearing pending states: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if conn:
+            return_db_connection(conn)

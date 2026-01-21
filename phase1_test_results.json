@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-01-17T20:23:30.137236",
+  "results": [
+    {
+      "test": 1,
+      "message": "START",
+      "status": "PASS",
+      "response": "Welcome to Remyndrs! 👋\n\nThanks for texting START!\n\nI help you remember anything - from grocery lists to important reminders.\n\nJust 4 quick questions to get started (takes about 1 minute), then you're all set!\n\nWhat's your first name?"
+    },
+    {
+      "test": 2,
+      "message": "Test User",
+      "status": "PASS",
+      "response": "Nice to meet you, Test User!\n\nEmail for account recovery?\n\n(We only use this for important updates - no spam!)"
+    },
+    {
+      "test": 3,
+      "message": "testuser@example.com",
+      "status": "PASS",
+      "response": "Perfect! Last question: ZIP code?\n\n(This helps me send reminders at the right time in your timezone)"
+    },
+    {
+      "test": 4,
+      "message": "90210",
+      "status": "PASS",
+      "response": "Perfect! Your timezone is set to America/Los_Angeles.\n\nYou're all set, Test! 🎉\n\nYou have a FREE 14-day Premium trial starting now!\n\nAfter 14 days, you choose:\n• Premium: $4.99/mo (early adopter rate - save $12!)\n• Free tier: 2 reminders/day, still useful\n• Cancel anytime: no charge, no hassle\n\n💡 Quick tip: Save this number to your contacts!\n(Check the next message for a contact card you can tap to save)\n\nNow let's set your first reminder!\n\nWhat's something you need to remember?\n\nTry: \"Remind me to call mom tomorrow at 2pm\"\nOr: \"Add milk and eggs to my grocery list\""
+    }
+  ]
+}
