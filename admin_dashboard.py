@@ -1202,6 +1202,58 @@ async def cleanup_stuck_reminders(admin: str = Depends(verify_admin)):
 # MONITORING AGENT API ENDPOINTS
 # =====================================================
 
+@router.get("/admin/pipeline/run")
+async def run_full_pipeline(
+    hours: int = 24,
+    use_ai: bool = False,
+    admin: str = Depends(verify_admin)
+):
+    """Run the full monitoring pipeline (Agent 1 + 2 + 3)"""
+    try:
+        from agents.interaction_monitor import analyze_interactions
+        from agents.issue_validator import validate_issues
+        from agents.resolution_tracker import calculate_health_metrics
+
+        results = {
+            'agent1': None,
+            'agent2': None,
+            'agent3': None,
+        }
+
+        # Agent 1: Interaction Monitor
+        monitor_results = analyze_interactions(hours=hours, dry_run=False)
+        results['agent1'] = {
+            'logs_analyzed': monitor_results['logs_analyzed'],
+            'issues_found': len(monitor_results['issues_found']),
+        }
+
+        # Agent 2: Issue Validator
+        if results['agent1']['issues_found'] > 0:
+            validator_results = validate_issues(limit=100, use_ai=use_ai, dry_run=False)
+            results['agent2'] = {
+                'processed': validator_results['issues_processed'],
+                'validated': len(validator_results['validated']),
+                'false_positives': len(validator_results['false_positives']),
+            }
+        else:
+            results['agent2'] = {'processed': 0, 'validated': 0, 'false_positives': 0}
+
+        # Agent 3: Health Metrics
+        health = calculate_health_metrics(days=7)
+        results['agent3'] = {
+            'health_score': health['health_score'],
+            'health_status': health['health_status'],
+        }
+
+        return JSONResponse(content={
+            "success": True,
+            "results": results
+        })
+    except Exception as e:
+        logger.error(f"Error running full pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/admin/monitoring/run")
 async def run_interaction_monitor(
     hours: int = 24,
@@ -1228,16 +1280,17 @@ async def run_interaction_monitor(
 @router.get("/admin/monitoring/issues")
 async def get_monitoring_issues(
     limit: int = 50,
-    validated: bool = False,
+    show_all: bool = False,
     admin: str = Depends(verify_admin)
 ):
-    """Get detected monitoring issues"""
+    """Get detected monitoring issues (open issues by default, or all if show_all=true)"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
 
-        if validated:
+        if show_all:
+            # Show everything including false positives and resolved
             c.execute('''
                 SELECT mi.id, mi.log_id, mi.phone_number, mi.issue_type,
                        mi.severity, mi.details, mi.detected_at, mi.validated,
@@ -1249,6 +1302,7 @@ async def get_monitoring_issues(
                 LIMIT %s
             ''', (limit,))
         else:
+            # Show open issues: not false positive, not resolved
             c.execute('''
                 SELECT mi.id, mi.log_id, mi.phone_number, mi.issue_type,
                        mi.severity, mi.details, mi.detected_at, mi.validated,
@@ -1256,7 +1310,7 @@ async def get_monitoring_issues(
                        l.message_in, l.message_out
                 FROM monitoring_issues mi
                 LEFT JOIN logs l ON mi.log_id = l.id
-                WHERE mi.validated = FALSE AND mi.false_positive = FALSE
+                WHERE mi.false_positive = FALSE AND mi.resolution IS NULL
                 ORDER BY
                     CASE mi.severity
                         WHEN 'critical' THEN 0
@@ -1331,6 +1385,43 @@ async def validate_monitoring_issue(
         raise
     except Exception as e:
         logger.error(f"Error validating monitoring issue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/monitoring/issues/{issue_id}/false-positive")
+async def mark_issue_false_positive(
+    issue_id: int,
+    admin: str = Depends(verify_admin)
+):
+    """Quick endpoint to mark an issue as false positive"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE monitoring_issues
+            SET validated = TRUE,
+                validated_by = %s,
+                validated_at = NOW(),
+                false_positive = TRUE,
+                resolution = 'Marked as false positive from dashboard'
+            WHERE id = %s
+            RETURNING id
+        ''', (admin, issue_id))
+
+        result = c.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        conn.commit()
+
+        return JSONResponse(content={"success": True, "issue_id": issue_id})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking issue as false positive: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
