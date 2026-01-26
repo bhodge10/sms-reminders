@@ -22,7 +22,7 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting, log_confidence
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out, cancel_engagement_nudge, increment_post_onboarding_interactions
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -437,6 +437,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         if not is_user_onboarded(phone_number):
             return handle_onboarding(phone_number, incoming_msg)
+
+        # ==========================================
+        # POST-ONBOARDING ENGAGEMENT TRACKING
+        # ==========================================
+        # User is onboarded - cancel any pending nudge and track interaction
+        # This runs on every message from an onboarded user
+        nudge_cancelled = cancel_engagement_nudge(phone_number)
+        if nudge_cancelled:
+            logger.info(f"User ...{phone_number[-4:]} texted back - cancelled engagement nudge")
+        increment_post_onboarding_interactions(phone_number)
 
         # ==========================================
         # NEW REMINDER REQUEST DETECTION (must come first)

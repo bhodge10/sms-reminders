@@ -25,6 +25,7 @@ ALLOWED_USER_FIELDS = {
     'daily_summary_enabled', 'daily_summary_time', 'daily_summary_last_sent',
     'daily_summary_prompted', 'pending_daily_summary_time',
     'pending_reminder_confirmation',
+    'five_minute_nudge_scheduled_at', 'five_minute_nudge_sent', 'post_onboarding_interactions',
 }
 
 
@@ -672,6 +673,161 @@ def get_pending_reminder_confirmation(phone_number: str) -> Optional[dict[str, A
     except Exception as e:
         logger.error(f"Error getting pending reminder confirmation: {e}")
         return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def cancel_engagement_nudge(phone_number: str) -> bool:
+    """Cancel a pending engagement nudge by clearing the scheduled timestamp.
+
+    Returns:
+        bool: True if a nudge was cancelled, False if no nudge was pending
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('''
+                UPDATE users
+                SET five_minute_nudge_scheduled_at = NULL
+                WHERE phone_hash = %s
+                  AND five_minute_nudge_scheduled_at IS NOT NULL
+                  AND five_minute_nudge_sent = FALSE
+                RETURNING phone_number
+            ''', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('''
+                    UPDATE users
+                    SET five_minute_nudge_scheduled_at = NULL
+                    WHERE phone_number = %s
+                      AND five_minute_nudge_scheduled_at IS NOT NULL
+                      AND five_minute_nudge_sent = FALSE
+                    RETURNING phone_number
+                ''', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('''
+                UPDATE users
+                SET five_minute_nudge_scheduled_at = NULL
+                WHERE phone_number = %s
+                  AND five_minute_nudge_scheduled_at IS NOT NULL
+                  AND five_minute_nudge_sent = FALSE
+                RETURNING phone_number
+            ''', (phone_number,))
+            result = c.fetchone()
+
+        conn.commit()
+
+        if result:
+            logger.info(f"Cancelled engagement nudge for user ...{phone_number[-4:]}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error cancelling engagement nudge: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def increment_post_onboarding_interactions(phone_number: str) -> int:
+    """Increment the post-onboarding interaction counter.
+
+    Returns:
+        int: The new interaction count, or -1 on error
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('''
+                UPDATE users
+                SET post_onboarding_interactions = COALESCE(post_onboarding_interactions, 0) + 1
+                WHERE phone_hash = %s
+                RETURNING post_onboarding_interactions
+            ''', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('''
+                    UPDATE users
+                    SET post_onboarding_interactions = COALESCE(post_onboarding_interactions, 0) + 1
+                    WHERE phone_number = %s
+                    RETURNING post_onboarding_interactions
+                ''', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('''
+                UPDATE users
+                SET post_onboarding_interactions = COALESCE(post_onboarding_interactions, 0) + 1
+                WHERE phone_number = %s
+                RETURNING post_onboarding_interactions
+            ''', (phone_number,))
+            result = c.fetchone()
+
+        conn.commit()
+        return result[0] if result else -1
+    except Exception as e:
+        logger.error(f"Error incrementing post-onboarding interactions: {e}")
+        if conn:
+            conn.rollback()
+        return -1
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_user_nudge_status(phone_number: str) -> dict:
+    """Get the engagement nudge status for a user.
+
+    Returns:
+        dict with keys: scheduled_at, sent, interactions, opted_out
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        query = '''
+            SELECT five_minute_nudge_scheduled_at, five_minute_nudge_sent,
+                   post_onboarding_interactions, opted_out
+            FROM users WHERE {phone_condition}
+        '''
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(query.format(phone_condition="phone_hash = %s"), (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute(query.format(phone_condition="phone_number = %s"), (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute(query.format(phone_condition="phone_number = %s"), (phone_number,))
+            result = c.fetchone()
+
+        if result:
+            return {
+                'scheduled_at': result[0],
+                'sent': result[1] or False,
+                'interactions': result[2] or 0,
+                'opted_out': result[3] or False
+            }
+        return {'scheduled_at': None, 'sent': False, 'interactions': 0, 'opted_out': False}
+    except Exception as e:
+        logger.error(f"Error getting nudge status: {e}")
+        return {'scheduled_at': None, 'sent': False, 'interactions': 0, 'opted_out': False}
     finally:
         if conn:
             return_db_connection(conn)

@@ -432,6 +432,10 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_daily_summary_time TEXT",
             # Store pending reminder for low-confidence confirmations (JSON with reminder details)
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_reminder_confirmation TEXT",
+            # 5-minute post-onboarding engagement nudge
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS five_minute_nudge_scheduled_at TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS five_minute_nudge_sent BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS post_onboarding_interactions INTEGER DEFAULT 0",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups

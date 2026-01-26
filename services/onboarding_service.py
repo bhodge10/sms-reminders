@@ -14,7 +14,7 @@ from models.memory import save_memory
 from utils.timezone import get_timezone_from_zip, get_user_current_time
 from utils.formatting import get_onboarding_prompt
 from services.sms_service import send_sms
-from tasks.reminder_tasks import send_delayed_sms
+from tasks.reminder_tasks import send_delayed_sms, send_engagement_nudge
 from services.onboarding_recovery_service import (
     track_onboarding_progress,
     mark_onboarding_complete,
@@ -353,6 +353,24 @@ Try asking me: "What do I have saved?"
                     send_sms(phone_number, vcf_message, media_url=vcf_url)
                 except Exception as sms_error:
                     logger.warning(f"Could not send VCF card for {phone_number}: {sms_error}")
+
+            # Schedule 5-minute engagement nudge (only if user doesn't text back)
+            try:
+                nudge_scheduled_at = datetime.utcnow()
+                create_or_update_user(
+                    phone_number,
+                    five_minute_nudge_scheduled_at=nudge_scheduled_at,
+                    five_minute_nudge_sent=False,
+                    post_onboarding_interactions=0
+                )
+                send_engagement_nudge.apply_async(
+                    args=[phone_number],
+                    countdown=300  # 5 minutes
+                )
+                logger.info(f"Scheduled 5-minute engagement nudge for ...{phone_number[-4:]}")
+            except Exception as nudge_error:
+                # Non-critical - log and continue
+                logger.warning(f"Could not schedule engagement nudge for {phone_number}: {nudge_error}")
 
         return Response(content=str(resp), media_type="application/xml")
 

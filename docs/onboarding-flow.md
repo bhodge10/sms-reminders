@@ -151,6 +151,14 @@ Tap to save Remyndrs to your contacts!
 [VCF contact card attached]
 ```
 
+**Engagement Nudge (5-minute delay, only if user hasn't texted back):**
+```
+Quick question: What's something you always forget?
+
+(I'm really good at remembering it for you 😊)
+```
+*Note: This message is cancelled if user texts anything within 5 minutes, or skipped if user has sent 2+ messages.*
+
 ### ZIP Code Validation Errors
 
 **International postal code (Canadian/UK):**

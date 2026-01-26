@@ -106,7 +106,8 @@ USER_COLUMNS = """
     phone_number, first_name, last_name, email, zip_code, timezone,
     onboarding_complete, onboarding_step, created_at, pending_delete,
     pending_reminder_text, pending_reminder_time, referral_source,
-    premium_status, premium_since, last_active_at, signup_source, total_messages
+    premium_status, premium_since, last_active_at, signup_source, total_messages,
+    five_minute_nudge_scheduled_at, five_minute_nudge_sent, post_onboarding_interactions
 """.strip()
 
 # Column indices for users table (for self-documenting code)
@@ -130,3 +131,6 @@ class UserColumn:
     LAST_ACTIVE_AT = 15
     SIGNUP_SOURCE = 16
     TOTAL_MESSAGES = 17
+    FIVE_MINUTE_NUDGE_SCHEDULED_AT = 18
+    FIVE_MINUTE_NUDGE_SENT = 19
+    POST_ONBOARDING_INTERACTIONS = 20
