@@ -13,6 +13,7 @@ from models.user import get_user, get_onboarding_step, create_or_update_user
 from models.memory import save_memory
 from utils.timezone import get_timezone_from_zip, get_user_current_time
 from utils.formatting import get_onboarding_prompt
+from services.sms_service import send_sms
 from tasks.reminder_tasks import send_delayed_sms
 from services.onboarding_recovery_service import (
     track_onboarding_progress,
@@ -336,17 +337,22 @@ Try asking me: "What do I have saved?"
 
 (Tip: Check your next message to save me as a contact!)""")
 
-            # Send VCF contact card after 5-second delay
+            # Send VCF contact card after 5-second delay (fall back to immediate if Celery unavailable)
+            vcf_url = f"{APP_BASE_URL}/contact.vcf"
+            vcf_message = "📱 Tap to save Remyndrs to your contacts!"
             try:
-                vcf_url = f"{APP_BASE_URL}/contact.vcf"
                 send_delayed_sms.apply_async(
-                    args=[phone_number, "📱 Tap to save Remyndrs to your contacts!"],
+                    args=[phone_number, vcf_message],
                     kwargs={"media_url": vcf_url},
                     countdown=5
                 )
-            except Exception as vcf_error:
-                # Don't fail onboarding if VCF send fails
-                logger.warning(f"Could not queue VCF card for {phone_number}: {vcf_error}")
+            except Exception as celery_error:
+                # Celery not available - fall back to immediate send
+                logger.info(f"Celery unavailable, sending VCF immediately: {celery_error}")
+                try:
+                    send_sms(phone_number, vcf_message, media_url=vcf_url)
+                except Exception as sms_error:
+                    logger.warning(f"Could not send VCF card for {phone_number}: {sms_error}")
 
         return Response(content=str(resp), media_type="application/xml")
 

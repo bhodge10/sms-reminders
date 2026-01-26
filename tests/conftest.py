@@ -287,6 +287,7 @@ def sms_capture():
          patch('services.reminder_service.send_sms', side_effect=capture.send_sms), \
          patch('services.support_service.send_sms', side_effect=capture.send_sms), \
          patch('services.onboarding_recovery_service.send_sms', side_effect=capture.send_sms), \
+         patch('services.onboarding_service.send_sms', side_effect=capture.send_sms), \
          patch('tasks.reminder_tasks.send_sms', side_effect=capture.send_sms), \
          patch('services.onboarding_service.send_delayed_sms.apply_async', side_effect=mock_delayed_sms_apply_async), \
          patch('main.send_sms', side_effect=capture.send_sms), \
