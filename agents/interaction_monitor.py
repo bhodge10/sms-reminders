@@ -118,16 +118,30 @@ def init_monitoring_tables():
             WHERE indexname = 'idx_monitoring_issues_log_type'
         ''')
         if not cursor.fetchone():
-            # Remove duplicates before creating unique index
+            # Find duplicate issue IDs to delete (keep the one with highest id)
             cursor.execute('''
-                DELETE FROM monitoring_issues a
-                USING monitoring_issues b
-                WHERE a.id < b.id
-                  AND a.log_id = b.log_id
+                SELECT a.id FROM monitoring_issues a
+                JOIN monitoring_issues b ON a.log_id = b.log_id
                   AND a.issue_type = b.issue_type
-                  AND a.log_id IS NOT NULL
+                  AND a.id < b.id
+                WHERE a.log_id IS NOT NULL
             ''')
-            logger.info("Removed duplicate monitoring issues before creating unique index")
+            duplicate_ids = [row[0] for row in cursor.fetchall()]
+
+            if duplicate_ids:
+                # First delete references from issue_pattern_links
+                cursor.execute('''
+                    DELETE FROM issue_pattern_links
+                    WHERE issue_id = ANY(%s)
+                ''', (duplicate_ids,))
+                logger.info(f"Removed {cursor.rowcount} pattern links for duplicate issues")
+
+                # Now delete the duplicate monitoring issues
+                cursor.execute('''
+                    DELETE FROM monitoring_issues
+                    WHERE id = ANY(%s)
+                ''', (duplicate_ids,))
+                logger.info(f"Removed {cursor.rowcount} duplicate monitoring issues")
 
             # Now create the unique index
             cursor.execute('''
