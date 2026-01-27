@@ -1141,11 +1141,11 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
                 const changeIcon = healthChange > 0 ? '📈' : healthChange < 0 ? '📉' : '➡️';
                 const changeColor = healthChange > 0 ? '#27ae60' : healthChange < 0 ? '#e74c3c' : '#888';
 
-                // Top recommendations
+                // Top recommendations (uses title and description fields)
                 const topRecs = recommendations.slice(0, 3).map(rec => `
                     <div style="padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px; margin-bottom: 8px; font-size: 0.85em;">
                         <span style="color: ${{rec.priority === 'high' ? '#e74c3c' : rec.priority === 'medium' ? '#f39c12' : '#27ae60'}};">●</span>
-                        ${{rec.message}}
+                        <strong>${{rec.title || 'Recommendation'}}</strong>: ${{rec.description || rec.action || ''}}
                     </div>
                 `).join('') || '<div style="color: #666; font-size: 0.9em;">No recommendations</div>';
 
