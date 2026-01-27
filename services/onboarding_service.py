@@ -8,11 +8,13 @@ from datetime import datetime, timedelta
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
 
-from config import logger, FREE_TRIAL_DAYS, TIER_PREMIUM, APP_BASE_URL
+from config import logger, FREE_TRIAL_DAYS, TIER_PREMIUM, APP_BASE_URL, PREMIUM_MONTHLY_PRICE
 from models.user import get_user, get_onboarding_step, create_or_update_user
+from models.memory import save_memory
 from utils.timezone import get_timezone_from_zip, get_user_current_time
 from utils.formatting import get_onboarding_prompt
 from services.sms_service import send_sms
+from tasks.reminder_tasks import send_delayed_sms, send_engagement_nudge
 from services.onboarding_recovery_service import (
     track_onboarding_progress,
     mark_onboarding_complete,
@@ -142,6 +144,16 @@ Why I need this info:
 • ZIP: Set your timezone for accurate reminders
 
 Text "cancel" to cancel setup, or just answer the question to continue!""")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Handle pricing questions during onboarding
+        pricing_keywords = ['cost', 'price', 'pricing', 'how much', 'free', 'paid', 'subscription']
+        if step > 0 and any(keyword in message_lower for keyword in pricing_keywords):
+            logger.info(f"Pricing question during onboarding from ...{phone_number[-4:]}")
+            current_prompt = get_onboarding_prompt(step)
+            resp.message(f"""Great question! You get a FREE {FREE_TRIAL_DAYS}-day Premium trial to start. After that, it's {PREMIUM_MONTHLY_PRICE}/mo for Premium or a free tier with 2 reminders/day.
+
+Let's finish setup first - {current_prompt}""")
             return Response(content=str(resp), media_type="application/xml")
 
         # Handle cancel request during onboarding
@@ -321,39 +333,54 @@ Email for account recovery?
             user = get_user(phone_number)
             first_name = user[1]
 
-            # Send completion message with pricing transparency and first action prompt
-            resp.message(f"""Perfect! Your timezone is set to {timezone}.
+            # Save first memory: signup date
+            signup_date = datetime.utcnow().strftime("%B %d, %Y")
+            first_memory = f"Signed up for Remyndrs on {signup_date}"
+            save_memory(phone_number, first_memory, {"type": "signup", "auto_created": True})
 
-You're all set, {first_name}! 🎉
+            # Send completion message - focused on immediate value
+            resp.message(f"""Perfect! You're all set, {first_name}! 🎉
 
-You have a FREE {FREE_TRIAL_DAYS}-day Premium trial starting now!
+I just saved your first memory: "{first_memory}"
 
-After {FREE_TRIAL_DAYS} days, you choose:
-• Premium: $4.99/mo (early adopter rate - save $12!)
-• Free tier: 2 reminders/day, still useful
-• Cancel anytime: no charge, no hassle
+Try asking me: "What do I have saved?"
 
-💡 Quick tip: Save this number to your contacts!
-(Check the next message for a contact card you can tap to save)
+(Tip: Check your next message to save me as a contact!)""")
 
-Now let's set your first reminder!
-
-What's something you need to remember?
-
-Try: "Remind me to call mom tomorrow at 2pm"
-Or: "Add milk and eggs to my grocery list\"""")
-
-            # Send VCF contact card as separate follow-up MMS (non-blocking)
+            # Send VCF contact card after 5-second delay (fall back to immediate if Celery unavailable)
+            vcf_url = f"{APP_BASE_URL}/contact.vcf"
+            vcf_message = "📱 Tap to save Remyndrs to your contacts!"
             try:
-                vcf_url = f"{APP_BASE_URL}/contact.vcf"
-                send_sms(
-                    phone_number,
-                    "📱 Tap to save Remyndrs to your contacts!",
-                    media_url=vcf_url
+                send_delayed_sms.apply_async(
+                    args=[phone_number, vcf_message],
+                    kwargs={"media_url": vcf_url},
+                    countdown=5
                 )
-            except Exception as vcf_error:
-                # Don't fail onboarding if VCF send fails
-                logger.warning(f"Could not send VCF card to {phone_number}: {vcf_error}")
+            except Exception as celery_error:
+                # Celery not available - fall back to immediate send
+                logger.info(f"Celery unavailable, sending VCF immediately: {celery_error}")
+                try:
+                    send_sms(phone_number, vcf_message, media_url=vcf_url)
+                except Exception as sms_error:
+                    logger.warning(f"Could not send VCF card for {phone_number}: {sms_error}")
+
+            # Schedule 5-minute engagement nudge (only if user doesn't text back)
+            try:
+                nudge_scheduled_at = datetime.utcnow()
+                create_or_update_user(
+                    phone_number,
+                    five_minute_nudge_scheduled_at=nudge_scheduled_at,
+                    five_minute_nudge_sent=False,
+                    post_onboarding_interactions=0
+                )
+                send_engagement_nudge.apply_async(
+                    args=[phone_number],
+                    countdown=300  # 5 minutes
+                )
+                logger.info(f"Scheduled 5-minute engagement nudge for ...{phone_number[-4:]}")
+            except Exception as nudge_error:
+                # Non-critical - log and continue
+                logger.warning(f"Could not schedule engagement nudge for {phone_number}: {nudge_error}")
 
         return Response(content=str(resp), media_type="application/xml")
 

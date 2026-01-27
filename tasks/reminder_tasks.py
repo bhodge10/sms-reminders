@@ -636,3 +636,101 @@ def send_abandoned_onboarding_followups(self):
     except Exception as exc:
         logger.exception("Error in abandoned onboarding followups")
         raise self.retry(exc=exc)
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
+def send_delayed_sms(self, to_number: str, message: str, media_url: str = None):
+    """
+    Send an SMS/MMS with optional delay (use .apply_async(countdown=N)).
+    Used for onboarding VCF card delivery with delay.
+    """
+    try:
+        send_sms(to_number, message, media_url=media_url)
+        logger.info(f"Sent delayed SMS to ...{to_number[-4:]}")
+        return {"success": True}
+    except Exception as exc:
+        logger.error(f"Error sending delayed SMS: {exc}")
+        raise self.retry(exc=exc)
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_engagement_nudge(self, phone_number: str):
+    """
+    Send 5-minute post-onboarding engagement nudge.
+    Checks all conditions at execution time for safety.
+
+    Conditions checked:
+    - Nudge not already sent
+    - Nudge not cancelled (scheduled_at still set)
+    - User not opted out (STOP)
+    - User has sent fewer than 2 messages since onboarding
+    """
+    from models.user import get_user_nudge_status, create_or_update_user
+    from twilio.base.exceptions import TwilioException
+
+    logger.info(f"Engagement nudge task started for user ...{phone_number[-4:]}")
+
+    try:
+        # Fetch fresh user nudge status
+        status = get_user_nudge_status(phone_number)
+        logger.info(f"Nudge status for ...{phone_number[-4:]}: sent={status['sent']}, "
+                   f"scheduled_at={status['scheduled_at']}, interactions={status['interactions']}, "
+                   f"opted_out={status['opted_out']}")
+
+        # Check: Already sent
+        if status['sent']:
+            logger.info(f"Engagement nudge already sent for ...{phone_number[-4:]}, skipping")
+            return {"status": "skipped", "reason": "already_sent"}
+
+        # Check: Cancelled (scheduled_at cleared)
+        if status['scheduled_at'] is None:
+            logger.info(f"Engagement nudge cancelled for ...{phone_number[-4:]} (user engaged), skipping")
+            return {"status": "skipped", "reason": "cancelled"}
+
+        # Check: User opted out
+        if status['opted_out']:
+            logger.info(f"User ...{phone_number[-4:]} opted out, skipping engagement nudge")
+            # Mark as sent to prevent future attempts
+            create_or_update_user(phone_number, five_minute_nudge_sent=True)
+            return {"status": "skipped", "reason": "opted_out"}
+
+        # Check: User has sent 2+ messages since onboarding
+        if status['interactions'] >= 2:
+            logger.info(f"User ...{phone_number[-4:]} has {status['interactions']} interactions, "
+                       f"skipping engagement nudge (already engaged)")
+            # Mark as sent to prevent future attempts
+            create_or_update_user(phone_number, five_minute_nudge_sent=True)
+            return {"status": "skipped", "reason": "already_engaged",
+                    "interactions": status['interactions']}
+
+        # All conditions passed - send the nudge
+        nudge_message = "Quick question: What's something you always forget?\n\n(I'm really good at remembering it for you 😊)"
+
+        try:
+            send_sms(phone_number, nudge_message)
+            # Mark as sent
+            create_or_update_user(phone_number, five_minute_nudge_sent=True)
+            logger.info(f"Successfully sent engagement nudge to ...{phone_number[-4:]}")
+            return {"status": "sent"}
+
+        except TwilioException as twilio_exc:
+            # Retry on Twilio errors
+            logger.error(f"Twilio error sending engagement nudge to ...{phone_number[-4:]}: {twilio_exc}")
+            raise self.retry(exc=twilio_exc)
+
+    except TwilioException:
+        # Re-raise to trigger retry
+        raise
+
+    except Exception as exc:
+        # Log other errors but don't retry - this is a non-critical message
+        logger.error(f"Error in engagement nudge task for ...{phone_number[-4:]}: {exc}")
+        return {"status": "error", "error": str(exc)}

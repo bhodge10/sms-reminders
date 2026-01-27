@@ -22,7 +22,7 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting, log_confidence
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out, cancel_engagement_nudge, increment_post_onboarding_interactions
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -42,6 +42,13 @@ from services.sms_service import send_sms
 from services.ai_service import process_with_ai, parse_list_items
 from services.onboarding_service import handle_onboarding
 from services.first_action_service import should_prompt_daily_summary, mark_daily_summary_prompted, get_daily_summary_prompt_message, handle_daily_summary_response
+from services.trial_messaging_service import (
+    is_pricing_question, is_comparison_question, is_acknowledgment,
+    get_trial_info_sent, mark_trial_info_sent,
+    get_pricing_response, get_pricing_faq_response,
+    get_comparison_response, get_comparison_faq_response,
+    get_acknowledgment_response, append_trial_info_to_response
+)
 # NOTE: Reminder checking is now handled by Celery Beat (see tasks/reminder_tasks.py)
 from services.metrics_service import track_user_activity, increment_message_count
 from utils.timezone import get_user_current_time
@@ -437,6 +444,56 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         if not is_user_onboarded(phone_number):
             return handle_onboarding(phone_number, incoming_msg)
+
+        # ==========================================
+        # POST-ONBOARDING ENGAGEMENT TRACKING
+        # ==========================================
+        # User is onboarded - cancel any pending nudge and track interaction
+        # This runs on every message from an onboarded user
+        nudge_cancelled = cancel_engagement_nudge(phone_number)
+        if nudge_cancelled:
+            logger.info(f"User ...{phone_number[-4:]} texted back - cancelled engagement nudge")
+        increment_post_onboarding_interactions(phone_number)
+
+        # ==========================================
+        # PRICING & TRIAL QUESTIONS
+        # ==========================================
+        # Handle pricing questions directly without AI processing
+        if is_comparison_question(incoming_msg):
+            trial_already_sent = get_trial_info_sent(phone_number)
+            if trial_already_sent:
+                logger.info(f"Comparison question - trial already explained, sending FAQ for ...{phone_number[-4:]}")
+                reply_text = get_comparison_faq_response()
+            else:
+                logger.info(f"Comparison question - first time, sending full comparison for ...{phone_number[-4:]}")
+                reply_text = get_comparison_response()
+                mark_trial_info_sent(phone_number)
+            log_interaction(phone_number, incoming_msg, reply_text, "pricing_comparison", True)
+            resp = MessagingResponse()
+            resp.message(staging_prefix(reply_text))
+            return Response(content=str(resp), media_type="application/xml")
+
+        if is_pricing_question(incoming_msg):
+            trial_already_sent = get_trial_info_sent(phone_number)
+            if trial_already_sent:
+                logger.info(f"Pricing question - trial already explained, sending FAQ for ...{phone_number[-4:]}")
+                reply_text = get_pricing_faq_response()
+            else:
+                logger.info(f"Pricing question - first time, sending full trial info for ...{phone_number[-4:]}")
+                reply_text = get_pricing_response()
+                mark_trial_info_sent(phone_number)
+            log_interaction(phone_number, incoming_msg, reply_text, "pricing_question", True)
+            resp = MessagingResponse()
+            resp.message(staging_prefix(reply_text))
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Handle simple acknowledgments (e.g., "ok", "thanks" after trial message)
+        if is_acknowledgment(incoming_msg):
+            reply_text = get_acknowledgment_response()
+            log_interaction(phone_number, incoming_msg, reply_text, "acknowledgment", True)
+            resp = MessagingResponse()
+            resp.message(staging_prefix(reply_text))
+            return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # NEW REMINDER REQUEST DETECTION (must come first)
@@ -2721,8 +2778,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         # Process each action and collect replies
         all_replies = []
+        first_action_type = None
         for action_index, current_action in enumerate(actions_to_process):
             action_type = current_action.get("action", "error")
+            if action_index == 0:
+                first_action_type = action_type
             logger.info(f"Processing action {action_index + 1}/{len(actions_to_process)}: {action_type}")
 
             # Handle each action and get reply
@@ -2737,6 +2797,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             reply_text = all_replies[0]
         else:
             reply_text = "I processed your request."
+
+        # Append trial info if this is user's first real interaction
+        if first_action_type:
+            reply_text = append_trial_info_to_response(reply_text, first_action_type, phone_number)
 
         # Send response
         resp = MessagingResponse()
