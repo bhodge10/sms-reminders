@@ -1076,6 +1076,9 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
                     <button class="generate-btn" id="generateAnalysisBtn" onclick="generateAnalysis()">
                         Generate Code Analysis
                     </button>
+                    <button class="generate-btn" id="regenerateAnalysisBtn" onclick="generateAnalysis()" style="display: none; background: rgba(155, 89, 182, 0.2); border-color: #9b59b6; color: #9b59b6;">
+                        🔄 Regenerate Analysis
+                    </button>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1240,11 +1243,13 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
             const loading = document.getElementById('codeAnalysisLoading');
             const content = document.getElementById('codeAnalysisContent');
             const generateBtn = document.getElementById('generateAnalysisBtn');
+            const regenerateBtn = document.getElementById('regenerateAnalysisBtn');
 
             // Reset state
             content.style.display = 'none';
             loading.style.display = 'none';
             generateBtn.style.display = 'block';
+            regenerateBtn.style.display = 'none';
 
             try {{
                 // Try to get existing analysis (don't generate if not exists)
@@ -1263,6 +1268,7 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
         function displayCodeAnalysis(analysis) {{
             const content = document.getElementById('codeAnalysisContent');
             const generateBtn = document.getElementById('generateAnalysisBtn');
+            const regenerateBtn = document.getElementById('regenerateAnalysisBtn');
 
             // Set confidence badge
             const confidenceBadge = document.getElementById('analysisConfidence');
@@ -1287,9 +1293,10 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
             document.getElementById('claudePrompt').textContent =
                 analysis.claude_prompt || 'No prompt available';
 
-            // Show content, hide generate button
+            // Show content, hide generate button, show regenerate button
             content.style.display = 'block';
             generateBtn.style.display = 'none';
+            regenerateBtn.style.display = 'block';
         }}
 
         // Generate code analysis
@@ -1298,9 +1305,11 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
 
             const loading = document.getElementById('codeAnalysisLoading');
             const generateBtn = document.getElementById('generateAnalysisBtn');
+            const regenerateBtn = document.getElementById('regenerateAnalysisBtn');
 
             loading.style.display = 'block';
             generateBtn.style.display = 'none';
+            regenerateBtn.style.display = 'none';
 
             try {{
                 const analysis = await fetchAPI(`/admin/analyzer/issue/${{currentIssueId}}?force=true`);
@@ -1339,6 +1348,7 @@ async def monitoring_dashboard(admin: str = Depends(verify_admin)):
             document.getElementById('codeAnalysisContent').style.display = 'none';
             document.getElementById('codeAnalysisLoading').style.display = 'none';
             document.getElementById('generateAnalysisBtn').style.display = 'block';
+            document.getElementById('regenerateAnalysisBtn').style.display = 'none';
         }}
 
         // Mark as false positive
