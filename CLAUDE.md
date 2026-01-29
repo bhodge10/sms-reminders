@@ -116,6 +116,14 @@ Tests are configured to **never hit real Twilio or OpenAI APIs**:
 - Use `.env.test` with `ENVIRONMENT=test` and fake API keys
 - Run tests with: `py -3 -m pytest tests/test_onboarding.py -v`
 
+### AI Mock AM/PM Normalization Gotcha
+`main.py` normalizes time strings before sending to AI (e.g., `10am` → `10:AM` at line ~2777). When writing tests with `ai_mock.set_response()`, register mock responses under **both** the original and normalized forms:
+```python
+ai_mock.set_response("remind me every monday at 10am about team meeting", response)
+ai_mock.set_response("remind me every monday at 10:am about team meeting", response)
+```
+The mock uses exact-match on the lowercased message. If only the original form is registered, the normalized message won't match and will fall through to the default `unknown` action.
+
 ## Key Patterns
 
 ### Timezone Handling
@@ -135,6 +143,22 @@ When AI confidence is below threshold, reminders enter a pending confirmation st
 - **Confirmation handling:** `main.py` (search `pending_confirmation`) processes YES/NO responses and calls `save_reminder_with_local_time()`
 
 **Important:** `save_reminder_with_local_time()` requires 5 positional args: `(phone_number, reminder_text, reminder_date_utc, local_time, timezone)`. The `local_time` param is HH:MM format and `reminder_date` must be UTC. For relative reminders, the pre-calculated UTC datetime and local_time should be stored in pending data to avoid time drift.
+
+### AM/PM and Time-of-Day Recognition
+The system recognizes AM/PM in three forms:
+1. **Explicit:** `am`, `pm`, `a.m.`, `p.m.`
+2. **Natural language:** `morning` (→ AM), `afternoon`/`evening`/`night` (→ PM)
+
+This affects three code locations in `main.py`:
+- `has_am_pm` check (~line 760): Determines if the message already specifies AM/PM
+- `clarify_time` handler (~line 931): Maps time-of-day words to AM/PM when processing ambiguous times
+- `is_valid_response` check (~line 2744): Recognizes time-of-day words as valid AM/PM clarification responses
+
+### Keyword Handlers vs AI Processing
+`main.py` has keyword-based handlers (exact string matches and regex patterns) that run **before** AI processing. Messages not caught by keywords fall through to OpenAI. When adding new user-facing commands:
+- Add keyword matches for common phrasings (e.g., `SUMMARY OFF`, `DISABLE SUMMARY`, etc.)
+- Consider natural language variations users might send
+- Add safeguards in AI action handlers for misclassified intents (e.g., `update_reminder` handler redirects "daily summary" terms to the settings handler)
 
 ### Field Encryption
 Optional AES-256-GCM encryption for PII (names, emails). Enabled via `ENCRYPTION_KEY` and `HASH_KEY` env vars.
@@ -199,6 +223,12 @@ Configured via dashboard Alert Settings section:
 - **Teams:** Requires `TEAMS_WEBHOOK_URL` env var
 - **Email:** Requires `SMTP_*` env vars and recipient list
 - **SMS:** For critical issues only (health < 50)
+
+### Monitoring Table Initialization Order
+Dashboard API endpoints (`/admin/tracker/health`, `/admin/tracker/report`, `/admin/tracker/trends`) must initialize monitoring tables before querying them. Tables have foreign key dependencies and **must** be initialized in this order:
+1. `init_monitoring_tables()` — creates `monitoring_issues` (Agent 1)
+2. `init_validator_tables()` — creates `issue_patterns` (Agent 2, FK → `monitoring_issues`)
+3. `init_tracker_tables()` — creates `health_snapshots`, `issue_resolutions`, `pattern_resolutions` (Agent 3, FKs → `monitoring_issues`, `issue_patterns`)
 
 ### Database Tables
 `monitoring_issues`, `monitoring_runs`, `issue_patterns`, `issue_pattern_links`, `validation_runs`, `issue_resolutions`, `pattern_resolutions`, `health_snapshots`, `fix_proposals`, `fix_proposal_runs`
