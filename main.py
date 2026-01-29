@@ -3944,6 +3944,94 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
             log_interaction(phone_number, incoming_msg, reply_text, "update_reminder", True)
 
+        elif ai_response["action"] == "update_settings":
+            setting = ai_response.get("setting", "")
+            value = ai_response.get("value", "")
+
+            if setting == "daily_summary_time":
+                # Parse the time value (e.g., "8:00 AM", "7pm", "6:30 AM")
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', value, re.IGNORECASE)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2)) if time_match.group(2) else 0
+                    am_pm_raw = time_match.group(3).lower().replace('.', '')
+                    am_pm = 'am' if am_pm_raw in ['am', 'a'] else 'pm'
+
+                    if am_pm == 'pm' and hour != 12:
+                        hour += 12
+                    elif am_pm == 'am' and hour == 12:
+                        hour = 0
+
+                    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                        reply_text = "Please enter a valid time like 7AM, 8:30AM, or 6PM."
+                    else:
+                        time_str = f"{hour:02d}:{minute:02d}"
+
+                        # Get current settings for undo
+                        from models.user import get_daily_summary_settings
+                        current_settings = get_daily_summary_settings(phone_number)
+                        previous_enabled = current_settings['enabled'] if current_settings else False
+                        previous_time = current_settings['time'] if current_settings else None
+
+                        undo_data = json.dumps({
+                            'type': 'summary_undo',
+                            'previous_enabled': previous_enabled,
+                            'previous_time': previous_time,
+                            'new_time': time_str
+                        })
+
+                        create_or_update_user(
+                            phone_number,
+                            daily_summary_enabled=True,
+                            daily_summary_time=time_str,
+                            pending_reminder_confirmation=undo_data
+                        )
+
+                        display_am_pm = 'AM' if hour < 12 else 'PM'
+                        display_hour = hour if hour <= 12 else hour - 12
+                        if display_hour == 0:
+                            display_hour = 12
+                        display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
+
+                        reply_text = staging_prefix(f"Daily summary set for {display_time}! You'll receive a summary of your day's reminders each morning.")
+                else:
+                    reply_text = "I couldn't parse that time. Please try something like '8am' or '6:30pm'."
+
+            elif setting == "daily_summary_enabled":
+                enabled = value.lower() in ['true', 'on', 'yes', 'enable']
+
+                from models.user import get_daily_summary_settings
+                current_settings = get_daily_summary_settings(phone_number)
+                previous_enabled = current_settings['enabled'] if current_settings else False
+                previous_time = current_settings['time'] if current_settings else None
+
+                undo_data = json.dumps({
+                    'type': 'summary_undo',
+                    'previous_enabled': previous_enabled,
+                    'previous_time': previous_time,
+                    'action': 'enabled' if enabled else 'disabled'
+                })
+
+                create_or_update_user(phone_number, daily_summary_enabled=enabled, pending_reminder_confirmation=undo_data)
+
+                if enabled:
+                    settings = get_daily_summary_settings(phone_number)
+                    time_str = settings['time'] if settings else '08:00'
+                    time_parts = time_str.split(':')
+                    h = int(time_parts[0])
+                    m = int(time_parts[1]) if len(time_parts) > 1 else 0
+                    ap = 'AM' if h < 12 else 'PM'
+                    dh = h if h <= 12 else h - 12
+                    if dh == 0:
+                        dh = 12
+                    reply_text = staging_prefix(f"Daily summary enabled! You'll receive a summary of your day's reminders at {dh}:{m:02d} {ap}.\n\nTo change the time, text: SUMMARY TIME 7AM")
+                else:
+                    reply_text = staging_prefix("Daily summary disabled. You'll no longer receive daily reminder summaries.")
+            else:
+                reply_text = "I'm not sure which setting you'd like to change. You can change your daily summary time by texting something like 'change my summary time to 8am'."
+
+            log_interaction(phone_number, incoming_msg, reply_text, "update_settings", True)
+
         elif ai_response["action"] == "delete_memory":
             search_term = ai_response.get("search_term", "")
 
