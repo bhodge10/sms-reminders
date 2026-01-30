@@ -129,8 +129,8 @@ beat_schedule = {
     },
 }
 
-# Note: All tasks use the default 'celery' queue for simplicity.
-# For future scaling, you can add task_routes to distribute tasks across queues.
+# Note: Monitoring tasks are routed to the 'monitoring' queue via task_routes in celery_app.py.
+# Reminder tasks remain on the default 'celery' queue.
 
 # Monitoring task schedule summary:
 # ─────────────────────────────────────────────────────────────────────
