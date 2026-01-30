@@ -515,7 +515,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Skip this if it's a new reminder request, undo command, or has pending confirmations
         pending_delete_check = get_pending_reminder_delete(phone_number)
         pending_confirm_check = get_pending_reminder_confirmation(phone_number)
-        has_pending_state = pending_delete_check or pending_confirm_check
+        has_pending_state = pending_delete_check or (pending_confirm_check and pending_confirm_check.get('type') != 'summary_undo')
 
         if not is_new_reminder_request and not is_undo_command and not has_pending_state:
             handled, response_text = handle_daily_summary_response(phone_number, incoming_msg)
@@ -530,7 +530,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # Check if user is responding to a confirmation request for a low-confidence reminder
         pending_confirmation = get_pending_reminder_confirmation(phone_number)
-        if pending_confirmation and not is_new_reminder_request:
+        if pending_confirmation and pending_confirmation.get('type') != 'summary_undo' and not is_new_reminder_request:
             msg_lower = incoming_msg.strip().lower()
 
             # User confirms the reminder is correct
@@ -550,44 +550,69 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         reminder_date = pending_confirmation.get('reminder_date')
                         confirmation_msg = pending_confirmation.get('confirmation')
 
-                        user_tz_str = get_user_timezone(phone_number)
-                        reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date, user_tz_str)
-
-                        if reminder_id:
-                            reply_text = confirmation_msg or f"Got it! I'll remind you about {reminder_text}."
-                            log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
-                        else:
-                            reply_text = "Sorry, I couldn't save that reminder. Please try again."
+                        if not reminder_date:
+                            logger.error(f"Missing reminder_date in pending confirmation. Keys: {list(pending_confirmation.keys())}")
+                            reply_text = "Sorry, something went wrong with that reminder. Please try creating it again."
                             log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
+                        else:
+                            user_tz_str = get_user_timezone(phone_number)
+                            tz = pytz.timezone(user_tz_str)
+                            naive_dt = datetime.strptime(reminder_date, '%Y-%m-%d %H:%M:%S')
+                            local_time_str = naive_dt.strftime('%H:%M')
+                            aware_dt = tz.localize(naive_dt)
+                            utc_dt = aware_dt.astimezone(pytz.UTC)
+                            reminder_date_utc = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                            reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date_utc, local_time_str, user_tz_str)
+
+                            if reminder_id:
+                                reply_text = confirmation_msg or f"Got it! I'll remind you about {reminder_text}."
+                                log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
+                            else:
+                                reply_text = "Sorry, I couldn't save that reminder. Please try again."
+                                log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
 
                     elif action == 'reminder_relative':
                         # Relative time reminder
                         reminder_text = pending_confirmation.get('reminder_text')
-                        offset_minutes = pending_confirmation.get('offset_minutes')
-                        offset_days = pending_confirmation.get('offset_days')
-                        offset_weeks = pending_confirmation.get('offset_weeks')
-                        offset_months = pending_confirmation.get('offset_months')
-
                         user_tz_str = get_user_timezone(phone_number)
-                        tz = pytz.timezone(user_tz_str)
-                        now_local = datetime.now(tz)
 
-                        if offset_minutes:
-                            reminder_dt = now_local + timedelta(minutes=offset_minutes)
-                        elif offset_days:
-                            reminder_dt = now_local + timedelta(days=offset_days)
-                        elif offset_weeks:
-                            reminder_dt = now_local + timedelta(weeks=offset_weeks)
-                        elif offset_months:
-                            reminder_dt = now_local + timedelta(days=offset_months * 30)
-                        else:
-                            reminder_dt = now_local + timedelta(hours=1)
+                        # Use pre-calculated UTC datetime if available (avoids time drift)
+                        reminder_date_utc = pending_confirmation.get('reminder_datetime_utc')
+                        local_time_str = pending_confirmation.get('local_time')
 
-                        reminder_date_str = reminder_dt.strftime('%Y-%m-%d %H:%M:%S')
-                        reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date_str, user_tz_str)
+                        if not reminder_date_utc or not local_time_str:
+                            # Fallback: recalculate from offsets
+                            offset_minutes = pending_confirmation.get('offset_minutes')
+                            offset_days = pending_confirmation.get('offset_days')
+                            offset_weeks = pending_confirmation.get('offset_weeks')
+                            offset_months = pending_confirmation.get('offset_months')
+
+                            tz = pytz.timezone(user_tz_str)
+                            now_local = datetime.now(tz)
+
+                            if offset_minutes:
+                                reminder_dt = now_local + timedelta(minutes=offset_minutes)
+                            elif offset_days:
+                                reminder_dt = now_local + timedelta(days=offset_days)
+                            elif offset_weeks:
+                                reminder_dt = now_local + timedelta(weeks=offset_weeks)
+                            elif offset_months:
+                                reminder_dt = now_local + timedelta(days=offset_months * 30)
+                            else:
+                                reminder_dt = now_local + timedelta(hours=1)
+
+                            local_time_str = reminder_dt.strftime('%H:%M')
+                            reminder_date_utc = reminder_dt.astimezone(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')
+
+                        reminder_id = save_reminder_with_local_time(phone_number, reminder_text, reminder_date_utc, local_time_str, user_tz_str)
 
                         if reminder_id:
-                            readable_date = reminder_dt.strftime('%A, %B %d, %Y at %-I:%M %p')
+                            tz = pytz.timezone(user_tz_str)
+                            utc_dt = datetime.strptime(reminder_date_utc, '%Y-%m-%d %H:%M:%S')
+                            utc_dt = pytz.UTC.localize(utc_dt)
+                            local_dt = utc_dt.astimezone(tz)
+                            readable_date = local_dt.strftime('%A, %B %d, %Y at %-I:%M %p')
                             reply_text = f"Got it! I'll remind you on {readable_date} {format_reminder_confirmation(reminder_text)}."
                             log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", True)
                         else:
@@ -611,6 +636,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                             reply_text = "Sorry, I couldn't save that recurring reminder. Please try again."
                             log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
                     else:
+                        logger.error(f"Unrecognized pending confirmation action: '{action}'. Keys: {list(pending_confirmation.keys())}")
                         reply_text = "Sorry, something went wrong. Please try again."
                         log_interaction(phone_number, incoming_msg, reply_text, "reminder_confirmed", False)
 
@@ -621,7 +647,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     return Response(content=str(resp), media_type="application/xml")
 
                 except Exception as e:
-                    logger.error(f"Error processing confirmed reminder: {e}")
+                    logger.error(f"Error processing confirmed reminder: {e}. Action: {pending_confirmation.get('action')}, Keys: {list(pending_confirmation.keys())}", exc_info=True)
                     create_or_update_user(phone_number, pending_reminder_confirmation=None)
                     resp = MessagingResponse()
                     resp.message(staging_prefix("Sorry, something went wrong. Please try again."))
@@ -731,7 +757,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         user = get_user(phone_number)
         msg_upper = incoming_msg.upper()
         # Check for AM/PM in various formats: "8am", "8 am", "8:00am", "8a", "8:00a", "a.m.", etc.
+        # Also recognize "morning" as AM and "afternoon"/"evening"/"night" as PM
         has_am_pm = bool(re.search(r'\d\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', incoming_msg, re.IGNORECASE))
+        if not has_am_pm:
+            has_am_pm = bool(re.search(r'\b(morning|afternoon|evening|night)\b', incoming_msg, re.IGNORECASE))
 
         # If it's a new reminder request, clear any pending reminder states to avoid context bleed
         if is_new_reminder_request:
@@ -898,9 +927,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             pending_text = user[10]
             pending_time = user[11]
 
-            # Detect AM vs PM from various formats (am, a.m., a, etc.) or standalone
+            # Detect AM vs PM from various formats (am, a.m., a, etc.), standalone, or words like "morning"
             am_match = re.search(r'(^|[\d\s])(am|a\.m\.?)(\b|$)', incoming_msg, re.IGNORECASE)
-            am_pm = "AM" if am_match else "PM"
+            morning_match = re.search(r'\bmorning\b', incoming_msg, re.IGNORECASE)
+            pm_word_match = re.search(r'\b(afternoon|evening|night)\b', incoming_msg, re.IGNORECASE)
+            if am_match or morning_match:
+                am_pm = "AM"
+            elif pm_word_match:
+                am_pm = "PM"
+            else:
+                am_pm = "PM"  # Default to PM if no indicator found
 
             try:
                 user_time = get_user_current_time(phone_number)
@@ -1861,8 +1897,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             log_interaction(phone_number, incoming_msg, "Daily summary enabled", "daily_summary_on", True)
             return Response(content=str(resp), media_type="application/xml")
 
-        # Disable daily summary: "SUMMARY OFF", "DAILY SUMMARY OFF"
-        if msg_upper in ["SUMMARY OFF", "DAILY SUMMARY OFF"]:
+        # Disable daily summary: "SUMMARY OFF", "DAILY SUMMARY OFF", "DISABLE SUMMARY", etc.
+        if msg_upper in ["SUMMARY OFF", "DAILY SUMMARY OFF", "DISABLE SUMMARY", "DISABLE DAILY SUMMARY", "TURN OFF SUMMARY", "TURN OFF DAILY SUMMARY"] or msg_upper.startswith("SUMMARY OFF ") or msg_upper.startswith("DAILY SUMMARY OFF "):
             from models.user import get_daily_summary_settings
 
             # Get current settings for undo capability
@@ -1913,11 +1949,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         # Set daily summary time: "SUMMARY TIME 7AM", "SUMMARY ON 10PM", "DAILY SUMMARY TIME 8:30AM"
         # Also supports shorthand: "SUMMARY TIME 10a", "SUMMARY TIME 3p"
+        # Also natural language: "change my daily summary time to 8am", "set my summary to 7am"
         summary_time_match = re.match(
             r'^(?:daily\s+)?summary\s+(?:on\s+|time\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)$',
             incoming_msg.strip(),
             re.IGNORECASE
         )
+        if not summary_time_match:
+            summary_time_match = re.match(
+                r'^(?:change|set|move|update)\s+(?:my\s+)?(?:daily\s+)?summary\s+(?:time\s+)?(?:to\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)\b',
+                incoming_msg.strip(),
+                re.IGNORECASE
+            )
 
         if summary_time_match:
             hour = int(summary_time_match.group(1))
@@ -2664,7 +2707,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
         # Check for low-confidence reminder confirmation
         pending_confirm_check = get_pending_reminder_confirmation(phone_number)
-        if pending_confirm_check:
+        if pending_confirm_check and pending_confirm_check.get('type') != 'summary_undo':
             pending_states['reminder_confirmation'] = pending_confirm_check
 
         # If user wants to cancel, clear all pending states
@@ -2694,15 +2737,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             msg_stripped = incoming_msg.strip()
             msg_lower = msg_stripped.lower()
 
-            # Valid responses: YES/NO, numbers, AM/PM patterns, times
+            # Valid responses: YES/NO, numbers, AM/PM patterns, times, time-of-day words
             is_yes_no = msg_lower in ['yes', 'y', 'no', 'n', 'yep', 'yeah', 'nope', 'ok', 'okay', 'correct', 'right', 'wrong', 'incorrect']
             is_number = msg_stripped.isdigit()
             is_ampm = bool(re.match(r'^(am|pm|a\.m\.|p\.m\.)\.?$', msg_stripped, re.IGNORECASE))
             has_time_pattern = bool(re.search(r'\d+\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', msg_stripped, re.IGNORECASE))
             is_time_response = bool(re.match(r'^(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m?\.?)?$', msg_stripped, re.IGNORECASE))
+            has_time_of_day_word = bool(re.search(r'\b(morning|afternoon|evening|night)\b', msg_stripped, re.IGNORECASE))
 
             # Consider it a valid response if it matches expected patterns
-            is_valid_response = is_yes_no or is_number or is_ampm or has_time_pattern or is_time_response
+            is_valid_response = is_yes_no or is_number or is_ampm or has_time_pattern or is_time_response or has_time_of_day_word
 
             # If not a valid response, remind user about the pending question
             if not is_valid_response:
@@ -3153,6 +3197,8 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     pending_data = json.dumps({
                         'action': 'reminder_relative',
                         'reminder_text': reminder_text,
+                        'reminder_datetime_utc': reminder_date_utc,
+                        'local_time': reminder_dt_local.strftime('%H:%M'),
                         'offset_minutes': offset_minutes,
                         'offset_days': offset_days,
                         'offset_weeks': offset_weeks,
@@ -3855,6 +3901,50 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             new_time_str = ai_response.get("new_time", "")  # e.g., "8:00 AM", "3:30 PM"
             new_date_str = ai_response.get("new_date", "")  # optional, YYYY-MM-DD
 
+            # Safeguard: "daily summary" is a setting, not a reminder
+            if search_term and re.search(r'\b(daily\s+)?summary\b', search_term, re.IGNORECASE) and new_time_str:
+                logger.info(f"Redirecting update_reminder for '{search_term}' to daily summary time update")
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', new_time_str, re.IGNORECASE)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2)) if time_match.group(2) else 0
+                    am_pm_raw = time_match.group(3).lower().replace('.', '')
+                    am_pm = 'am' if am_pm_raw in ['am', 'a'] else 'pm'
+                    if am_pm == 'pm' and hour != 12:
+                        hour += 12
+                    elif am_pm == 'am' and hour == 12:
+                        hour = 0
+                    time_str_24 = f"{hour:02d}:{minute:02d}"
+
+                    from models.user import get_daily_summary_settings
+                    current_settings = get_daily_summary_settings(phone_number)
+                    previous_enabled = current_settings['enabled'] if current_settings else False
+                    previous_time = current_settings['time'] if current_settings else None
+
+                    undo_data = json.dumps({
+                        'type': 'summary_undo',
+                        'previous_enabled': previous_enabled,
+                        'previous_time': previous_time,
+                        'new_time': time_str_24
+                    })
+
+                    create_or_update_user(
+                        phone_number,
+                        daily_summary_enabled=True,
+                        daily_summary_time=time_str_24,
+                        pending_reminder_confirmation=undo_data
+                    )
+
+                    display_am_pm = 'AM' if hour < 12 else 'PM'
+                    display_hour = hour if hour <= 12 else hour - 12
+                    if display_hour == 0:
+                        display_hour = 12
+                    display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
+
+                    reply_text = staging_prefix(f"Daily summary set for {display_time}! You'll receive a summary of your day's reminders each morning.")
+                    log_interaction(phone_number, incoming_msg, reply_text, "update_settings", True)
+                    return reply_text
+
             user_tz_str = get_user_timezone(phone_number)
             tz = pytz.timezone(user_tz_str)
 
@@ -3923,6 +4013,94 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 reply_text = f"Found multiple reminders matching '{search_term}'. Please be more specific about which one to update."
 
             log_interaction(phone_number, incoming_msg, reply_text, "update_reminder", True)
+
+        elif ai_response["action"] == "update_settings":
+            setting = ai_response.get("setting", "")
+            value = ai_response.get("value", "")
+
+            if setting == "daily_summary_time":
+                # Parse the time value (e.g., "8:00 AM", "7pm", "6:30 AM")
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|a|p)\b', value, re.IGNORECASE)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2)) if time_match.group(2) else 0
+                    am_pm_raw = time_match.group(3).lower().replace('.', '')
+                    am_pm = 'am' if am_pm_raw in ['am', 'a'] else 'pm'
+
+                    if am_pm == 'pm' and hour != 12:
+                        hour += 12
+                    elif am_pm == 'am' and hour == 12:
+                        hour = 0
+
+                    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                        reply_text = "Please enter a valid time like 7AM, 8:30AM, or 6PM."
+                    else:
+                        time_str = f"{hour:02d}:{minute:02d}"
+
+                        # Get current settings for undo
+                        from models.user import get_daily_summary_settings
+                        current_settings = get_daily_summary_settings(phone_number)
+                        previous_enabled = current_settings['enabled'] if current_settings else False
+                        previous_time = current_settings['time'] if current_settings else None
+
+                        undo_data = json.dumps({
+                            'type': 'summary_undo',
+                            'previous_enabled': previous_enabled,
+                            'previous_time': previous_time,
+                            'new_time': time_str
+                        })
+
+                        create_or_update_user(
+                            phone_number,
+                            daily_summary_enabled=True,
+                            daily_summary_time=time_str,
+                            pending_reminder_confirmation=undo_data
+                        )
+
+                        display_am_pm = 'AM' if hour < 12 else 'PM'
+                        display_hour = hour if hour <= 12 else hour - 12
+                        if display_hour == 0:
+                            display_hour = 12
+                        display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
+
+                        reply_text = staging_prefix(f"Daily summary set for {display_time}! You'll receive a summary of your day's reminders each morning.")
+                else:
+                    reply_text = "I couldn't parse that time. Please try something like '8am' or '6:30pm'."
+
+            elif setting == "daily_summary_enabled":
+                enabled = value.lower() in ['true', 'on', 'yes', 'enable']
+
+                from models.user import get_daily_summary_settings
+                current_settings = get_daily_summary_settings(phone_number)
+                previous_enabled = current_settings['enabled'] if current_settings else False
+                previous_time = current_settings['time'] if current_settings else None
+
+                undo_data = json.dumps({
+                    'type': 'summary_undo',
+                    'previous_enabled': previous_enabled,
+                    'previous_time': previous_time,
+                    'action': 'enabled' if enabled else 'disabled'
+                })
+
+                create_or_update_user(phone_number, daily_summary_enabled=enabled, pending_reminder_confirmation=undo_data)
+
+                if enabled:
+                    settings = get_daily_summary_settings(phone_number)
+                    time_str = settings['time'] if settings else '08:00'
+                    time_parts = time_str.split(':')
+                    h = int(time_parts[0])
+                    m = int(time_parts[1]) if len(time_parts) > 1 else 0
+                    ap = 'AM' if h < 12 else 'PM'
+                    dh = h if h <= 12 else h - 12
+                    if dh == 0:
+                        dh = 12
+                    reply_text = staging_prefix(f"Daily summary enabled! You'll receive a summary of your day's reminders at {dh}:{m:02d} {ap}.\n\nTo change the time, text: SUMMARY TIME 7AM")
+                else:
+                    reply_text = staging_prefix("Daily summary disabled. You'll no longer receive daily reminder summaries.")
+            else:
+                reply_text = "I'm not sure which setting you'd like to change. You can change your daily summary time by texting something like 'change my summary time to 8am'."
+
+            log_interaction(phone_number, incoming_msg, reply_text, "update_settings", True)
 
         elif ai_response["action"] == "delete_memory":
             search_term = ai_response.get("search_term", "")

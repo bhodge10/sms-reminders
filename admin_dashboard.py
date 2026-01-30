@@ -1612,8 +1612,12 @@ async def get_validator_stats(admin: str = Depends(verify_admin)):
 async def get_system_health(days: int = 7, admin: str = Depends(verify_admin)):
     """Get system health metrics"""
     try:
+        from agents.interaction_monitor import init_monitoring_tables
+        from agents.issue_validator import init_validator_tables
         from agents.resolution_tracker import calculate_health_metrics, init_tracker_tables
-        init_tracker_tables()  # Ensure tables exist
+        init_monitoring_tables()  # Base tables (monitoring_issues)
+        init_validator_tables()   # Pattern tables (issue_patterns)
+        init_tracker_tables()     # Tracker tables (health_snapshots, issue_resolutions, pattern_resolutions)
         metrics = calculate_health_metrics(days=days)
         return JSONResponse(content=metrics)
     except Exception as e:
@@ -1683,7 +1687,12 @@ async def resolve_issue_tracker(
 async def get_weekly_report(admin: str = Depends(verify_admin)):
     """Get weekly health report"""
     try:
-        from agents.resolution_tracker import generate_weekly_report
+        from agents.interaction_monitor import init_monitoring_tables
+        from agents.issue_validator import init_validator_tables
+        from agents.resolution_tracker import generate_weekly_report, init_tracker_tables
+        init_monitoring_tables()
+        init_validator_tables()
+        init_tracker_tables()
         report = generate_weekly_report()
 
         # Convert datetime objects for JSON
@@ -1706,7 +1715,12 @@ async def get_weekly_report(admin: str = Depends(verify_admin)):
 async def get_health_trends(days: int = 30, admin: str = Depends(verify_admin)):
     """Get health score trends over time"""
     try:
-        from agents.resolution_tracker import get_health_trend
+        from agents.interaction_monitor import init_monitoring_tables
+        from agents.issue_validator import init_validator_tables
+        from agents.resolution_tracker import get_health_trend, init_tracker_tables
+        init_monitoring_tables()
+        init_validator_tables()
+        init_tracker_tables()
         trend = get_health_trend(days=days)
         return JSONResponse(content={"trend": trend, "days": days})
     except Exception as e:

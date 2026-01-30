@@ -42,6 +42,7 @@ PIPELINE:
 Run all four agents in sequence:
     python agents/run_pipeline.py
     python agents/run_pipeline.py --hours 48 --snapshot  # With daily snapshot
+    python agents/run_pipeline.py --fix-planner          # Include Agent 4
 
 Quick runners:
     python agents/run_monitor.py       # Agent 1 only
@@ -111,10 +112,11 @@ RESOLUTION TYPES:
     wont_fix        🚫  Accepted behavior
     duplicate       📋  Already tracked
     cannot_reproduce ❓ Unable to reproduce
+    auto_resolved   ✅ Issue type stopped appearing in interactions
 """
 
 # Convenience imports
 from agents.interaction_monitor import analyze_interactions, get_pending_issues
 from agents.issue_validator import validate_issues, analyze_patterns
-from agents.resolution_tracker import calculate_health_metrics, resolve_issue, generate_weekly_report
+from agents.resolution_tracker import calculate_health_metrics, resolve_issue, generate_weekly_report, auto_resolve_stale_issues
 from agents.code_analyzer import analyze_issue, run_code_analysis, get_existing_analysis
