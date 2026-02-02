@@ -12,7 +12,7 @@ services:
   - type: web
     name: sms-reminders-api
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements-prod.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
@@ -40,7 +40,7 @@ services:
   - type: worker
     name: sms-reminders-worker
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements-prod.txt
     startCommand: python -m celery -A celery_app worker --loglevel=info --concurrency=2 -Q celery -n worker@%h
     envVars:
       - key: DATABASE_URL
@@ -67,7 +67,7 @@ services:
   - type: worker
     name: sms-reminders-beat
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements-prod.txt
     startCommand: python -m celery -A celery_app beat --loglevel=info
     envVars:
       - key: DATABASE_URL
@@ -94,7 +94,7 @@ services:
   - type: worker
     name: sms-reminders-monitoring
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements-prod.txt
     startCommand: python -m celery -A celery_app worker --loglevel=info --concurrency=2 -Q monitoring -n monitoring@%h
     envVars:
       - key: DATABASE_URL
