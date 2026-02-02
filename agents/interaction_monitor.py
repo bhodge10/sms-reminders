@@ -573,7 +573,7 @@ def analyze_interactions(hours: int = 24, dry_run: bool = False) -> dict:
                 SELECT id, phone_number, message_in, message_out, intent, success, created_at
                 FROM logs
                 WHERE created_at > NOW() - INTERVAL '%s hours'
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
             ''', (hours,))
 
             columns = ['id', 'phone_number', 'message_in', 'message_out', 'intent', 'success', 'created_at']
