@@ -369,7 +369,11 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
             # Special full reset for developer testing (Brad's number)
             # This gives a complete new user experience by deleting all data
-            is_developer = phone_number == "+18593935374"
+            # Normalize phone number for comparison (remove +1 prefix if present)
+            normalized_phone = phone_number.replace("+1", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+            is_developer = normalized_phone == "8593935374"
+
+            logger.info(f"Reset check - phone_number: '{phone_number}', normalized: '{normalized_phone}', is_developer: {is_developer}")
 
             if is_developer:
                 logger.info("Developer full reset - deleting all user data")
