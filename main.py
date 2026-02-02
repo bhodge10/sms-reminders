@@ -1889,26 +1889,33 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # STATUS COMMAND (Account Overview)
         # ==========================================
         if incoming_msg.upper() in ["STATUS", "MY ACCOUNT", "ACCOUNT INFO", "USAGE"]:
-            from services.tier_service import get_usage_summary, get_trial_info
-            from services.stripe_service import get_user_subscription
-            from datetime import datetime
+            try:
+                from services.tier_service import get_usage_summary, get_trial_info
+                from services.stripe_service import get_user_subscription
+                from datetime import datetime
 
-            # Get user info
-            user = get_user(phone_number)
-            if not user:
+                # Get user info
+                user = get_user(phone_number)
+                if not user:
+                    resp = MessagingResponse()
+                    resp.message("Unable to retrieve account info. Please try again.")
+                    log_interaction(phone_number, incoming_msg, "Status - user not found", "status_error", False)
+                    return Response(content=str(resp), media_type="application/xml")
+
+                first_name = user[1] or "there"
+                created_at = user[7] if len(user) > 7 else None
+
+                # Get tier and usage info
+                usage = get_usage_summary(phone_number)
+                tier = usage['tier']
+                trial_info = get_trial_info(phone_number)
+                subscription = get_user_subscription(phone_number)
+            except Exception as e:
+                logger.error(f"Error in STATUS command for {phone_number}: {e}", exc_info=True)
                 resp = MessagingResponse()
-                resp.message("Unable to retrieve account info. Please try again.")
-                log_interaction(phone_number, incoming_msg, "Status - user not found", "status_error", False)
+                resp.message("Unable to retrieve account status. Please try again later.")
+                log_interaction(phone_number, incoming_msg, f"Status error: {str(e)}", "status_error", False)
                 return Response(content=str(resp), media_type="application/xml")
-
-            first_name = user[1] or "there"
-            created_at = user[7] if len(user) > 7 else None
-
-            # Get tier and usage info
-            usage = get_usage_summary(phone_number)
-            tier = usage['tier']
-            trial_info = get_trial_info(phone_number)
-            subscription = get_user_subscription(phone_number)
 
             # Format member since date
             if created_at:
@@ -1934,10 +1941,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 # Get next billing date from Stripe if available
                 if subscription.get('current_period_end'):
                     try:
-                        from datetime import datetime
                         next_billing = datetime.fromtimestamp(subscription['current_period_end'])
                         status_lines.append(f"Next billing: {next_billing.strftime('%b %d, %Y')}")
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Could not format billing date: {e}")
                         pass
 
             # Usage stats
