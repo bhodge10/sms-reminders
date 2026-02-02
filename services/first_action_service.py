@@ -300,8 +300,9 @@ def handle_daily_summary_response(phone_number, message):
             create_or_update_user(phone_number, pending_daily_summary_time=None)
             # Fall through to process as new time
 
-    # Handle YES/NO responses
-    if msg_lower in ['yes', 'y', 'sure', 'ok', 'okay', 'yep', 'yeah']:
+    # Handle YES/NO/ON responses
+    # "on", "enable", "start" are treated as YES (user wants daily summaries)
+    if msg_lower in ['yes', 'y', 'sure', 'ok', 'okay', 'yep', 'yeah', 'on', 'enable', 'start']:
         create_or_update_user(
             phone_number,
             daily_summary_enabled=True,
