@@ -415,11 +415,20 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 elif cancel_result.get('error'):
                     logger.warning(f"Stripe cancellation issue for {mask_phone_number(phone_number)}: {cancel_result['error']}")
 
-                # Delete all user data
+                # Delete all user data (order matters for foreign key constraints)
                 from database import get_db_connection, return_db_connection
                 conn = get_db_connection()
                 c = conn.cursor()
 
+                # Delete tables with foreign keys first
+                c.execute("DELETE FROM conversation_analysis WHERE phone_number = %s", (phone_number,))
+                c.execute("DELETE FROM support_messages WHERE phone_number = %s", (phone_number,))
+                c.execute("DELETE FROM support_tickets WHERE phone_number = %s", (phone_number,))
+                c.execute("DELETE FROM confidence_logs WHERE phone_number = %s", (phone_number,))
+                c.execute("DELETE FROM api_usage WHERE phone_number = %s", (phone_number,))
+                c.execute("DELETE FROM customer_notes WHERE phone_number = %s", (phone_number,))
+
+                # Now delete the main tables
                 c.execute("DELETE FROM reminders WHERE phone_number = %s", (phone_number,))
                 c.execute("DELETE FROM recurring_reminders WHERE phone_number = %s", (phone_number,))
                 c.execute("DELETE FROM memories WHERE phone_number = %s", (phone_number,))
