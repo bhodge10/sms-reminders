@@ -512,26 +512,17 @@ def send_payment_failed_notice(phone_number: str):
 
 def get_upgrade_message(phone_number: str) -> str:
     """Get the upgrade prompt message with pricing info."""
-    from config import PRICING, APP_BASE_URL
+    from config import PRICING, APP_BASE_URL, PREMIUM_MONTHLY_PRICE
 
     premium_monthly = PRICING[TIER_PREMIUM]['monthly'] / 100
-    premium_annual = PRICING[TIER_PREMIUM]['annual'] / 100
-    family_monthly = PRICING[TIER_FAMILY]['monthly'] / 100
-    family_annual = PRICING[TIER_FAMILY]['annual'] / 100
 
     return f"""Upgrade to Remyndrs Premium!
 
-PREMIUM - ${premium_monthly:.2f}/month (or ${premium_annual:.2f}/year)
-- Unlimited reminders
+{PREMIUM_MONTHLY_PRICE}/month
+- Unlimited reminders per day
 - Recurring reminders (daily, weekly, monthly)
 - Unlimited lists & memories
 - Priority support
+- Cancel anytime
 
-FAMILY - ${family_monthly:.2f}/month (or ${family_annual:.2f}/year)
-- Everything in Premium
-- Up to 4 family members
-- Add more members for $3.50/each
-
-Visit {APP_BASE_URL}/upgrade to subscribe!
-
-Reply PREMIUM or FAMILY to get your upgrade link."""
+Text PREMIUM to get your upgrade link."""

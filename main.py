@@ -2036,7 +2036,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # UPGRADE / SUBSCRIPTION HANDLING
         # ==========================================
-        if incoming_msg.upper() in ["UPGRADE", "SUBSCRIBE", "PREMIUM", "FAMILY", "PRICING"]:
+        if incoming_msg.upper() in ["UPGRADE", "SUBSCRIBE", "PREMIUM", "PRICING"]:
             from services.stripe_service import get_upgrade_message, get_user_subscription, create_checkout_session
             from config import STRIPE_ENABLED, APP_BASE_URL
 
@@ -2049,21 +2049,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 log_interaction(phone_number, incoming_msg, "Already subscribed", "upgrade_already_premium", True)
                 return Response(content=str(resp), media_type="application/xml")
 
-            # Show upgrade options
-            msg_upper = incoming_msg.upper()
-            if msg_upper in ["PREMIUM", "FAMILY"] and STRIPE_ENABLED:
-                # User selected a specific plan - create checkout link
-                plan = 'premium' if msg_upper == "PREMIUM" else 'family'
-                result = create_checkout_session(phone_number, plan, 'monthly')
+            # User selected Premium - create checkout link
+            if incoming_msg.upper() == "PREMIUM" and STRIPE_ENABLED:
+                result = create_checkout_session(phone_number, 'premium', 'monthly')
 
                 if 'url' in result:
                     resp = MessagingResponse()
-                    resp.message(f"Great choice! Complete your {plan.title()} subscription here:\n\n{result['url']}\n\nThis link expires in 24 hours.")
-                    log_interaction(phone_number, incoming_msg, f"Checkout link sent for {plan}", f"upgrade_{plan}_checkout", True)
+                    resp.message(f"Great choice! Complete your Premium subscription here:\n\n{result['url']}\n\nThis link expires in 24 hours.")
+                    log_interaction(phone_number, incoming_msg, "Checkout link sent for premium", "upgrade_premium_checkout", True)
                 else:
                     resp = MessagingResponse()
-                    resp.message(f"Visit {APP_BASE_URL}/upgrade to subscribe to {plan.title()}!")
-                    log_interaction(phone_number, incoming_msg, "Checkout fallback", f"upgrade_{plan}_fallback", True)
+                    resp.message(f"Visit {APP_BASE_URL}/upgrade to subscribe to Premium!")
+                    log_interaction(phone_number, incoming_msg, "Checkout fallback", "upgrade_premium_fallback", True)
                 return Response(content=str(resp), media_type="application/xml")
             else:
                 # Show pricing info
