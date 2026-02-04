@@ -119,6 +119,14 @@ Tests **never hit real Twilio or OpenAI APIs**:
 - `sms_service.py` detects test environment and blocks real Twilio calls
 - Use `.env.test` with `ENVIRONMENT=test` and fake API keys
 
+### AI Mock AM/PM Normalization Gotcha
+`main.py` normalizes time strings before sending to AI (e.g., `10am` → `10:AM` at line ~2777). When writing tests with `ai_mock.set_response()`, register mock responses under **both** the original and normalized forms:
+```python
+ai_mock.set_response("remind me every monday at 10am about team meeting", response)
+ai_mock.set_response("remind me every monday at 10:am about team meeting", response)
+```
+The mock uses exact-match on the lowercased message. If only the original form is registered, the normalized message won't match and will fall through to the default `unknown` action.
+
 ## Key Patterns
 
 ### Timezone Handling
@@ -137,6 +145,22 @@ When AI confidence is below threshold, reminders enter pending confirmation stor
 - **Pending storage:** `routes/handlers/reminders.py` stores pending JSON
 - **Confirmation handling:** `main.py` (search `pending_confirmation`) processes YES/NO and calls `save_reminder_with_local_time()`
 - `save_reminder_with_local_time()` requires 5 args: `(phone_number, reminder_text, reminder_date_utc, local_time, timezone)` where `local_time` is HH:MM and `reminder_date` must be UTC
+
+### AM/PM and Time-of-Day Recognition
+The system recognizes AM/PM in three forms:
+1. **Explicit:** `am`, `pm`, `a.m.`, `p.m.`
+2. **Natural language:** `morning` (→ AM), `afternoon`/`evening`/`night` (→ PM)
+
+This affects three code locations in `main.py`:
+- `has_am_pm` check (~line 760): Determines if the message already specifies AM/PM
+- `clarify_time` handler (~line 931): Maps time-of-day words to AM/PM when processing ambiguous times
+- `is_valid_response` check (~line 2744): Recognizes time-of-day words as valid AM/PM clarification responses
+
+### Keyword Handlers vs AI Processing
+`main.py` has keyword-based handlers (exact string matches and regex patterns) that run **before** AI processing. Messages not caught by keywords fall through to OpenAI. When adding new user-facing commands:
+- Add keyword matches for common phrasings (e.g., `SUMMARY OFF`, `DISABLE SUMMARY`, etc.)
+- Consider natural language variations users might send
+- Add safeguards in AI action handlers for misclassified intents (e.g., `update_reminder` handler redirects "daily summary" terms to the settings handler)
 
 ### Field Encryption
 Optional AES-256-GCM encryption for PII (names, emails). Enabled via `ENCRYPTION_KEY` and `HASH_KEY` env vars.
