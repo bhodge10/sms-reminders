@@ -2527,7 +2527,8 @@ async def delete_changelog_entry(entry_id: int, admin: str = Depends(verify_admi
 
 
 # =====================================================
-# SUPPORT TICKET API ENDPOINTS
+# SUPPORT TICKET API ENDPOINTS (kept for admin dashboard compatibility)
+# Primary ticket management is now in CS Portal (/cs)
 # =====================================================
 
 class SupportReplyRequest(BaseModel):
@@ -2536,7 +2537,7 @@ class SupportReplyRequest(BaseModel):
 
 @router.get("/admin/support/tickets")
 async def get_support_tickets(include_closed: bool = False, admin: str = Depends(verify_admin)):
-    """Get all support tickets"""
+    """Get all support tickets (delegates to support_service)"""
     from services.support_service import get_all_tickets
     tickets = get_all_tickets(include_closed)
     return tickets
@@ -3985,7 +3986,8 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
         <div class="section-content">
             <p style="color: #7f8c8d; margin-bottom: 15px;">
-                Premium users can text "Support: [message]" to create tickets. Replies are sent via SMS.
+                Users can text "Support [message]" to create tickets. Feedback and bug reports also create tickets.
+                <a href="/cs" style="color: #3498db; font-weight: 600;">Open CS Portal</a> for full ticket management with filtering, assignment, and canned responses.
             </p>
 
             <div style="margin-bottom: 15px;">

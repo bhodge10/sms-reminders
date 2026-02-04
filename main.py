@@ -379,7 +379,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             resp.message(
                 "This will permanently delete all your data (reminders, memories, lists) "
                 "and cancel your Premium subscription if active. This cannot be undone.\n\n"
-                "To confirm, text YES DELETE ACCOUNT.\nTo cancel, text anything else."
+                "Want a copy of your data first? Text EXPORT to receive it by email.\n\n"
+                "To confirm deletion, text YES DELETE ACCOUNT.\nTo cancel, text anything else."
             )
             log_interaction(phone_number, incoming_msg, "Delete account confirmation requested", "delete_account_request", True)
             return Response(content=str(resp), media_type="application/xml")
@@ -530,6 +531,45 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 resp.message("Account deletion cancelled. Your data is safe!")
                 log_interaction(phone_number, incoming_msg, "Delete account cancelled", "delete_account_cancelled", True)
                 return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # CANCELLATION FEEDBACK HANDLING
+        # ==========================================
+        user_check_cancel = get_user(phone_number)
+        if user_check_cancel:
+            from database import get_db_connection, return_db_connection
+            conn_check = get_db_connection()
+            c_check = conn_check.cursor()
+            c_check.execute('SELECT pending_cancellation_feedback FROM users WHERE phone_number = %s', (phone_number,))
+            cancel_result = c_check.fetchone()
+            return_db_connection(conn_check)
+            if cancel_result and cancel_result[0]:
+                # User has pending cancellation feedback
+                msg_upper = incoming_msg.strip().upper()
+                if msg_upper == "SKIP":
+                    create_or_update_user(phone_number, pending_cancellation_feedback=False)
+                    # Don't return - let the message flow through normally
+                else:
+                    feedback_map = {
+                        '1': 'Too expensive',
+                        '2': 'Not using enough',
+                        '3': 'Missing a feature',
+                        '4': 'Other',
+                    }
+                    feedback_text = feedback_map.get(msg_upper, incoming_msg.strip())
+                    # Save as a categorized ticket
+                    from services.support_service import create_categorized_ticket
+                    create_categorized_ticket(
+                        phone_number,
+                        f"[CANCELLATION] {feedback_text}",
+                        'feedback',
+                        'sms'
+                    )
+                    create_or_update_user(phone_number, pending_cancellation_feedback=False)
+                    resp = MessagingResponse()
+                    resp.message("Thank you for the feedback! We'll use it to improve Remyndrs. Text UPGRADE anytime to resubscribe.")
+                    log_interaction(phone_number, incoming_msg, "Cancellation feedback received", "cancellation_feedback", True)
+                    return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # RESET ACCOUNT COMMAND (developer only)
@@ -1955,29 +1995,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if command == "FEEDBACK":
             feedback_message = message_text.strip()
             if feedback_message:
-                # Save feedback to database
-                from database import get_db_connection, return_db_connection
-                conn = None
-                try:
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute(
-                        'INSERT INTO feedback (user_phone, message) VALUES (%s, %s)',
-                        (phone_number, feedback_message)
-                    )
-                    conn.commit()
+                # Route through support tickets with category='feedback'
+                from services.support_service import create_categorized_ticket
+                result = create_categorized_ticket(phone_number, feedback_message, 'feedback', 'sms')
+                if result['success']:
                     resp = MessagingResponse()
                     resp.message("Thank you for your feedback! We appreciate you taking the time to share your thoughts with us.")
-                    log_interaction(phone_number, incoming_msg, "Feedback received", "feedback", True)
+                    log_interaction(phone_number, incoming_msg, f"Feedback ticket #{result['ticket_id']}", "feedback", True)
                     return Response(content=str(resp), media_type="application/xml")
-                except Exception as e:
-                    logger.error(f"Error saving feedback: {e}")
+                else:
                     resp = MessagingResponse()
                     resp.message("Sorry, there was an error saving your feedback. Please try again later.")
                     return Response(content=str(resp), media_type="application/xml")
-                finally:
-                    if conn:
-                        return_db_connection(conn)
             else:
                 resp = MessagingResponse()
                 resp.message("Please include your feedback after 'Feedback'. For example: 'Feedback I love this app!'")
@@ -1990,36 +2019,57 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if command == "BUG":
             bug_message = message_text.strip()
             if bug_message:
-                from database import get_db_connection, return_db_connection
-                conn = None
-                try:
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute(
-                        'INSERT INTO feedback (user_phone, message) VALUES (%s, %s)',
-                        (phone_number, f"[BUG] {bug_message}")
-                    )
-                    conn.commit()
+                # Route through support tickets with category='bug'
+                from services.support_service import create_categorized_ticket
+                result = create_categorized_ticket(phone_number, bug_message, 'bug', 'sms')
+                if result['success']:
                     resp = MessagingResponse()
                     resp.message("Thank you for reporting this bug! Our team will look into it.")
-                    log_interaction(phone_number, incoming_msg, "Bug report received", "bug_report", True)
+                    log_interaction(phone_number, incoming_msg, f"Bug ticket #{result['ticket_id']}", "bug_report", True)
                     return Response(content=str(resp), media_type="application/xml")
-                except Exception as e:
-                    logger.error(f"Error saving bug report: {e}")
+                else:
                     resp = MessagingResponse()
                     resp.message("Sorry, there was an error saving your bug report. Please try again later.")
                     return Response(content=str(resp), media_type="application/xml")
-                finally:
-                    if conn:
-                        return_db_connection(conn)
             else:
                 resp = MessagingResponse()
                 resp.message("Please describe the bug after 'Bug'. For example: 'Bug my reminder didn't go off'")
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # EXPORT COMMAND - Email user their data
+        # ==========================================
+        if incoming_msg.upper() == "EXPORT":
+            user = get_user(phone_number)
+            user_email = user.get('email') if user else None
+
+            if not user_email:
+                resp = MessagingResponse()
+                resp.message("We don't have an email address on file for your account. Please contact support@remyndrs.com to request a data export.")
+                log_interaction(phone_number, incoming_msg, "Export - no email on file", "export_no_email", False)
+                return Response(content=str(resp), media_type="application/xml")
+
+            try:
+                from services.export_service import export_and_email_user_data
+                result = export_and_email_user_data(phone_number, user_email)
+                if result:
+                    resp = MessagingResponse()
+                    resp.message(f"Your data export has been emailed to your address on file. Check your inbox!")
+                    log_interaction(phone_number, incoming_msg, "Data export sent", "export", True)
+                else:
+                    resp = MessagingResponse()
+                    resp.message("Sorry, there was an error creating your data export. Please try again later.")
+                    log_interaction(phone_number, incoming_msg, "Export failed", "export", False)
+            except Exception as e:
+                logger.error(f"Error in EXPORT command: {e}", exc_info=True)
+                resp = MessagingResponse()
+                resp.message("Sorry, there was an error creating your data export. Please try again later.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # QUESTION HANDLING (route to AI with full message)
         # ==========================================
+        is_question_command = False
         command, message_text = parse_command(incoming_msg, known_commands=["QUESTION"])
         if command == "QUESTION":
             question_text = message_text.strip()
@@ -2027,6 +2077,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 # Route the question to AI processing as natural language
                 # Fall through to AI processing at the bottom with the full question text
                 incoming_msg = question_text
+                is_question_command = True
                 logger.info(f"QUESTION command - routing to AI: {question_text[:50]}...")
             else:
                 resp = MessagingResponse()
@@ -2214,22 +2265,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         command, message_text = parse_command(incoming_msg, known_commands=["SUPPORT"])
         if command == "SUPPORT":
             from services.support_service import is_premium_user, add_support_message
-            from config import BETA_MODE
 
-            # Check if user is premium (or beta mode allows all users)
-            if not BETA_MODE and not is_premium_user(phone_number):
-                resp = MessagingResponse()
-                resp.message("Support chat is available for premium members. Use 'Feedback [message]' to send us feedback, or upgrade to premium for direct support.")
-                log_interaction(phone_number, incoming_msg, "Support denied - not premium", "support_denied", False)
-                return Response(content=str(resp), media_type="application/xml")
+            # Support is open to all users
+            is_premium = is_premium_user(phone_number)
 
             support_message = message_text.strip()
 
             if support_message:
                 result = add_support_message(phone_number, support_message, 'inbound')
                 if result['success']:
+                    upgrade_note = "" if is_premium else "\n\nFor priority support, text UPGRADE."
                     resp = MessagingResponse()
-                    resp.message(staging_prefix(f"[Support Ticket #{result['ticket_id']}] Your message has been sent to our support team. We'll reply as soon as possible!\n\n(You're now in support mode - all replies and messages will go to our support team. Text EXIT to leave support but keep ticket open or text CLOSE to close ticket)"))
+                    resp.message(staging_prefix(f"[Support Ticket #{result['ticket_id']}] Your message has been sent to our support team. We'll reply as soon as possible!{upgrade_note}\n\n(You're now in support mode - all replies and messages will go to our support team. Text EXIT to leave support but keep ticket open or text CLOSE to close ticket)"))
                     log_interaction(phone_number, incoming_msg, f"Support ticket #{result['ticket_id']}", "support", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
@@ -3280,6 +3327,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Append trial info if this is user's first real interaction
         if first_action_type:
             reply_text = append_trial_info_to_response(reply_text, first_action_type, phone_number)
+
+        # If this was a QUESTION command, append escape hatch for human help
+        if is_question_command:
+            reply_text += "\n\nNeed more help? Text SUPPORT followed by your message to chat with a real person."
 
         # Send response
         resp = MessagingResponse()
@@ -4775,36 +4826,15 @@ async def website_contact(request: Request):
                 content={"success": False, "error": "Please enter a valid US phone number"}
             )
 
-        # Build the feedback message with type prefix
-        if contact_type == 'feedback':
-            db_message = message
-        elif contact_type == 'bug':
-            db_message = f"[BUG] {message}"
-        elif contact_type == 'question':
-            db_message = f"[QUESTION] {message}"
-        elif contact_type == 'support':
-            db_message = f"[SUPPORT] {message}"
-
-        # Save to feedback table
-        from database import get_db_connection, return_db_connection
-        conn = None
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute(
-                'INSERT INTO feedback (user_phone, message) VALUES (%s, %s)',
-                (formatted_phone, db_message)
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error saving contact form submission: {e}")
+        # Route through support tickets with appropriate category
+        from services.support_service import create_categorized_ticket
+        result = create_categorized_ticket(formatted_phone, message, contact_type, 'web')
+        if not result['success']:
+            logger.error(f"Error creating ticket for web contact: {result.get('error')}")
             return JSONResponse(
                 status_code=500,
                 content={"success": False, "error": "Something went wrong. Please try again."}
             )
-        finally:
-            if conn:
-                return_db_connection(conn)
 
         # Send confirmation SMS
         from services.sms_service import send_sms
@@ -4823,7 +4853,7 @@ async def website_contact(request: Request):
             logger.error(f"Error sending contact confirmation SMS: {e}")
             # Don't fail the request if SMS fails - the feedback was already saved
 
-        log_interaction(formatted_phone, f"[WEB CONTACT] {db_message}", "Contact form confirmation sent", f"web_contact_{contact_type}", True)
+        log_interaction(formatted_phone, f"[WEB CONTACT] [{contact_type.upper()}] {message}", "Contact form ticket created", f"web_contact_{contact_type}", True)
 
         return JSONResponse(
             status_code=200,

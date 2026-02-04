@@ -485,14 +485,35 @@ def send_subscription_confirmation(phone_number: str, tier: str):
 
 
 def send_cancellation_notice(phone_number: str):
-    """Send SMS notice of subscription cancellation."""
+    """Send SMS notice of subscription cancellation with feedback request."""
     try:
         from services.sms_service import send_sms
 
-        message = "Your Remyndrs subscription has been cancelled. You've been moved to the free plan. Text UPGRADE anytime to resubscribe!"
+        message = (
+            "Your Remyndrs subscription has been cancelled. You've been moved to the free plan.\n\n"
+            "We'd love to know why you cancelled:\n"
+            "1. Too expensive\n"
+            "2. Not using enough\n"
+            "3. Missing a feature\n"
+            "4. Other\n\n"
+            "Reply with a number, or text SKIP. Text UPGRADE anytime to resubscribe!"
+        )
+
+        # Set pending cancellation feedback flag
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute(
+                "UPDATE users SET pending_cancellation_feedback = TRUE WHERE phone_number = %s",
+                (phone_number,)
+            )
+            conn.commit()
+            return_db_connection(conn)
+        except Exception as db_err:
+            logger.error(f"Error setting pending_cancellation_feedback: {db_err}")
 
         send_sms(phone_number, message)
-        logger.info(f"Sent cancellation notice to {phone_number[-4:]}")
+        logger.info(f"Sent cancellation notice with feedback request to {phone_number[-4:]}")
     except Exception as e:
         logger.error(f"Error sending cancellation notice: {e}")
 
@@ -508,6 +529,51 @@ def send_payment_failed_notice(phone_number: str):
         logger.info(f"Sent payment failed notice to {phone_number[-4:]}")
     except Exception as e:
         logger.error(f"Error sending payment failed notice: {e}")
+
+
+def issue_refund(phone_number: str, amount_cents: int = None, reason: str = 'requested_by_customer') -> dict:
+    """
+    Issue a refund for a user's most recent payment.
+
+    Args:
+        phone_number: User's phone number
+        amount_cents: Amount in cents to refund (None for full refund)
+        reason: Stripe refund reason
+
+    Returns:
+        dict with 'success' bool and optional 'refund_id' or 'error'
+    """
+    if not STRIPE_ENABLED:
+        return {'success': False, 'error': 'Payment system is not configured'}
+
+    customer_id = get_stripe_customer_id(phone_number)
+    if not customer_id:
+        return {'success': False, 'error': 'No Stripe customer found for this user'}
+
+    try:
+        # Get the most recent charge for this customer
+        charges = stripe.Charge.list(customer=customer_id, limit=1)
+        if not charges.data:
+            return {'success': False, 'error': 'No charges found for this customer'}
+
+        charge = charges.data[0]
+
+        # Build refund params
+        refund_params = {
+            'charge': charge.id,
+            'reason': reason,
+        }
+        if amount_cents:
+            refund_params['amount'] = amount_cents
+
+        refund = stripe.Refund.create(**refund_params)
+
+        logger.info(f"Refund {refund.id} issued for {phone_number[-4:]}: {amount_cents or 'full'} cents")
+        return {'success': True, 'refund_id': refund.id}
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error issuing refund for {phone_number[-4:]}: {e}")
+        return {'success': False, 'error': str(e)}
 
 
 def get_upgrade_message(phone_number: str) -> str:
