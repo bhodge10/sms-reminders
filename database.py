@@ -503,6 +503,22 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_info_sent BOOLEAN DEFAULT FALSE",
             # DELETE ACCOUNT: two-step confirmation flag
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_delete_account BOOLEAN DEFAULT FALSE",
+            # Support ticket enhancements: category, source, priority, assignment
+            "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'support'",
+            "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'sms'",
+            "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'",
+            "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assigned_to TEXT",
+            # Cancellation feedback collection
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_cancellation_feedback BOOLEAN DEFAULT FALSE",
+            # Canned responses for CS reps
+            """CREATE TABLE IF NOT EXISTS canned_responses (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                created_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
