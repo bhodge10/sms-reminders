@@ -2162,7 +2162,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             try:
                 from services.tier_service import get_usage_summary, get_trial_info
                 from services.stripe_service import get_user_subscription
-                from datetime import datetime
 
                 # Get user info
                 user = get_user(phone_number)
