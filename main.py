@@ -4393,7 +4393,34 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             matching_reminders = search_pending_reminders(phone_number, search_term)
 
             if len(matching_reminders) == 0:
-                reply_text = f"No pending reminders found matching '{search_term}'."
+                # Fallback: check if keyword matches a stored memory
+                matching_memories = search_memories(phone_number, search_term)
+                if len(matching_memories) == 1:
+                    memory_id, memory_text, created_at = matching_memories[0]
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'id': memory_id,
+                        'text': memory_text
+                    })
+                    create_or_update_user(phone_number, pending_memory_delete=confirm_data)
+                    display_text = memory_text[:100] + ('...' if len(memory_text) > 100 else '')
+                    reply_text = f"No reminders found, but I found a memory: '{display_text}'\n\nDelete it? Reply YES to confirm or NO to cancel."
+                    log_interaction(phone_number, incoming_msg, reply_text, "delete_memory_fallback", True)
+                    return reply_text
+                elif len(matching_memories) > 1:
+                    memory_options = []
+                    lines = ["No reminders found, but I found these memories:"]
+                    for i, (memory_id, memory_text, created_at) in enumerate(matching_memories, 1):
+                        display_text = memory_text[:80] + ('...' if len(memory_text) > 80 else '')
+                        lines.append(f"{i}. {display_text}")
+                        memory_options.append({'id': memory_id, 'text': memory_text})
+                    lines.append("\nReply with a number to select:")
+                    reply_text = "\n".join(lines)
+                    create_or_update_user(phone_number, pending_memory_delete=json.dumps({'options': memory_options}))
+                    log_interaction(phone_number, incoming_msg, reply_text, "delete_memory_fallback", True)
+                    return reply_text
+                else:
+                    reply_text = f"No pending reminders or memories found matching '{search_term}'."
             elif len(matching_reminders) == 1:
                 # Single match - ask for confirmation first
                 reminder_id, reminder_text, reminder_date = matching_reminders[0]
