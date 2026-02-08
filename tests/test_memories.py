@@ -232,3 +232,48 @@ class TestMemorySensitiveData:
         })
 
         result = await simulator.send_message(phone, "Remember my card number 4111111111111111")
+
+
+class TestDeleteReminderFallbackToMemory:
+    """Tests for delete_reminder handler falling back to memory search."""
+
+    @pytest.mark.asyncio
+    async def test_delete_keyword_falls_back_to_memory(self, simulator, onboarded_user, ai_mock):
+        """When AI misclassifies 'delete surfing' as delete_reminder but no reminder
+        matches, the handler should fall back to searching memories."""
+        phone = onboarded_user["phone"]
+
+        # Store a memory with the keyword
+        from models.memory import save_memory
+        save_memory(phone, "I love surfing at Huntington Beach", {})
+
+        # AI misclassifies as delete_reminder instead of delete_memory
+        ai_mock.set_response("delete surfing", {
+            "action": "delete_reminder",
+            "search_term": "surfing",
+            "confirmation": "Deleted your reminder about surfing"
+        })
+
+        result = await simulator.send_message(phone, "Delete surfing")
+
+        # Should NOT dead-end with "No pending reminders found"
+        assert "no pending reminders found" not in result["output"].lower()
+        # Should find the memory and ask for confirmation
+        assert "memory" in result["output"].lower()
+        assert "surfing" in result["output"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_keyword_no_reminders_no_memories(self, simulator, onboarded_user, ai_mock):
+        """When nothing matches at all, show updated message mentioning both."""
+        phone = onboarded_user["phone"]
+
+        ai_mock.set_response("delete xyz123", {
+            "action": "delete_reminder",
+            "search_term": "xyz123",
+            "confirmation": "Deleted your reminder about xyz123"
+        })
+
+        result = await simulator.send_message(phone, "Delete xyz123")
+
+        # Should mention no reminders or memories found
+        assert "no pending reminders or memories found" in result["output"].lower()

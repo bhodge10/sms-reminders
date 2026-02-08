@@ -292,7 +292,10 @@ WHEN TO USE delete_reminder:
 - "delete coffee" (when no list has coffee, but there's a reminder about coffee) → search_term: "coffee"
 - "delete 1" or "delete reminder 1" (when they want to delete the first SCHEDULED reminder) → search_term: the actual text of reminder #1 from SCHEDULED section above
 - "remove the break reminder" → search_term: "break"
-IMPORTANT: If user says "delete [keyword]" and the keyword matches something in their SCHEDULED reminders (not lists), use delete_reminder.
+IMPORTANT: When user says "delete [keyword]" (without specifying "reminder", "memory", or "forget"):
+- If the keyword matches something in SCHEDULED reminders → use delete_reminder
+- If the keyword matches something in USER'S STORED MEMORIES but NOT in SCHEDULED reminders → use delete_memory
+- If the keyword matches both → use delete_reminder (reminders are more time-sensitive)
 
 For UPDATING/CHANGING A REMINDER TIME:
 {{
@@ -339,7 +342,10 @@ WHEN TO USE delete_memory:
 - "remove the memory about my VIN" → search_term: "VIN"
 - "forget my doctor's number" → search_term: "doctor"
 - "delete 1" or "delete memory 1" (when they want to delete memory #1 from their list) → search_term: the actual text of memory #1 from USER'S STORED MEMORIES above
-IMPORTANT: Use delete_memory when user wants to remove stored information/facts (from USER'S STORED MEMORIES section), not reminders or list items.
+IMPORTANT: Use delete_memory when:
+- User explicitly says "memory" or "forget" (e.g., "delete my surfing memory", "forget my wifi password")
+- User says "delete [keyword]" and the keyword appears in USER'S STORED MEMORIES but NOT in SCHEDULED reminders
+- User wants to remove stored information/facts, not reminders or list items
 
 For SETTING REMINDERS WITH CLEAR TIME (specific time given):
 {{
