@@ -1340,7 +1340,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         pending_delete_data = get_pending_reminder_delete(phone_number)
         if pending_delete_data:
             # Handle CANCEL
-            if incoming_msg.strip().upper() in ["CANCEL", "NO"]:
+            if incoming_msg.strip().lower() in ["cancel", "no", "nevermind", "never mind", "forget it", "no thanks", "nope", "skip"]:
                 create_or_update_user(phone_number, pending_reminder_delete=None)
                 resp = MessagingResponse()
                 resp.message("Cancelled.")
@@ -1576,7 +1576,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         pending_delete_flag = user_for_pending and user_for_pending[9] if user_for_pending else False
         if pending_item and not pending_delete_flag:
             # Handle CANCEL for pending list item
-            if incoming_msg.strip().upper() in ["CANCEL", "NO", "NEVERMIND", "NEVER MIND"]:
+            if incoming_msg.strip().lower() in ["cancel", "no", "nevermind", "never mind", "forget it", "no thanks", "nope", "skip"]:
                 create_or_update_user(phone_number, pending_list_item=None)
                 resp = MessagingResponse()
                 resp.message(staging_prefix("Cancelled."))
@@ -4054,11 +4054,36 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     log_interaction(phone_number, incoming_msg, reply_text, "add_to_list_blocked", False)
                     return reply_text
 
-            # Validate inputs
+            # AI may return items as a list in "items" field instead of "item_text"
+            if not item_text and ai_response.get("items"):
+                items_list = ai_response["items"]
+                if isinstance(items_list, list):
+                    item_text = ", ".join(items_list)
+
+            # If no list name provided, route to list selection like add_item_ask_list
+            list_selection_handled = False
+            if not list_name:
+                item_valid_check, item_result_check = validate_item_text(item_text)
+                if item_valid_check:
+                    lists = get_lists(phone_number)
+                    if len(lists) == 1:
+                        # Only one list, use it directly
+                        list_name = lists[0][1]
+                    elif len(lists) > 1:
+                        # Multiple lists, ask which one
+                        create_or_update_user(phone_number, pending_list_item=item_result_check, pending_delete=False)
+                        list_options = "\n".join([f"{i+1}. {l[1]}" for i, l in enumerate(lists)])
+                        reply_text = f"Which list would you like to add these to?\n\n{list_options}\n\nReply with a number:"
+                        log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
+                        list_selection_handled = True
+
+            # Validate inputs (list_name may have been set above for single-list case)
             name_valid, name_result = validate_list_name(list_name)
             item_valid, item_result = validate_item_text(item_text)
 
-            if not name_valid:
+            if list_selection_handled:
+                pass  # reply_text already set by list selection logic above
+            elif not name_valid:
                 reply_text = name_result
                 log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", False)
             elif not item_valid:
