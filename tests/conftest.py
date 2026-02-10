@@ -309,7 +309,14 @@ def sms_capture():
 
 @pytest.fixture
 def ai_mock():
-    """Fixture providing AI response mock for tests."""
+    """Fixture providing AI response mock for tests.
+
+    Set USE_REAL_OPENAI=true to skip AI mocking and use real OpenAI API.
+    """
+    if os.environ.get("USE_REAL_OPENAI", "").lower() == "true":
+        yield None
+        return
+
     mock = AIResponseMock()
 
     def mock_process_with_ai(message, phone_number, context=None):
