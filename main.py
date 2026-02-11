@@ -9,7 +9,7 @@ import pytz
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Form, Request, HTTPException
-from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from twilio.twiml.messaging_response import MessagingResponse
@@ -4875,28 +4875,43 @@ async def stripe_webhook(request: Request):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+@app.get("/api/payment-info")
+async def payment_info(session_id: str = None):
+    """Resolve a Stripe session_id into display data for the success page"""
+    from config import STRIPE_ENABLED
+    from models.user import get_user_first_name
+
+    plan = "Premium"
+    first_name = None
+
+    if session_id and STRIPE_ENABLED:
+        try:
+            import stripe
+            session = stripe.checkout.Session.retrieve(session_id)
+            metadata = session.get("metadata", {}) or {}
+            plan = metadata.get("plan", "Premium")
+            phone_number = metadata.get("phone_number")
+            if phone_number:
+                first_name = get_user_first_name(phone_number)
+        except Exception as e:
+            logger.warning(f"Could not retrieve Stripe session {session_id}: {e}")
+
+    return {"plan": plan, "first_name": first_name}
+
+
 @app.get("/payment/success")
 async def payment_success(session_id: str = None):
-    """Handle successful payment redirect"""
-    return HTMLResponse(content="""<html><head><title>Remyndrs - Payment Successful</title>
-<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f0fdf4}
-.card{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.1);text-align:center;max-width:400px}
-h1{color:#16a34a;margin-bottom:.5rem}p{color:#4b5563;line-height:1.5}</style></head>
-<body><div class="card"><h1>Payment Successful!</h1>
-<p>Thank you for subscribing to Remyndrs Premium! You can close this page and continue using Remyndrs via SMS.</p>
-</div></body></html>""")
+    """Redirect to Netlify success page"""
+    redirect_url = "https://remyndrs.com/payment/success"
+    if session_id:
+        redirect_url += f"?session_id={session_id}"
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @app.get("/payment/cancelled")
 async def payment_cancelled():
-    """Handle cancelled payment redirect"""
-    return HTMLResponse(content="""<html><head><title>Remyndrs - Payment Cancelled</title>
-<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fef2f2}
-.card{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.1);text-align:center;max-width:400px}
-h1{color:#dc2626;margin-bottom:.5rem}p{color:#4b5563;line-height:1.5}</style></head>
-<body><div class="card"><h1>Payment Cancelled</h1>
-<p>No worries! Your payment was cancelled and you were not charged. Text UPGRADE anytime to try again.</p>
-</div></body></html>""")
+    """Redirect to Netlify cancelled page"""
+    return RedirectResponse(url="https://remyndrs.com/payment/cancelled", status_code=302)
 
 
 # =====================================================
