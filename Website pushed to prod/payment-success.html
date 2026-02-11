@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remyndrs - Welcome to Premium!</title>
+    <meta name="description" content="Welcome to Remyndrs Premium. Here's what you've unlocked.">
+    <style>
+        :root {
+            --primary-blue: #4A90A4;
+            --success-green: #50B688;
+            --text-dark: #3D4F5C;
+            --bg-light: #f8f9fa;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: var(--text-dark);
+            line-height: 1.6;
+            background: var(--bg-light);
+        }
+
+        /* Header */
+        header {
+            background: white;
+            padding: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--primary-blue);
+            text-decoration: none;
+        }
+
+        nav a {
+            margin-left: 30px;
+            text-decoration: none;
+            color: var(--text-dark);
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        nav a:hover {
+            color: var(--primary-blue);
+        }
+
+        /* Celebration Hero */
+        .celebration {
+            background: linear-gradient(135deg, #43a07e 0%, var(--success-green) 50%, #6BC5A0 100%);
+            color: white;
+            padding: 60px 20px 50px;
+            text-align: center;
+        }
+
+        .checkmark-circle {
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            animation: scaleIn 0.5s ease-out;
+        }
+
+        .checkmark {
+            width: 45px;
+            height: 45px;
+        }
+
+        .checkmark polyline {
+            stroke: white;
+            stroke-width: 3;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-dasharray: 50;
+            stroke-dashoffset: 50;
+            animation: drawCheck 0.6s ease-out 0.3s forwards;
+        }
+
+        @keyframes scaleIn {
+            0% { transform: scale(0); opacity: 0; }
+            70% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes drawCheck {
+            to { stroke-dashoffset: 0; }
+        }
+
+        .celebration h1 {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .celebration p {
+            font-size: 18px;
+            opacity: 0.9;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        /* Unlocked Features */
+        .unlocked {
+            padding: 60px 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .unlocked h2 {
+            text-align: center;
+            font-size: 28px;
+            margin-bottom: 40px;
+            color: var(--text-dark);
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 24px;
+        }
+
+        .feature-card {
+            background: white;
+            border-radius: 12px;
+            padding: 28px 20px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: transform 0.2s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-3px);
+        }
+
+        .feature-icon {
+            font-size: 40px;
+            margin-bottom: 14px;
+            display: block;
+        }
+
+        .feature-card h3 {
+            font-size: 18px;
+            margin-bottom: 8px;
+            color: var(--text-dark);
+        }
+
+        .feature-card p {
+            font-size: 14px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        /* Try It Now */
+        .try-it {
+            background: white;
+            padding: 60px 20px;
+        }
+
+        .try-it-inner {
+            max-width: 600px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .try-it h2 {
+            font-size: 28px;
+            margin-bottom: 12px;
+            color: var(--text-dark);
+        }
+
+        .try-it > .try-it-inner > p {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+
+        .try-it-subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+
+        .sms-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .sms-btn {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 16px 20px;
+            border-radius: 10px;
+            text-decoration: none;
+            color: var(--text-dark);
+            background: var(--bg-light);
+            border: 2px solid transparent;
+            transition: border-color 0.2s, background 0.2s;
+            cursor: pointer;
+        }
+
+        .sms-btn:hover {
+            border-color: var(--primary-blue);
+            background: #eef6f9;
+        }
+
+        .sms-btn-icon {
+            font-size: 28px;
+            flex-shrink: 0;
+        }
+
+        .sms-btn-text {
+            text-align: left;
+        }
+
+        .sms-btn-text strong {
+            display: block;
+            font-size: 16px;
+            margin-bottom: 2px;
+        }
+
+        .sms-btn-text span {
+            font-size: 13px;
+            color: #888;
+        }
+
+        /* Desktop fallback: show phone number + copy */
+        .desktop-fallback {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: var(--bg-light);
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .desktop-fallback p {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .phone-display {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--primary-blue);
+            margin-bottom: 8px;
+        }
+
+        .copy-btn {
+            background: var(--primary-blue);
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: #3d7a8c;
+        }
+
+        /* Footer */
+        .page-footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: #888;
+            font-size: 14px;
+        }
+
+        .page-footer p {
+            margin-bottom: 8px;
+        }
+
+        .page-footer a {
+            color: var(--primary-blue);
+            text-decoration: none;
+        }
+
+        .page-footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 600px) {
+            .celebration h1 {
+                font-size: 28px;
+            }
+            .celebration p {
+                font-size: 16px;
+            }
+            .features-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+            .feature-card {
+                padding: 20px 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <a href="https://remyndrs.com" class="logo">Remyndrs</a>
+            <nav>
+                <a href="https://remyndrs.com#how-it-works">How It Works</a>
+                <a href="https://remyndrs.com#privacy">Privacy</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Celebration Hero -->
+    <section class="celebration">
+        <div class="checkmark-circle">
+            <svg class="checkmark" viewBox="0 0 45 45">
+                <polyline points="10,24 20,34 36,12" />
+            </svg>
+        </div>
+        <h1 id="welcome-headline">Welcome to Premium!</h1>
+        <p>Your upgrade is confirmed. Here's what you've unlocked.</p>
+    </section>
+
+    <!-- What You Unlocked -->
+    <section class="unlocked">
+        <h2>What You've Unlocked</h2>
+        <div class="features-grid">
+            <div class="feature-card">
+                <span class="feature-icon">&#x267E;&#xFE0F;</span>
+                <h3>Unlimited Reminders</h3>
+                <p>Set as many reminders as you need, every single day.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">&#x1F501;</span>
+                <h3>Recurring Reminders</h3>
+                <p>Weekly check-ins, monthly bills &mdash; set it once, done forever.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">&#x1F4CB;</span>
+                <h3>Expanded Lists</h3>
+                <p>Up to 20 lists with 30 items each. Plenty of room.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">&#x2B50;</span>
+                <h3>Priority Support</h3>
+                <p>Get help faster when you need it. You're a VIP now.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Try It Now -->
+    <section class="try-it">
+        <div class="try-it-inner">
+            <h2>Try a Premium Feature Now</h2>
+            <p class="try-it-subtitle">Tap any of these to send a pre-filled text and try it out:</p>
+
+            <div class="sms-buttons" id="sms-buttons">
+                <a class="sms-btn" id="btn-recurring" href="sms:8555521950?body=Remind%20me%20every%20Monday%20at%209am%20to%20review%20my%20goals">
+                    <span class="sms-btn-icon">&#x1F501;</span>
+                    <span class="sms-btn-text">
+                        <strong>Set a Recurring Reminder</strong>
+                        <span>"Remind me every Monday at 9am to review my goals"</span>
+                    </span>
+                </a>
+                <a class="sms-btn" id="btn-list" href="sms:8555521950?body=Create%20a%20list%20called%20Weekend%20Plans">
+                    <span class="sms-btn-icon">&#x1F4CB;</span>
+                    <span class="sms-btn-text">
+                        <strong>Create a New List</strong>
+                        <span>"Create a list called Weekend Plans"</span>
+                    </span>
+                </a>
+                <a class="sms-btn" id="btn-memory" href="sms:8555521950?body=Remember%20that%20my%20wifi%20password%20is%20on%20the%20fridge">
+                    <span class="sms-btn-icon">&#x1F4A1;</span>
+                    <span class="sms-btn-text">
+                        <strong>Save a Memory</strong>
+                        <span>"Remember that my wifi password is on the fridge"</span>
+                    </span>
+                </a>
+            </div>
+
+            <!-- Desktop fallback -->
+            <div class="desktop-fallback" id="desktop-fallback">
+                <p>Text Remyndrs to try your new Premium features:</p>
+                <div class="phone-display">(855) 552-1950</div>
+                <button class="copy-btn" onclick="copyPhone()">Copy Number</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="page-footer">
+        <p>You'll also get a confirmation text to your phone.</p>
+        <p>Questions? Text <strong>HELP</strong> to (855) 552-1950</p>
+        <p><a href="https://remyndrs.com">Back to Remyndrs.com</a></p>
+    </footer>
+
+    <script>
+        // Personalize headline via API
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            var sessionId = params.get('session_id');
+            if (sessionId) {
+                fetch('https://sms-reminders-api-1gmm.onrender.com/api/payment-info?session_id=' + encodeURIComponent(sessionId))
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        var headline = document.getElementById('welcome-headline');
+                        if (data.first_name) {
+                            headline.textContent = 'Welcome to ' + data.plan + ', ' + data.first_name + '!';
+                        } else if (data.plan) {
+                            headline.textContent = 'Welcome to ' + data.plan + '!';
+                        }
+                    })
+                    .catch(function() { /* default headline is fine */ });
+            }
+        })();
+
+        // Detect desktop vs mobile for SMS links
+        (function() {
+            var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            if (!isMobile) {
+                // Hide SMS deep-link buttons, show desktop fallback
+                document.getElementById('sms-buttons').style.display = 'none';
+                document.getElementById('desktop-fallback').style.display = 'block';
+            }
+        })();
+
+        function copyPhone() {
+            var phone = '8555521950';
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(phone).then(function() {
+                    var btn = document.querySelector('.copy-btn');
+                    btn.textContent = 'Copied!';
+                    setTimeout(function() { btn.textContent = 'Copy Number'; }, 2000);
+                });
+            }
+        }
+    </script>
+</body>
+</html>
