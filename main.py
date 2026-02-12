@@ -794,7 +794,10 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # PRICING & TRIAL QUESTIONS
         # ==========================================
         # Handle pricing questions directly without AI processing
-        if is_comparison_question(incoming_msg):
+        # Skip pricing/comparison checks if message looks like a reminder or other action
+        msg_lower_stripped = incoming_msg.lower().strip()
+        is_action_message = msg_lower_stripped.startswith(('remind', 'set a reminder', 'add ', 'remove ', 'delete ', 'create ', 'save ', 'remember ', 'show ', 'list '))
+        if not is_action_message and is_comparison_question(incoming_msg):
             trial_already_sent = get_trial_info_sent(phone_number)
             if trial_already_sent:
                 logger.info(f"Comparison question - trial already explained, sending FAQ for ...{phone_number[-4:]}")
@@ -808,7 +811,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             resp.message(staging_prefix(reply_text))
             return Response(content=str(resp), media_type="application/xml")
 
-        if is_pricing_question(incoming_msg):
+        if not is_action_message and is_pricing_question(incoming_msg):
             trial_already_sent = get_trial_info_sent(phone_number)
             if trial_already_sent:
                 logger.info(f"Pricing question - trial already explained, sending FAQ for ...{phone_number[-4:]}")

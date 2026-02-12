@@ -22,7 +22,7 @@ TRIAL_TRIGGER_ACTIONS = {
 
 # Pricing question patterns
 PRICING_PATTERNS = [
-    r'\b(cost|price|pricing|how much|free|paid|subscription|subscribe)\b',
+    r'\b(cost|price|pricing|how much|subscription|subscribe)\b',
     r'\b(what\'?s? the (cost|price)|what does it cost)\b',
     r'\b(is (this|it) free)\b',
     r'\b(do i (have to|need to) pay)\b',
