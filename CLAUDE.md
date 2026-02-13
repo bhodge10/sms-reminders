@@ -219,8 +219,11 @@ Dashboard at `/admin/monitoring`. Four agents run on Celery schedules:
 ### Progressive Education for Tier Limits (Feb 2026)
 Complete overhaul of tier limit messaging to improve free-to-premium conversion. Replaced confusing messages like "Added 0 items... (7 items skipped - list full)" with clear WHY-WHAT-HOW explanations. Implemented Education Pyramid (Levels 1-4) with progressive counters, warnings, and educational blocking. Enhanced STATUS command to show tier comparison. All functionality tested with 13 new unit tests. See `PROGRESSIVE_EDUCATION_IMPLEMENTATION.md` for details.
 
+### Daily Summary Interactive Flow Removed (Feb 2026)
+The `daily_summary_setup` interactive flow trapped users in an inescapable loop — commands like "Upgrade", "Premium", and natural language got caught with "I didn't understand that time..." responses. Replaced with a one-shot tip shown after the user's first reminder: "Text SUMMARY ON to enable it!" The existing keyword handlers (`SUMMARY ON`, `SUMMARY OFF`, `SUMMARY TIME 7AM`) already cover full functionality. Deleted ~380 lines from `services/first_action_service.py` (interactive handler, time validation, welcome builder, delayed SMS). Daily summary tip only triggers on reminder actions, not on memory/list actions.
+
 ### Context Loss Fix (Feb 2026)
-List selection by number (e.g., "1") was intercepted by daily summary handler asking "1 AM or 1 PM?". Fixed by adding `pending_list_item` to `has_pending_state` check in `main.py:576`. New monitoring detectors (`context_loss`, `flow_violation`) prevent similar issues.
+List selection by number (e.g., "1") was intercepted by daily summary handler asking "1 AM or 1 PM?". Fixed by removing the interactive daily summary flow entirely (see above). New monitoring detectors (`context_loss`, `flow_violation`) prevent similar issues.
 
 ### Desktop Signup Flow (Feb 2026)
 Added `POST /api/signup` endpoint for desktop visitors. Phone validation, E.164 formatting, sends welcome SMS. Frontend form on remyndrs.com with responsive design. Uses CORSMiddleware.
