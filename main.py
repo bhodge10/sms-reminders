@@ -42,7 +42,7 @@ from models.list_model import (
 from services.sms_service import send_sms
 from services.ai_service import process_with_ai, parse_list_items
 from services.onboarding_service import handle_onboarding
-from services.first_action_service import should_prompt_daily_summary, mark_daily_summary_prompted, get_daily_summary_prompt_message, handle_daily_summary_response
+from services.first_action_service import should_prompt_daily_summary, mark_daily_summary_prompted, get_daily_summary_prompt_message
 from services.trial_messaging_service import (
     is_pricing_question, is_comparison_question, is_acknowledgment,
     get_trial_info_sent, mark_trial_info_sent,
@@ -845,24 +845,6 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Also strip trailing punctuation for matching (handles "undo!", "undo...", etc.)
         msg_lower_clean = re.sub(r'[.!?,;:\s]+$', '', msg_lower_strip)
         is_undo_command = msg_lower_clean in ['undo', "that's wrong", 'thats wrong', 'wrong', 'fix that', 'that was wrong', 'not what i meant', 'cancel']
-
-        # ==========================================
-        # DAILY SUMMARY RESPONSE (after first action)
-        # ==========================================
-        # Check if user is responding to daily summary prompt
-        # Skip this if it's a new reminder request, undo command, or has pending confirmations/states
-        pending_delete_check = get_pending_reminder_delete(phone_number)
-        pending_confirm_check = get_pending_reminder_confirmation(phone_number)
-        pending_list_check = get_pending_list_item(phone_number)
-        has_pending_state = pending_delete_check or (pending_confirm_check and pending_confirm_check.get('type') != 'summary_undo') or pending_list_check
-
-        if not is_new_reminder_request and not is_undo_command and not has_pending_state:
-            handled, response_text = handle_daily_summary_response(phone_number, incoming_msg)
-            if handled and response_text:
-                log_interaction(phone_number, incoming_msg, response_text, "daily_summary_setup", True)
-                resp = MessagingResponse()
-                resp.message(staging_prefix(response_text))
-                return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
         # LOW-CONFIDENCE REMINDER CONFIRMATION
@@ -3450,11 +3432,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             # Add progressive counter for free tier users
             reply_text = add_memory_counter_to_message(phone_number, base_reply)
 
-            # Check if this is user's first action and prompt for daily summary
-            if should_prompt_daily_summary(phone_number):
-                reply_text = get_daily_summary_prompt_message(reply_text)
-                mark_daily_summary_prompted(phone_number)
-
             log_interaction(phone_number, incoming_msg, reply_text, "store", True)
 
         elif ai_response["action"] == "retrieve":
@@ -4187,11 +4164,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                             # Add progressive counter
                             reply_text = add_list_item_counter_to_message(phone_number, list_id, base_reply)
 
-                        # Check if this is user's first action and prompt for daily summary
-                        if should_prompt_daily_summary(phone_number):
-                            reply_text = get_daily_summary_prompt_message(reply_text)
-                            mark_daily_summary_prompted(phone_number)
-
                 log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
 
         elif ai_response["action"] == "add_item_ask_list":
@@ -4247,11 +4219,6 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
                         # Add progressive counter
                         reply_text = add_list_item_counter_to_message(phone_number, list_id, base_reply)
-
-                    # Check if this is user's first action and prompt for daily summary
-                    if should_prompt_daily_summary(phone_number):
-                        reply_text = get_daily_summary_prompt_message(reply_text)
-                        mark_daily_summary_prompted(phone_number)
 
             elif len(lists) > 1:
                 # Multiple lists, ask which one (store original text for parsing later)
