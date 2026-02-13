@@ -16,10 +16,7 @@ from database import log_interaction
 def handle_store_memory(
     phone_number: str,
     incoming_msg: str,
-    ai_response: dict[str, Any],
-    should_prompt_daily_summary: callable,
-    get_daily_summary_prompt_message: callable,
-    mark_daily_summary_prompted: callable
+    ai_response: dict[str, Any]
 ) -> str:
     """Handle store action - save a memory."""
     from services.tier_service import can_save_memory
@@ -48,11 +45,6 @@ def handle_store_memory(
         reply_text = f'Got it! Saved: "{saved_text}"'
     else:
         reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
-
-    # Check for daily summary prompt
-    if should_prompt_daily_summary(phone_number):
-        reply_text = get_daily_summary_prompt_message(reply_text)
-        mark_daily_summary_prompted(phone_number)
 
     log_interaction(phone_number, incoming_msg, reply_text, "store", True)
     return reply_text

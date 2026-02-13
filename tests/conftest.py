@@ -294,7 +294,6 @@ def sms_capture():
     # Patch send_sms in ALL modules that import it to prevent real Twilio calls
     # Each module that does "from services.sms_service import send_sms" gets its own reference
     with patch('services.sms_service.send_sms', side_effect=capture.send_sms), \
-         patch('services.first_action_service.send_sms', side_effect=capture.send_sms), \
          patch('services.reminder_service.send_sms', side_effect=capture.send_sms), \
          patch('services.support_service.send_sms', side_effect=capture.send_sms), \
          patch('services.onboarding_recovery_service.send_sms', side_effect=capture.send_sms), \
@@ -599,7 +598,6 @@ def disable_twilio_globally():
         # Patch send_sms in all modules
         patch('services.sms_service.send_sms', side_effect=mock_send_sms),
         patch('services.onboarding_service.send_sms', side_effect=mock_send_sms),
-        patch('services.first_action_service.send_sms', side_effect=mock_send_sms),
         patch('services.reminder_service.send_sms', side_effect=mock_send_sms),
         patch('services.support_service.send_sms', side_effect=mock_send_sms),
         patch('services.onboarding_recovery_service.send_sms', side_effect=mock_send_sms),

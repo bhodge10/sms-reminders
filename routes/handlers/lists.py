@@ -72,10 +72,7 @@ def handle_create_list(
 def handle_add_to_list(
     phone_number: str,
     incoming_msg: str,
-    ai_response: dict[str, Any],
-    should_prompt_daily_summary: callable,
-    get_daily_summary_prompt_message: callable,
-    mark_daily_summary_prompted: callable
+    ai_response: dict[str, Any]
 ) -> str:
     """Handle add_to_list action."""
     from services.tier_service import (
@@ -191,10 +188,6 @@ def handle_add_to_list(
                 # Add progressive counter
                 reply_text = add_list_item_counter_to_message(phone_number, list_id, base_reply)
 
-            if should_prompt_daily_summary(phone_number):
-                reply_text = get_daily_summary_prompt_message(reply_text)
-                mark_daily_summary_prompted(phone_number)
-
     log_interaction(phone_number, incoming_msg, reply_text, "add_to_list", True)
     return reply_text
 
@@ -202,10 +195,7 @@ def handle_add_to_list(
 def handle_add_item_ask_list(
     phone_number: str,
     incoming_msg: str,
-    ai_response: dict[str, Any],
-    should_prompt_daily_summary: callable,
-    get_daily_summary_prompt_message: callable,
-    mark_daily_summary_prompted: callable
+    ai_response: dict[str, Any]
 ) -> str:
     """Handle add_item_ask_list action - when list name is ambiguous."""
     from services.tier_service import (
@@ -258,10 +248,6 @@ def handle_add_item_ask_list(
 
                 # Add progressive counter
                 reply_text = add_list_item_counter_to_message(phone_number, list_id, base_reply)
-
-            if should_prompt_daily_summary(phone_number):
-                reply_text = get_daily_summary_prompt_message(reply_text)
-                mark_daily_summary_prompted(phone_number)
 
     elif len(lists) > 1:
         # Multiple lists, ask which one
