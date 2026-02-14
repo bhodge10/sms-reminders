@@ -236,5 +236,8 @@ Three fixes to the admin broadcast system (`admin_dashboard.py`):
 
 **DB changes:** Added `target_phone TEXT` to `scheduled_broadcasts`, `source TEXT DEFAULT 'immediate'` to `broadcast_logs` (with ALTER TABLE migrations).
 
+### Delete Account Duplicate Message Fix (Feb 2026)
+When a premium user texted YES DELETE ACCOUNT, they received two conflicting messages: the correct "Your account has been deleted..." and a second "You've been moved to the free plan..." from the Stripe cancellation webhook. Fixed by adding a check in `handle_subscription_cancelled()` (`services/stripe_service.py`) that skips the downgrade and cancellation notice when the user has `pending_delete_account` or `opted_out` set, since the delete flow in `main.py` already sends its own confirmation.
+
 ### Desktop Signup Flow (Feb 2026)
 Added `POST /api/signup` endpoint for desktop visitors. Phone validation, E.164 formatting, sends welcome SMS. Frontend form on remyndrs.com with responsive design. Uses CORSMiddleware.
