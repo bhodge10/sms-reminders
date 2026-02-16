@@ -239,6 +239,9 @@ Three fixes to the admin broadcast system (`admin_dashboard.py`):
 ### Delete Account Duplicate Message Fix (Feb 2026)
 When a premium user texted YES DELETE ACCOUNT, they received two conflicting messages: the correct "Your account has been deleted..." and a second "You've been moved to the free plan..." from the Stripe cancellation webhook. Fixed by adding a check in `handle_subscription_cancelled()` (`services/stripe_service.py`) that skips the downgrade and cancellation notice when the user has `pending_delete_account` or `opted_out` set, since the delete flow in `main.py` already sends its own confirmation.
 
+### List Creation With Items Fix (Feb 2026)
+When a user texted "Create a grocery list" with items on separate lines in the same message, the system only created the list and silently discarded all items. Root cause: the AI prompt's `create_list` action has no `items` field. Fix: updated the AI prompt (`services/ai_service.py` ~line 461) to instruct using `add_to_list` instead of `create_list` when items are present, since `add_to_list` already auto-creates non-existent lists AND adds items in one step. Added explicit example for this pattern.
+
 ### Custom Interval Recurring Reminder Rejection (Feb 2026)
 "Every N days/weeks/months" patterns (e.g., "every 30 days", "every 2 weeks") were not recognized as recurring reminders. The AI silently fell back to creating a wrong one-time reminder with today's date. Updated the unsupported intervals section in the AI prompt (`services/ai_service.py` ~line 402) to explicitly catch custom day/week/month intervals and return a helpful message suggesting supported alternatives (daily, weekly, weekdays, weekends, monthly). Supported recurrence types remain: `daily`, `weekly`, `weekdays`, `weekends`, `monthly`.
 
