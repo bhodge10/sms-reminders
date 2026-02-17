@@ -167,6 +167,7 @@ When AI confidence is below threshold, reminders enter pending confirmation stor
 - **Pending storage:** `routes/handlers/reminders.py` stores pending JSON
 - **Confirmation handling:** `main.py` (search `pending_confirmation`) processes YES/NO and calls `save_reminder_with_local_time()`
 - `save_reminder_with_local_time()` requires 5 args: `(phone_number, reminder_text, reminder_date_utc, local_time, timezone)` where `local_time` is HH:MM and `reminder_date` must be UTC
+- **Also used for recurrence day clarification:** When weekly/monthly reminders are missing a day, `pending_reminder_confirmation` is set with `type: 'needs_recurrence_day'`. A dedicated handler in `main.py` (before the YES/NO handler) parses the day from the user's reply and saves the recurring reminder.
 
 ### AM/PM and Time-of-Day Recognition
 The system recognizes AM/PM in three forms:
@@ -244,6 +245,9 @@ When a user texted "Create a grocery list" with items on separate lines in the s
 
 ### Custom Interval Recurring Reminder Rejection (Feb 2026)
 "Every N days/weeks/months" patterns (e.g., "every 30 days", "every 2 weeks") were not recognized as recurring reminders. The AI silently fell back to creating a wrong one-time reminder with today's date. Updated the unsupported intervals section in the AI prompt (`services/ai_service.py` ~line 402) to explicitly catch custom day/week/month intervals and return a helpful message suggesting supported alternatives (daily, weekly, weekdays, weekends, monthly). Supported recurrence types remain: `daily`, `weekly`, `weekdays`, `weekends`, `monthly`.
+
+### Recurring Reminder Day Context Fix (Feb 2026)
+When a user created a monthly or weekly recurring reminder without specifying the day (e.g., "Remind me every month to change my cpap filter"), the system asked "which day?" but didn't store any pending state. The user's reply (e.g., "Every 1st at 9:30pm") was treated as a brand new message and misclassified by AI. Fix: store a `needs_recurrence_day` pending confirmation in `main.py` before asking the clarification question. Added a handler that parses the user's response to extract day (number 1-31 for monthly, day name for weekly) with optional time override, then saves the recurring reminder. Excluded `needs_recurrence_day` from the low-confidence YES/NO handler to prevent misclassification. Existing undo handler already covers cancellation.
 
 ### Desktop Signup Flow (Feb 2026)
 Added `POST /api/signup` endpoint for desktop visitors. Phone validation, E.164 formatting, sends welcome SMS. Frontend form on remyndrs.com with responsive design. Uses CORSMiddleware.
