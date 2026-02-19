@@ -137,7 +137,7 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
                 "Friendly reminder",
             ]
             opener = random.choice(openers)
-            message = f"{opener} — {reminder_text}\n\n(Reply SNOOZE to snooze)"
+            message = f"{opener} — {reminder_text}\n\n(Reply SNOOZE to snooze 15 min)"
 
             # Send SMS via Twilio
             send_sms(phone_number, message)
@@ -768,7 +768,9 @@ def check_trial_expirations(self):
     from datetime import datetime
     from database import get_db_connection, return_db_connection
     from models.user import create_or_update_user
-    from config import PREMIUM_MONTHLY_PRICE
+    from models.list_model import get_list_count
+    from services.tier_service import get_memory_count
+    from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
 
     logger.info("Starting trial expiration check")
 
@@ -812,30 +814,66 @@ def check_trial_expirations(self):
             update_field = None
 
             if days_remaining == 7 and not warning_7d_sent:
-                # 7 days remaining warning
-                warning_to_send = f"""You have 7 days left in your Premium trial! ⏰
+                # 7 days remaining warning — include usage stats
+                c.execute("SELECT COUNT(*) FROM reminders WHERE phone_number = %s", (phone_number,))
+                reminder_count = (c.fetchone() or (0,))[0]
+                list_count = get_list_count(phone_number)
+                memory_count = get_memory_count(phone_number)
+
+                stats_parts = []
+                if reminder_count > 0:
+                    stats_parts.append(f"{reminder_count} reminder{'s' if reminder_count != 1 else ''}")
+                if list_count > 0:
+                    stats_parts.append(f"{list_count} list{'s' if list_count != 1 else ''}")
+                if memory_count > 0:
+                    stats_parts.append(f"{memory_count} memor{'ies' if memory_count != 1 else 'y'}")
+
+                stats_line = ""
+                if stats_parts:
+                    stats_line = f"\n\nSo far you've used: {', '.join(stats_parts)}."
+
+                warning_to_send = f"""You have 7 days left in your Premium trial! ⏰{stats_line}
 
 After your trial, you'll move to the free plan (2 reminders/day).
 
-Want to keep unlimited reminders? Text UPGRADE to continue Premium for {PREMIUM_MONTHLY_PRICE}/month."""
+Text UPGRADE to keep unlimited reminders — {PREMIUM_MONTHLY_PRICE}/month or {PREMIUM_ANNUAL_PRICE}/year (save $18)."""
                 update_field = 'trial_warning_7d_sent'
 
             elif days_remaining == 1 and not warning_1d_sent:
-                # 1 day remaining warning
-                warning_to_send = f"""Tomorrow is your last day of Premium trial! ⏰
+                # 1 day remaining warning — include usage stats
+                c.execute("SELECT COUNT(*) FROM reminders WHERE phone_number = %s", (phone_number,))
+                reminder_count = (c.fetchone() or (0,))[0]
+                list_count = get_list_count(phone_number)
+                memory_count = get_memory_count(phone_number)
+
+                stats_parts = []
+                if reminder_count > 0:
+                    stats_parts.append(f"{reminder_count} reminder{'s' if reminder_count != 1 else ''}")
+                if list_count > 0:
+                    stats_parts.append(f"{list_count} list{'s' if list_count != 1 else ''}")
+                if memory_count > 0:
+                    stats_parts.append(f"{memory_count} memor{'ies' if memory_count != 1 else 'y'}")
+
+                stats_line = ""
+                if stats_parts:
+                    stats_line = f" You've created {', '.join(stats_parts)} so far."
+
+                warning_to_send = f"""Tomorrow is your last day of Premium trial! ⏰{stats_line}
 
 After that, you'll be on the free plan (2 reminders/day).
 
-Text UPGRADE now to keep unlimited reminders for {PREMIUM_MONTHLY_PRICE}/month."""
+Text UPGRADE now — {PREMIUM_MONTHLY_PRICE}/month or {PREMIUM_ANNUAL_PRICE}/year (save $18)."""
                 update_field = 'trial_warning_1d_sent'
 
             elif days_remaining <= 0 and not warning_0d_sent:
                 # Trial expired - downgrade message
-                warning_to_send = f"""Your Premium trial has ended. You're now on the free plan (2 reminders/day).
+                warning_to_send = f"""Your Premium trial has ended. You're now on the free plan:
+• 2 reminders/day
+• 5 lists, 5 memories
 
 All your data is safe!
 
-Want unlimited reminders again? Text UPGRADE anytime for {PREMIUM_MONTHLY_PRICE}/month."""
+Want unlimited access back? Text UPGRADE — {PREMIUM_MONTHLY_PRICE}/month or {PREMIUM_ANNUAL_PRICE}/year."""
                 update_field = 'trial_warning_0d_sent'
 
             # Send warning if needed
@@ -1179,6 +1217,97 @@ Text UPGRADE for Premium at {PREMIUM_MONTHLY_PRICE}/month — pick up right wher
 
     except Exception as exc:
         logger.exception("Error in send_post_trial_reengagement")
+        raise self.retry(exc=exc)
+
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# 30-DAY WIN-BACK MESSAGE
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_30d_winback(self):
+    """
+    Send win-back message 30 days after trial expires.
+    Targets users who were downgraded to free and never upgraded.
+
+    Runs daily via Celery Beat.
+    Only sends once per user (tracks with winback_30d_sent flag).
+    """
+    from datetime import datetime, timedelta
+    from database import get_db_connection, return_db_connection
+    from models.user import create_or_update_user
+    from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
+
+    logger.info("Starting 30-day win-back check")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now_utc = datetime.utcnow()
+        target_date = now_utc - timedelta(days=30)
+        # Window: trial ended between 30 and 31 days ago
+        window_start = target_date - timedelta(days=1)
+
+        c.execute("""
+            SELECT phone_number, first_name, trial_end_date
+            FROM users
+            WHERE trial_end_date IS NOT NULL
+              AND trial_end_date >= %s
+              AND trial_end_date < %s
+              AND onboarding_complete = TRUE
+              AND premium_status = 'free'
+              AND (winback_30d_sent IS NULL OR winback_30d_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
+              AND (stripe_subscription_id IS NULL OR subscription_status != 'active')
+        """, (window_start, target_date))
+
+        users = c.fetchall()
+
+        if not users:
+            logger.info("No users due for 30-day win-back")
+            return {"messages_sent": 0}
+
+        messages_sent = 0
+
+        for user in users:
+            phone_number, first_name, trial_end_date = user
+
+            try:
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                message = f"""{greeting} It's been a month since your Remyndrs trial ended.
+
+Your reminders, lists & memories are still here waiting for you.
+
+Text UPGRADE to unlock unlimited access — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr (save $18).
+
+Or just text me anything to keep using the free plan!"""
+
+                send_sms(phone_number, message)
+                create_or_update_user(phone_number, winback_30d_sent=True)
+
+                messages_sent += 1
+                logger.info(f"Sent 30-day win-back to ...{phone_number[-4:]}")
+
+            except Exception as e:
+                logger.error(f"Failed to send 30-day win-back to ...{phone_number[-4:]}: {e}")
+                continue
+
+        logger.info(f"30-day win-back complete: {messages_sent} sent")
+        return {"messages_sent": messages_sent}
+
+    except Exception as exc:
+        logger.exception("Error in send_30d_winback")
         raise self.retry(exc=exc)
 
     finally:
