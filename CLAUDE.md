@@ -329,3 +329,24 @@ The complete post-onboarding trial lifecycle message schedule:
 - **Day 17 (3d post):** Re-engagement (`send_post_trial_reengagement`, 11:30 AM UTC)
 - **Day 28 (14d post):** Feature-loss touchpoint (`send_14d_post_trial_touchpoint`, 11:45 AM UTC)
 - **Day 44 (30d post):** Win-back (`send_30d_winback`, 12 PM UTC)
+
+### Round 4 Audit Fixes — Trial, Stripe, and Data Safety (Feb 2026)
+Narrow-scope audit focused on three questions: (1) Do trial messages fire correctly? (2) Does UPGRADE flow work end-to-end? (3) Any critical data-loss/double-billing/cancellation bugs?
+
+**Phase 1 (Critical — PR #132):**
+- **Trial flag whitelist:** Added 8 trial lifecycle flags (`trial_warning_7d_sent`, `trial_warning_1d_sent`, `trial_warning_0d_sent`, `mid_trial_reminder_sent`, `day_3_nudge_sent`, `post_trial_reengagement_sent`, `post_trial_14d_sent`, `winback_30d_sent`) to `ALLOWED_USER_FIELDS` in `models/user.py`. Without these, `create_or_update_user()` silently dropped the flags, causing every trial message to repeat daily.
+- **Day 0 premium_status reset:** Added `create_or_update_user(phone_number, premium_status='free')` in the Day 0 handler of `check_trial_expirations` so post-trial tasks (Day 3, Day 14, Day 30) can find expired users.
+- **TCPA opted_out filter:** Added `(opted_out IS NULL OR opted_out = FALSE)` to `check_trial_expirations` and `send_mid_trial_value_reminders` SQL queries to honor SMS opt-out.
+- **Premium subscriber filter:** Added `(stripe_subscription_id IS NULL OR subscription_status != 'active')` to `check_trial_expirations` so paying subscribers don't receive "your trial is expiring" messages.
+- **Double-billing prevention:** Added `stripe.Subscription.list(customer=id, status='active')` check in `create_checkout_session()` (`services/stripe_service.py`) before creating a new checkout, returning an error if the user already has an active subscription.
+
+**Phase 2 (High/Medium — PR #133):**
+- **CANCEL keyword handler:** Added `CANCEL SUBSCRIPTION` / `CANCEL PLAN` / `CANCEL PREMIUM` keyword handler in `main.py` that redirects users to `ACCOUNT` for the Stripe billing portal.
+- **Connection pool safety:** Added `conn.rollback()` in `return_db_connection()` (`database.py`) before returning connections to the pool, preventing cascading failures from aborted transactions leaving connections in an error state.
+- **Trial day-range checks:** Replaced all 7 exact-day comparisons in trial lifecycle tasks (`tasks/reminder_tasks.py`) with range checks to handle signup time-of-day edge cases where `timedelta.days` floor causes missed windows:
+  - Day 7: `== 7` → `6 <= days_remaining <= 7`
+  - Day 1: `== 1` → `0 < days_remaining <= 1`
+  - Mid-trial Day 7: `!= 7` → `not (6 <= days_remaining <= 7)`
+  - Day 3 nudge: `!= 3` → `not (2 <= days_in_trial <= 3)`
+  - Post-trial Day 3: `!= 3` → `not (2 <= days_since_expiry <= 3)`
+  - 14-day touchpoint: `!= 14` → `not (13 <= days_since_expiry <= 14)`
