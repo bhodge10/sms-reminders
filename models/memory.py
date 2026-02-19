@@ -25,6 +25,10 @@ _STOP_WORDS = frozenset({
 
 # Minimum similarity threshold for treating memories as duplicates
 _SIMILARITY_THRESHOLD = 0.6
+# Lower threshold for short memories (<=4 keywords) where a single
+# changed word drops Jaccard disproportionately (e.g. "WiFi is ABC" → "WiFi is XYZ")
+_SHORT_MEMORY_THRESHOLD = 0.4
+_SHORT_MEMORY_KEYWORD_LIMIT = 4
 
 
 def _extract_keywords(text: str) -> set[str]:
@@ -69,13 +73,20 @@ def _find_similar_memory(cursor, phone_number: str, memory_text: str) -> Optiona
 
     best_id = None
     best_score = 0.0
+    new_keywords = _extract_keywords(memory_text)
     for mem_id, existing_text in results:
         score = _memory_similarity(memory_text, existing_text)
         if score > best_score:
             best_score = score
             best_id = mem_id
 
-    if best_score >= _SIMILARITY_THRESHOLD:
+    # Use lower threshold when the new memory is short (few keywords)
+    # to catch key-value updates like "WiFi is ABC" → "WiFi is XYZ"
+    threshold = _SIMILARITY_THRESHOLD
+    if len(new_keywords) <= _SHORT_MEMORY_KEYWORD_LIMIT:
+        threshold = _SHORT_MEMORY_THRESHOLD
+
+    if best_score >= threshold:
         return best_id
     return None
 
