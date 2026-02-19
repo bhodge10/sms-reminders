@@ -814,30 +814,41 @@ def check_trial_expirations(self):
             update_field = None
 
             if days_remaining == 7 and not warning_7d_sent:
-                # 7 days remaining warning — include usage stats
+                # 7 days remaining warning — personalized with usage stats
+                # (Also serves as mid-trial value reminder to avoid double-message)
+                from services.tier_service import get_recurring_reminder_count
+
                 c.execute("SELECT COUNT(*) FROM reminders WHERE phone_number = %s", (phone_number,))
                 reminder_count = (c.fetchone() or (0,))[0]
                 list_count = get_list_count(phone_number)
                 memory_count = get_memory_count(phone_number)
+                recurring_count = get_recurring_reminder_count(phone_number)
 
-                stats_parts = []
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                accomplishments = []
                 if reminder_count > 0:
-                    stats_parts.append(f"{reminder_count} reminder{'s' if reminder_count != 1 else ''}")
+                    accomplishments.append(f"  ✓ {reminder_count} reminder{'s' if reminder_count != 1 else ''} created")
                 if list_count > 0:
-                    stats_parts.append(f"{list_count} list{'s' if list_count != 1 else ''}")
+                    accomplishments.append(f"  ✓ {list_count} list{'s' if list_count != 1 else ''} organized")
                 if memory_count > 0:
-                    stats_parts.append(f"{memory_count} memor{'ies' if memory_count != 1 else 'y'}")
+                    accomplishments.append(f"  ✓ {memory_count} memor{'ies' if memory_count != 1 else 'y'} saved")
+                if recurring_count > 0:
+                    accomplishments.append(f"  ✓ {recurring_count} recurring reminder{'s' if recurring_count != 1 else ''}")
 
-                stats_line = ""
-                if stats_parts:
-                    stats_line = f"\n\nSo far you've used: {', '.join(stats_parts)}."
+                stats_block = ""
+                if accomplishments:
+                    stats_block = "\n\nSo far you've:\n" + "\n".join(accomplishments)
 
-                warning_to_send = f"""You have 7 days left in your Premium trial! ⏰{stats_line}
+                warning_to_send = f"""{greeting} You have 7 days left in your Premium trial! ⏰{stats_block}
 
 After your trial, you'll move to the free plan (2 reminders/day).
 
 Text UPGRADE to keep unlimited reminders — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo)."""
                 update_field = 'trial_warning_7d_sent'
+
+                # Also mark mid-trial reminder as sent to prevent duplicate
+                create_or_update_user(phone_number, mid_trial_reminder_sent=True)
 
             elif days_remaining == 1 and not warning_1d_sent:
                 # 1 day remaining warning — include usage stats
@@ -932,6 +943,7 @@ def send_mid_trial_value_reminders(self):
         c = conn.cursor()
 
         # Get users on Day 7 of trial (7 days remaining) who haven't received this reminder
+        # Also skip users who already got the 7d trial warning (to avoid double-message)
         now_utc = datetime.utcnow()
 
         c.execute("""
@@ -942,6 +954,7 @@ def send_mid_trial_value_reminders(self):
               AND trial_end_date <= %s + INTERVAL '8 days'
               AND onboarding_complete = TRUE
               AND (mid_trial_reminder_sent IS NULL OR mid_trial_reminder_sent = FALSE)
+              AND (trial_warning_7d_sent IS NULL OR trial_warning_7d_sent = FALSE)
         """, (now_utc, now_utc))
 
         users = c.fetchall()

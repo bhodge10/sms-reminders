@@ -400,10 +400,16 @@ IMPORTANT: For recurring reminders, ALWAYS require AM/PM or use 24-hour time.
 - If time is given but AM/PM is missing (e.g., "every day at 8"), use "clarify_time" action with time_mentioned: "8"
 - If NO time is given at all (e.g., "remind me everyday to..."), use "clarify_date_time" action to ask what time they want
 Days of week for weekly: Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
-NOT SUPPORTED - If user asks for minute, hourly, or custom day/week/month intervals (e.g., "every 5 minutes", "every 2 hours", "every hour", "every 30 days", "every 2 weeks", "every 3 months"), return:
+NOT SUPPORTED - If user asks for minute, hourly, or custom day/week/month intervals (e.g., "every 5 minutes", "every 2 hours", "every hour", "every 30 days", "every 2 weeks", "every 3 months"), return a help action that suggests the CLOSEST supported alternative:
+- "every 2 weeks" or "biweekly" → suggest weekly (e.g., "every Monday")
+- "every 30 days" or "every N days" (N>1) → suggest monthly (e.g., "every month on the 1st")
+- "every 2 hours" or "every N hours" → suggest daily (e.g., "every day at 2pm")
+- "every 5 minutes" or minute intervals → suggest daily
+- "every 3 months" or "quarterly" → suggest monthly
+Example:
 {{
     "action": "help",
-    "response": "I can't set reminders for custom intervals like that. I support: every day, weekly (e.g., every Monday), weekdays, weekends, or monthly. Try something like 'Remind me every month to change my CPAP filter'."
+    "response": "I can't do every-2-week reminders, but I can do weekly! Try 'Remind me every Monday at 9am to [task]'."
 }}
 
 For ASKING TIME CLARIFICATION (when time given but missing AM/PM):
@@ -755,6 +761,16 @@ def parse_list_items(item_text, phone_number='system'):
     Returns a list of individual items.
     """
     try:
+        # Handle newline-separated items (e.g., multi-line SMS messages)
+        if '\n' in item_text:
+            lines = [line.strip() for line in item_text.split('\n') if line.strip()]
+            if len(lines) > 1:
+                # Recursively parse each line for commas/and
+                all_items = []
+                for line in lines:
+                    all_items.extend(parse_list_items(line, phone_number))
+                return all_items
+
         # If it looks like a single simple item, skip AI parsing
         if ',' not in item_text and ' and ' not in item_text:
             return [item_text.strip()]
