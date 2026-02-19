@@ -1188,27 +1188,73 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     log_interaction(phone_number, incoming_msg, "Pending confirmation cancelled via undo", "undo", True)
                     return Response(content=str(resp), media_type="application/xml")
 
-            # No pending confirmation - check if we can offer to undo the last reminder
+            # No pending confirmation - find the most recent action to undo
             from models.reminder import get_most_recent_reminder
+            from models.list_model import get_most_recent_list_item
+            from models.memory import get_most_recent_memory
+
             recent_reminder = get_most_recent_reminder(phone_number)
+            recent_list_item = get_most_recent_list_item(phone_number)
+            recent_memory = get_most_recent_memory(phone_number)
+
+            # Find the most recent action by comparing created_at timestamps
+            candidates = []
             if recent_reminder:
-                reminder_id, reminder_text, reminder_date = recent_reminder
-                # Store for confirmation (using same format as other delete confirmations)
-                confirm_data = json.dumps({
-                    'awaiting_confirmation': True,
-                    'type': 'reminder',
-                    'id': reminder_id,
-                    'text': reminder_text
-                })
-                create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
-                resp = MessagingResponse()
-                resp.message(staging_prefix(f"Delete your most recent reminder: \"{reminder_text}\"?\n\nReply YES to delete or NO to keep it."))
-                log_interaction(phone_number, incoming_msg, "Offered to undo recent reminder", "undo_offer", True)
-                return Response(content=str(resp), media_type="application/xml")
+                candidates.append(('reminder', recent_reminder[3], recent_reminder))
+            if recent_list_item:
+                candidates.append(('list_item', recent_list_item[3], recent_list_item))
+            if recent_memory:
+                candidates.append(('memory', recent_memory[2], recent_memory))
+
+            if candidates:
+                # Sort by created_at descending, pick most recent
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                action_type, _, data = candidates[0]
+
+                if action_type == 'reminder':
+                    reminder_id, reminder_text, reminder_date, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'reminder',
+                        'id': reminder_id,
+                        'text': reminder_text
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Delete your most recent reminder: \"{reminder_text}\"?\n\nReply YES to delete or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent reminder", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                elif action_type == 'list_item':
+                    item_id, item_text, list_name, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'list_item',
+                        'id': item_id,
+                        'text': item_text,
+                        'list_name': list_name
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Remove \"{item_text}\" from {list_name}?\n\nReply YES to remove or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent list item", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                elif action_type == 'memory':
+                    memory_id, memory_text, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'memory',
+                        'id': memory_id,
+                        'text': memory_text
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Delete your most recent memory: \"{memory_text}\"?\n\nReply YES to delete or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent memory", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
             else:
                 resp = MessagingResponse()
                 resp.message(staging_prefix("Nothing to undo! How can I help you?"))
-                log_interaction(phone_number, incoming_msg, "No recent reminder to undo", "undo_nothing", True)
+                log_interaction(phone_number, incoming_msg, "No recent action to undo", "undo_nothing", True)
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
@@ -1511,10 +1557,20 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                             reply_msg = "Couldn't delete that recurring reminder."
 
                     elif delete_type == 'list_item':
-                        if delete_list_item(phone_number, delete_data['list_name'], delete_data['text']):
+                        from models.list_model import delete_list_item_by_id
+                        item_id = delete_data.get('id')
+                        if item_id and delete_list_item_by_id(item_id, phone_number):
+                            reply_msg = f"Removed '{delete_data['text']}' from {delete_data['list_name']}"
+                        elif delete_list_item(phone_number, delete_data['list_name'], delete_data['text']):
                             reply_msg = f"Removed '{delete_data['text']}' from {delete_data['list_name']}"
                         else:
                             reply_msg = "Couldn't delete that item."
+
+                    elif delete_type == 'memory':
+                        if delete_memory(phone_number, delete_data['id']):
+                            reply_msg = f"Deleted memory: {delete_data['text']}"
+                        else:
+                            reply_msg = "Couldn't delete that memory."
 
                     create_or_update_user(phone_number, pending_reminder_delete=None)
                     resp = MessagingResponse()

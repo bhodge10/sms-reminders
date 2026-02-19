@@ -295,3 +295,52 @@ def delete_memory(phone_number: str, memory_id: int) -> bool:
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def get_most_recent_memory(phone_number: str) -> Optional[tuple[int, str, datetime]]:
+    """Get the most recently saved memory for a user (for undo functionality).
+
+    Returns:
+        tuple: (memory_id, memory_text, created_at) or None
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                '''SELECT id, memory_text, created_at FROM memories
+                   WHERE phone_hash = %s
+                   ORDER BY created_at DESC LIMIT 1''',
+                (phone_hash,)
+            )
+            result = c.fetchone()
+            if not result:
+                c.execute(
+                    '''SELECT id, memory_text, created_at FROM memories
+                       WHERE phone_number = %s
+                       ORDER BY created_at DESC LIMIT 1''',
+                    (phone_number,)
+                )
+                result = c.fetchone()
+        else:
+            c.execute(
+                '''SELECT id, memory_text, created_at FROM memories
+                   WHERE phone_number = %s
+                   ORDER BY created_at DESC LIMIT 1''',
+                (phone_number,)
+            )
+            result = c.fetchone()
+
+        if result:
+            return (result[0], result[1], result[2])
+        return None
+    except Exception as e:
+        logger.error(f"Error getting most recent memory: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
