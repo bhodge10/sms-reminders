@@ -3572,11 +3572,14 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 log_interaction(phone_number, incoming_msg, reply_text, "memory_limit_reached", False)
                 return reply_text
 
-            save_memory(phone_number, memory_text, ai_response)
+            was_update = save_memory(phone_number, memory_text, ai_response)
             # Echo back exactly what was saved for user trust
             saved_text = ai_response.get("memory_text", "")
             if saved_text:
-                base_reply = f'Got it! Saved: "{saved_text}"'
+                if was_update:
+                    base_reply = f'Updated: "{saved_text}"'
+                else:
+                    base_reply = f'Got it! Saved: "{saved_text}"'
             else:
                 base_reply = ai_response.get("confirmation", "Got it! I'll remember that.")
 

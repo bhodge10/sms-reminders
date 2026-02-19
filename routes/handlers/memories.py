@@ -37,12 +37,15 @@ def handle_store_memory(
         log_interaction(phone_number, incoming_msg, limit_msg, "memory_limit_reached", False)
         return limit_msg
 
-    save_memory(phone_number, memory_text, ai_response)
+    was_update = save_memory(phone_number, memory_text, ai_response)
 
     # Echo back exactly what was saved
     saved_text = ai_response.get("memory_text", "")
     if saved_text:
-        reply_text = f'Got it! Saved: "{saved_text}"'
+        if was_update:
+            reply_text = f'Updated: "{saved_text}"'
+        else:
+            reply_text = f'Got it! Saved: "{saved_text}"'
     else:
         reply_text = ai_response.get("confirmation", "Got it! I'll remember that.")
 
