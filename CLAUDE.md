@@ -289,3 +289,43 @@ Day 7 and Day 1 trial expiration warnings now include the user's actual usage st
 
 ### 30-Day Post-Trial Win-Back (Feb 2026)
 New `send_30d_winback` Celery task sends a re-engagement SMS 30 days after trial expiry. Targets users who are on the free plan, haven't upgraded, and haven't opted out. Message includes both monthly and annual pricing. Tracks with `winback_30d_sent` column on users table (added in `database.py`). Runs daily at 12 PM UTC via Celery Beat (`celery_config.py`). Uses a 1-day window (`trial_end_date` between 30-31 days ago) to avoid missing users. Follows same pattern as `send_post_trial_reengagement` (Day 3).
+
+### MORE COMMANDS Keyword (Feb 2026)
+Added `MORE COMMANDS` (also `MORE`, `ALL COMMANDS`, `FULL COMMANDS`) keyword handler in `main.py` for power users wanting the full command list. Returns `get_extended_help_text()` from `utils/formatting.py` which lists recurring reminder commands, past reminders, data/account management, and support commands. The base HELP text now ends with "Text MORE COMMANDS for the full list" to guide discovery.
+
+### Trial Expiration Recurring Reminder Fate (Feb 2026)
+Trial expiration (Day 0) message now includes "Existing recurring reminders keep working, but you can't create new ones" so users understand their recurring reminders aren't deleted. Changed in `tasks/reminder_tasks.py` `check_trial_expirations` Day 0 message.
+
+### Effective Monthly Rate in Annual Pricing (Feb 2026)
+All annual pricing references changed from "(save $18)" to "($7.50/mo)" to show the effective monthly rate, which is more meaningful to users comparing plans. Updated in `tasks/reminder_tasks.py` (trial warnings at 7d, 1d, 0d, 30d win-back) and `main.py` (UPGRADE handler).
+
+### Rate Limit Cooldown Duration (Feb 2026)
+Rate limit message changed from "wait a moment" to "wait about 30 seconds" so users know exactly how long to wait. The actual window is 60 seconds (`RATE_LIMIT_WINDOW` in `config.py`), but "30 seconds" accounts for partial window elapsed. Changed in `main.py` rate limit handler.
+
+### Snooze 24-Hour Cap Communication (Feb 2026)
+When a user requests a snooze longer than 24 hours and it gets silently capped, the confirmation now includes "(max snooze is 24 hours)" to explain why the duration differs. Uses regex to detect when the raw user input exceeds 1440 minutes (24h) by comparing against the capped `snooze_minutes` value. Changed in `main.py` snooze handler.
+
+### Day 7 Trial Double-Message Deduplication (Feb 2026)
+Users were receiving two messages on Day 7: the trial warning from `check_trial_expirations` (9 AM UTC) and the mid-trial value reminder from `send_mid_trial_value_reminders` (10 AM UTC). Fixed by merging both into the 7d trial warning — now includes personalized greeting, checkmark-format usage stats with recurring reminder count, and marks `mid_trial_reminder_sent=True`. The mid-trial value task additionally filters out users where `trial_warning_7d_sent` is already True. Changed in `tasks/reminder_tasks.py`.
+
+### Multi-Line List Item Adds (Feb 2026)
+`parse_list_items()` in `services/ai_service.py` now handles newline-separated items. If the input contains `\n` with multiple lines, each line is split and recursively parsed for commas/and. This allows users to add items one-per-line in a single SMS message. The newline check runs before the existing comma and "and" parsing logic.
+
+### Expanded UNDO for All Actions (Feb 2026)
+UNDO handler in `main.py` now checks the most recent action across reminders, list items, and memories (comparing `created_at` timestamps) and offers to undo whichever was most recent. Previously only checked reminders. New model functions: `get_most_recent_list_item()` and `delete_list_item_by_id()` in `models/list_model.py`, `get_most_recent_memory()` in `models/memory.py`. `get_most_recent_reminder()` in `models/reminder.py` now returns 4-tuple `(id, text, date, created_at)` instead of 3-tuple. The pending delete confirmation handler also gained a `memory` type handler alongside existing `reminder`, `recurring`, and `list_item` types.
+
+### Smarter AI Recurrence Fallback (Feb 2026)
+When users request unsupported recurrence intervals (e.g., "every 2 weeks", "every 30 days"), the AI prompt now instructs suggesting the closest supported alternative instead of a generic error. Examples: "every 2 weeks" → suggests weekly, "every 30 days" → suggests monthly, "every 2 hours" → suggests daily. Changed in `services/ai_service.py` AI prompt NOT SUPPORTED section.
+
+### 14-Day Post-Trial Touchpoint (Feb 2026)
+New `send_14d_post_trial_touchpoint` Celery task sends a personalized message 14 days after trial expiry, highlighting specific features the user is missing — paused recurring reminders, list/memory counts exceeding free tier limits. Fills the gap between existing Day 3 re-engagement and Day 30 win-back. Tracks with `post_trial_14d_sent` column on users table. Runs daily at 11:45 AM UTC via Celery Beat. Changed in `tasks/reminder_tasks.py`, `database.py`, `celery_config.py`.
+
+### Trial Lifecycle Timeline
+The complete post-onboarding trial lifecycle message schedule:
+- **Day 3:** Engagement nudge (`send_day_3_engagement_nudges`, 11 AM UTC)
+- **Day 7:** Combined trial warning + value reminder (`check_trial_expirations`, 9 AM UTC) — personalized stats, upgrade CTA
+- **Day 13 (1d left):** Urgent trial warning (`check_trial_expirations`, 9 AM UTC)
+- **Day 14 (expired):** Downgrade notice (`check_trial_expirations`, 9 AM UTC)
+- **Day 17 (3d post):** Re-engagement (`send_post_trial_reengagement`, 11:30 AM UTC)
+- **Day 28 (14d post):** Feature-loss touchpoint (`send_14d_post_trial_touchpoint`, 11:45 AM UTC)
+- **Day 44 (30d post):** Win-back (`send_30d_winback`, 12 PM UTC)
