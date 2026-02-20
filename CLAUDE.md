@@ -321,14 +321,14 @@ When users request unsupported recurrence intervals (e.g., "every 2 weeks", "eve
 New `send_14d_post_trial_touchpoint` Celery task sends a personalized message 14 days after trial expiry, highlighting specific features the user is missing — paused recurring reminders, list/memory counts exceeding free tier limits. Fills the gap between existing Day 3 re-engagement and Day 30 win-back. Tracks with `post_trial_14d_sent` column on users table. Runs daily at 11:45 AM UTC via Celery Beat. Changed in `tasks/reminder_tasks.py`, `database.py`, `celery_config.py`.
 
 ### Trial Lifecycle Timeline
-The complete post-onboarding trial lifecycle message schedule:
-- **Day 3:** Engagement nudge (`send_day_3_engagement_nudges`, 11 AM UTC)
-- **Day 7:** Combined trial warning + value reminder (`check_trial_expirations`, 9 AM UTC) — personalized stats, upgrade CTA
-- **Day 13 (1d left):** Urgent trial warning (`check_trial_expirations`, 9 AM UTC)
-- **Day 14 (expired):** Downgrade notice (`check_trial_expirations`, 9 AM UTC)
-- **Day 17 (3d post):** Re-engagement (`send_post_trial_reengagement`, 11:30 AM UTC)
-- **Day 28 (14d post):** Feature-loss touchpoint (`send_14d_post_trial_touchpoint`, 11:45 AM UTC)
-- **Day 44 (30d post):** Win-back (`send_30d_winback`, 12 PM UTC)
+The complete post-onboarding trial lifecycle message schedule (all timezone-aware, sends at 9-10 AM user's local time):
+- **Day 3:** Engagement nudge (`send_day_3_engagement_nudges`, hourly at :10)
+- **Day 7:** Combined trial warning + value reminder (`check_trial_expirations`, hourly at :00) — personalized stats, upgrade CTA
+- **Day 13 (1d left):** Urgent trial warning (`check_trial_expirations`, hourly at :00)
+- **Day 14 (expired):** Downgrade notice (`check_trial_expirations`, hourly at :00)
+- **Day 17 (3d post):** Re-engagement (`send_post_trial_reengagement`, hourly at :15)
+- **Day 28 (14d post):** Feature-loss touchpoint (`send_14d_post_trial_touchpoint`, hourly at :20)
+- **Day 44 (30d post):** Win-back (`send_30d_winback`, hourly at :25)
 
 ### Round 4 Audit Fixes — Trial, Stripe, and Data Safety (Feb 2026)
 Narrow-scope audit focused on three questions: (1) Do trial messages fire correctly? (2) Does UPGRADE flow work end-to-end? (3) Any critical data-loss/double-billing/cancellation bugs?
@@ -368,3 +368,22 @@ Added a 30-second animated demo video to `index.html` showing the SMS flow: user
 
 ### Website Roadmap Phase 3 Complete (Feb 2026)
 All Phase 3 (Feature Communication) items in `docs/website-roadmap.md` are now done: feature benefits rewrite (#8), demo video (#9), and mobile optimization pass (#10). Phase header updated to COMPLETED.
+
+### Timezone-Aware Trial Lifecycle Messages (Feb 2026)
+Beta user reported receiving "Premium Trial has expired" SMS every other morning at 4:00 AM EST. Three root causes found and fixed:
+
+**Bug 1 — NULL flag columns caused repeated sends:** `ALTER TABLE ADD COLUMN DEFAULT FALSE` doesn't backfill existing rows. Existing users had NULL flags, and `not None = True` in Python bypassed the "already sent" check. Fix: `COALESCE(flag, FALSE)` in all SQL queries + NULL→FALSE backfill migration in `database.py` for all 8 trial lifecycle flags.
+
+**Bug 2 — Silent error swallowing:** `create_or_update_user()` in `models/user.py` catches exceptions without re-raising, so flag updates silently failed. Fix: replaced all `create_or_update_user()` calls in trial tasks with direct `c.execute("UPDATE users SET flag = TRUE WHERE phone_number = %s")` using the existing connection/cursor.
+
+**Bug 3 — Fixed UTC schedule ignored user timezones:** Tasks ran at 9 AM UTC (4 AM EST, 1 AM PST). Fix: all 6 trial lifecycle tasks changed from daily fixed-hour crontab to hourly execution with per-user timezone checks — only sends when it's 9-10 AM in the user's local timezone. Falls back to `America/New_York` for NULL/invalid timezone values.
+
+**Schedule changes in `celery_config.py`:** Tasks staggered at :00, :05, :10, :15, :20, :25 past each hour to avoid thundering herd:
+- `check_trial_expirations` — `crontab(minute=0)`
+- `send_mid_trial_value_reminders` — `crontab(minute=5)`
+- `send_day_3_engagement_nudges` — `crontab(minute=10)`
+- `send_post_trial_reengagement` — `crontab(minute=15)`
+- `send_14d_post_trial_touchpoint` — `crontab(minute=20)`
+- `send_30d_winback` — `crontab(minute=25)`
+
+**Files changed:** `celery_config.py`, `database.py`, `tasks/reminder_tasks.py`
