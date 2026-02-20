@@ -767,7 +767,6 @@ def check_trial_expirations(self):
     import pytz
     from datetime import datetime
     from database import get_db_connection, return_db_connection
-    from models.user import create_or_update_user
     from models.list_model import get_list_count
     from services.tier_service import get_memory_count
     from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
@@ -784,8 +783,10 @@ def check_trial_expirations(self):
         now_utc = datetime.utcnow()
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date,
-                   trial_warning_7d_sent, trial_warning_1d_sent, trial_warning_0d_sent
+            SELECT phone_number, first_name, trial_end_date, timezone,
+                   COALESCE(trial_warning_7d_sent, FALSE),
+                   COALESCE(trial_warning_1d_sent, FALSE),
+                   COALESCE(trial_warning_0d_sent, FALSE)
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date > %s - INTERVAL '8 days'
@@ -805,7 +806,16 @@ def check_trial_expirations(self):
         warnings_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date, warning_7d_sent, warning_1d_sent, warning_0d_sent = user
+            phone_number, first_name, trial_end_date, timezone_str, warning_7d_sent, warning_1d_sent, warning_0d_sent = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate days remaining
             time_remaining = trial_end_date - now_utc
@@ -850,7 +860,8 @@ Text UPGRADE to keep unlimited reminders — {PREMIUM_MONTHLY_PRICE}/mo or {PREM
                 update_field = 'trial_warning_7d_sent'
 
                 # Also mark mid-trial reminder as sent to prevent duplicate
-                create_or_update_user(phone_number, mid_trial_reminder_sent=True)
+                c.execute("UPDATE users SET mid_trial_reminder_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
 
             elif 0 < days_remaining <= 1 and not warning_1d_sent:
                 # 1 day remaining warning — include usage stats
@@ -880,7 +891,8 @@ Text UPGRADE now — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7
 
             elif days_remaining <= 0 and not warning_0d_sent:
                 # Trial expired - downgrade to free and send message
-                create_or_update_user(phone_number, premium_status='free')
+                c.execute("UPDATE users SET premium_status = 'free' WHERE phone_number = %s", (phone_number,))
+                conn.commit()
 
                 warning_to_send = f"""Your Premium trial has ended. You're now on the free plan:
 • 2 reminders/day
@@ -897,8 +909,10 @@ Want unlimited access back? Text UPGRADE — {PREMIUM_MONTHLY_PRICE}/mo or {PREM
                 try:
                     send_sms(phone_number, warning_to_send)
 
-                    # Mark warning as sent
-                    create_or_update_user(phone_number, **{update_field: True})
+                    # Mark warning as sent using existing connection (not create_or_update_user
+                    # which opens a new connection and silently swallows errors)
+                    c.execute(f"UPDATE users SET {update_field} = TRUE WHERE phone_number = %s", (phone_number,))
+                    conn.commit()
 
                     warnings_sent += 1
                     logger.info(f"Sent trial warning (day {days_remaining}) to ...{phone_number[-4:]}")
@@ -951,7 +965,7 @@ def send_mid_trial_value_reminders(self):
         now_utc = datetime.utcnow()
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date > %s
@@ -973,7 +987,16 @@ def send_mid_trial_value_reminders(self):
         reminders_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate exact days remaining
             time_remaining = trial_end_date - now_utc
@@ -1068,9 +1091,10 @@ def send_day_3_engagement_nudges(self):
     Send engagement nudge on Day 3 of trial to encourage feature discovery.
     Targets users who signed up ~3 days ago and haven't been very active.
 
-    Runs daily via Celery Beat.
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
     Only sends once per user (tracks with day_3_nudge_sent flag).
     """
+    import pytz
     from datetime import datetime, timedelta
     from database import get_db_connection, return_db_connection
     from models.user import create_or_update_user
@@ -1087,7 +1111,7 @@ def send_day_3_engagement_nudges(self):
         # Find users on Day 3 of trial (11 days remaining = 3 days since signup for 14-day trial)
         # trial_end_date - 11 days = Day 3 of trial
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date > %s
@@ -1105,7 +1129,16 @@ def send_day_3_engagement_nudges(self):
         nudges_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate days since signup (trial is 14 days, so days_in = 14 - days_remaining)
             time_remaining = trial_end_date - now_utc
@@ -1164,9 +1197,10 @@ def send_post_trial_reengagement(self):
     Send re-engagement message 3 days after trial expires.
     Targets users who were downgraded to free but haven't upgraded.
 
-    Runs daily via Celery Beat.
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
     Only sends once per user (tracks with post_trial_reengagement_sent flag).
     """
+    import pytz
     from datetime import datetime, timedelta
     from database import get_db_connection, return_db_connection
     from models.user import create_or_update_user
@@ -1183,7 +1217,7 @@ def send_post_trial_reengagement(self):
 
         # Find users whose trial ended 3 days ago and haven't upgraded
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date < %s
@@ -1203,7 +1237,16 @@ def send_post_trial_reengagement(self):
         messages_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate days since trial ended
             days_since_expiry = (now_utc - trial_end_date).days
@@ -1257,9 +1300,10 @@ def send_14d_post_trial_touchpoint(self):
     Send a touchpoint 14 days after trial expires highlighting what free users are missing.
     Focuses on features they actually used during trial to create urgency.
 
-    Runs daily via Celery Beat.
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
     Only sends once per user (tracks with post_trial_14d_sent flag).
     """
+    import pytz
     from datetime import datetime, timedelta
     from database import get_db_connection, return_db_connection
     from models.user import create_or_update_user
@@ -1277,7 +1321,7 @@ def send_14d_post_trial_touchpoint(self):
         now_utc = datetime.utcnow()
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date < %s
@@ -1297,7 +1341,16 @@ def send_14d_post_trial_touchpoint(self):
         messages_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             days_since_expiry = (now_utc - trial_end_date).days
 
@@ -1367,9 +1420,10 @@ def send_30d_winback(self):
     Send win-back message 30 days after trial expires.
     Targets users who were downgraded to free and never upgraded.
 
-    Runs daily via Celery Beat.
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
     Only sends once per user (tracks with winback_30d_sent flag).
     """
+    import pytz
     from datetime import datetime, timedelta
     from database import get_db_connection, return_db_connection
     from models.user import create_or_update_user
@@ -1388,7 +1442,7 @@ def send_30d_winback(self):
         window_start = target_date - timedelta(days=1)
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date >= %s
@@ -1409,7 +1463,16 @@ def send_30d_winback(self):
         messages_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             try:
                 greeting = f"Hi {first_name}!" if first_name else "Hi there!"

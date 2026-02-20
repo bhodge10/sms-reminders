@@ -535,6 +535,15 @@ def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS winback_30d_sent BOOLEAN DEFAULT FALSE",
             # 14-day post-trial touchpoint (roundtable 3, Phase 3)
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS post_trial_14d_sent BOOLEAN DEFAULT FALSE",
+            # Backfill NULLs to FALSE — ALTER TABLE DEFAULT doesn't backfill existing rows
+            "UPDATE users SET trial_warning_7d_sent = FALSE WHERE trial_warning_7d_sent IS NULL",
+            "UPDATE users SET trial_warning_1d_sent = FALSE WHERE trial_warning_1d_sent IS NULL",
+            "UPDATE users SET trial_warning_0d_sent = FALSE WHERE trial_warning_0d_sent IS NULL",
+            "UPDATE users SET mid_trial_reminder_sent = FALSE WHERE mid_trial_reminder_sent IS NULL",
+            "UPDATE users SET day_3_nudge_sent = FALSE WHERE day_3_nudge_sent IS NULL",
+            "UPDATE users SET post_trial_reengagement_sent = FALSE WHERE post_trial_reengagement_sent IS NULL",
+            "UPDATE users SET post_trial_14d_sent = FALSE WHERE post_trial_14d_sent IS NULL",
+            "UPDATE users SET winback_30d_sent = FALSE WHERE winback_30d_sent IS NULL",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
