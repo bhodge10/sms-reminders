@@ -352,6 +352,15 @@ class TestMultiDayReminders:
         """Test creating reminders for the next 5 days via 'multiple' action."""
         phone = onboarded_user["phone"]
 
+        # Set user to active trial so the free tier 2-reminder/day limit doesn't block
+        from models.user import create_or_update_user
+        from database import get_db_connection, return_db_connection
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE users SET premium_status = 'trial', trial_end_date = NOW() + INTERVAL '14 days' WHERE phone_number = %s", (phone,))
+        conn.commit()
+        return_db_connection(conn)
+
         # Build 5 reminder actions, one per day at 5:00 PM local time
         actions = []
         for i in range(1, 6):
@@ -399,6 +408,14 @@ class TestMultiDayReminders:
     async def test_multi_day_reminder_not_classified_as_recurring(self, simulator, onboarded_user, ai_mock):
         """Test that 'every day for the next 3 days' uses multiple action, not reminder_recurring."""
         phone = onboarded_user["phone"]
+
+        # Set user to active trial so the free tier 2-reminder/day limit doesn't block
+        from database import get_db_connection, return_db_connection
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE users SET premium_status = 'trial', trial_end_date = NOW() + INTERVAL '14 days' WHERE phone_number = %s", (phone,))
+        conn.commit()
+        return_db_connection(conn)
 
         # The correct response for "for the next 3 days" is multiple separate reminders
         actions = []
