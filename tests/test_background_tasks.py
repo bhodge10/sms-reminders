@@ -28,7 +28,8 @@ class TestReminderSending:
         )
 
         # Run the check_and_send_reminders task directly
-        with patch('services.sms_service.send_sms', side_effect=sms_capture.send_sms):
+        # Patch where send_sms is used (reminder_tasks imports it at module level)
+        with patch('tasks.reminder_tasks.send_sms', side_effect=sms_capture.send_sms):
             from tasks.reminder_tasks import check_and_send_reminders
             check_and_send_reminders()
 
@@ -66,15 +67,16 @@ class TestReminderSending:
         from database import get_db_connection, return_db_connection
 
         # Create and mark as sent
-        reminder_id = save_reminder(
-            phone,
-            "Already sent reminder",
-            (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        )
+        reminder_date = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        save_reminder(phone, "Already sent reminder", reminder_date)
 
+        # save_reminder doesn't return the ID, so fetch it and mark as sent
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("UPDATE reminders SET sent = TRUE WHERE id = %s", (reminder_id,))
+        c.execute(
+            "UPDATE reminders SET sent = TRUE WHERE phone_number = %s AND reminder_text = %s",
+            (phone, "Already sent reminder")
+        )
         conn.commit()
         return_db_connection(conn)
 
