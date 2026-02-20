@@ -406,3 +406,20 @@ Comprehensive audit of the full codebase identified 6 critical issues, all fixed
 **Bonus:** Fixed bare `except:` to `except Exception:` in `reminder_tasks.py` outer exception handler.
 
 **Files changed:** `database.py`, `main.py`, `services/metrics_service.py`, `tasks/monitoring_tasks.py`, `tasks/reminder_tasks.py`
+
+### Round 5 Audit — High-Priority Fixes (Feb 2026)
+11 high-priority issues fixed in PR #148:
+
+- **H1 — Bare except clauses:** Replaced 6 remaining bare `except:` with specific types (`ValueError`, `TypeError`, `Exception`) across `main.py`, `admin_dashboard.py`, `services/reminder_service.py`.
+- **H2 — XSS in admin changelog:** Added `html.escape()` on `title` and `description` in the public updates page (`admin_dashboard.py`).
+- **H3 — Secrets printed to stdout:** `generate_keys()` in `utils/encryption.py` no longer prints keys; returns them silently.
+- **H4 — Silent decryption failures:** `safe_decrypt()` now logs `logger.warning` with exception type on failure instead of silently returning fallback.
+- **H5 — Silent migration failures:** `database.py` `init_db()` now distinguishes expected "already exists" errors from unexpected ones, logging unexpected errors.
+- **H6 — Broadcast checker crash recovery:** Added consecutive failure tracking (stops after 10), exponential backoff (60s→5min) in `check_scheduled_broadcasts()`.
+- **H7 — Daily summary SMS overflow:** Truncate daily summary to 1500 chars with "Text MY REMINDERS for full list" fallback.
+- **H8 — Outbound SMS length validation:** `send_sms()` truncates messages exceeding Twilio's 1600-char limit with warning log.
+- **H9 — Monitoring window overlap:** Changed interaction monitor from 24h to 4h analysis window (matches 4h schedule in `celery_config.py`).
+- **H10 — Stale claims timeout:** Increased `release_stale_claims` from 5 to 15 minutes to prevent premature release of actively-processing reminders.
+- **H11 — SQL identifier quoting:** Dynamic table/column names in DELETE queries now use `psycopg2.sql.Identifier()` instead of f-strings in `admin_dashboard.py` and `main.py`.
+
+**Files changed:** `admin_dashboard.py`, `celery_config.py`, `database.py`, `main.py`, `services/reminder_service.py`, `services/sms_service.py`, `tasks/reminder_tasks.py`, `utils/encryption.py`
