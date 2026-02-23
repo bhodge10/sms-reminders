@@ -3,6 +3,7 @@ List Model
 Handles all list-related database operations
 """
 
+from datetime import datetime
 from typing import Any, Optional
 
 from database import get_db_connection, return_db_connection
@@ -585,6 +586,91 @@ def get_item_count(list_id: int) -> int:
     except Exception as e:
         logger.error(f"Error getting item count: {e}")
         return 0
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_most_recent_list_item(phone_number: str) -> Optional[tuple[int, str, str, datetime]]:
+    """Get the most recently added list item for a user (for undo functionality).
+
+    Returns:
+        tuple: (item_id, item_text, list_name, created_at) or None
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                '''SELECT li.id, li.item_text, l.list_name, li.created_at
+                   FROM list_items li
+                   JOIN lists l ON li.list_id = l.id
+                   WHERE (l.phone_hash = %s OR l.phone_number = %s)
+                   ORDER BY li.created_at DESC
+                   LIMIT 1''',
+                (phone_hash, phone_number)
+            )
+        else:
+            c.execute(
+                '''SELECT li.id, li.item_text, l.list_name, li.created_at
+                   FROM list_items li
+                   JOIN lists l ON li.list_id = l.id
+                   WHERE l.phone_number = %s
+                   ORDER BY li.created_at DESC
+                   LIMIT 1''',
+                (phone_number,)
+            )
+
+        result = c.fetchone()
+        if result:
+            return (result[0], result[1], result[2], result[3])
+        return None
+    except Exception as e:
+        logger.error(f"Error getting most recent list item: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def delete_list_item_by_id(item_id: int, phone_number: str) -> bool:
+    """Delete a list item by its ID (for undo functionality)."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                '''DELETE FROM list_items
+                   WHERE id = %s AND list_id IN (
+                       SELECT id FROM lists WHERE phone_hash = %s OR phone_number = %s
+                   )''',
+                (item_id, phone_hash, phone_number)
+            )
+        else:
+            c.execute(
+                '''DELETE FROM list_items
+                   WHERE id = %s AND list_id IN (
+                       SELECT id FROM lists WHERE phone_number = %s
+                   )''',
+                (item_id, phone_number)
+            )
+
+        deleted = c.rowcount > 0
+        conn.commit()
+        if deleted:
+            logger.info(f"Deleted list item {item_id} via undo")
+        return deleted
+    except Exception as e:
+        logger.error(f"Error deleting list item by id: {e}")
+        return False
     finally:
         if conn:
             return_db_connection(conn)

@@ -9,6 +9,17 @@ from celery.schedules import crontab
 # Beat schedule - periodic tasks
 beat_schedule = {
     # ===========================================
+    # KEEP-WARM PING
+    # ===========================================
+    "keep-web-service-warm": {
+        "task": "tasks.reminder_tasks.keep_web_service_warm",
+        "schedule": timedelta(minutes=5),
+        "options": {
+            "expires": 240,  # 4 minute expiry
+        },
+    },
+
+    # ===========================================
     # REMINDER TASKS
     # ===========================================
 
@@ -56,20 +67,52 @@ beat_schedule = {
         "task": "tasks.reminder_tasks.send_abandoned_onboarding_followups",
         "schedule": timedelta(hours=1),
     },
-    # Check trial expirations and send warnings daily at 9 AM UTC
+    # Check trial expirations hourly — sends when user's local time is 9-10 AM
     "check-trial-expirations": {
         "task": "tasks.reminder_tasks.check_trial_expirations",
-        "schedule": crontab(hour=9, minute=0),  # 9:00 AM UTC daily
+        "schedule": crontab(minute=0),  # Every hour, on the hour
         "options": {
-            "expires": 3600,  # 1 hour expiry
+            "expires": 3500,  # Just under 1 hour
         },
     },
-    # Send mid-trial value reminders daily at 10 AM UTC
+    # Send mid-trial value reminders hourly — timezone-aware (9-10 AM local)
     "send-mid-trial-value-reminders": {
         "task": "tasks.reminder_tasks.send_mid_trial_value_reminders",
-        "schedule": crontab(hour=10, minute=0),  # 10:00 AM UTC daily
+        "schedule": crontab(minute=5),  # Every hour, at :05
         "options": {
-            "expires": 3600,  # 1 hour expiry
+            "expires": 3500,
+        },
+    },
+    # Send Day 3 engagement nudges hourly — timezone-aware (9-10 AM local)
+    "send-day-3-engagement-nudges": {
+        "task": "tasks.reminder_tasks.send_day_3_engagement_nudges",
+        "schedule": crontab(minute=10),  # Every hour, at :10
+        "options": {
+            "expires": 3500,
+        },
+    },
+    # Send post-trial re-engagement hourly — timezone-aware (9-10 AM local)
+    "send-post-trial-reengagement": {
+        "task": "tasks.reminder_tasks.send_post_trial_reengagement",
+        "schedule": crontab(minute=15),  # Every hour, at :15
+        "options": {
+            "expires": 3500,
+        },
+    },
+    # Send 14-day post-trial touchpoint hourly — timezone-aware (9-10 AM local)
+    "send-14d-post-trial-touchpoint": {
+        "task": "tasks.reminder_tasks.send_14d_post_trial_touchpoint",
+        "schedule": crontab(minute=20),  # Every hour, at :20
+        "options": {
+            "expires": 3500,
+        },
+    },
+    # Send 30-day win-back hourly — timezone-aware (9-10 AM local)
+    "send-30d-winback": {
+        "task": "tasks.reminder_tasks.send_30d_winback",
+        "schedule": crontab(minute=25),  # Every hour, at :25
+        "options": {
+            "expires": 3500,
         },
     },
 
@@ -92,7 +135,7 @@ beat_schedule = {
     "monitoring-agent1-detect": {
         "task": "tasks.monitoring_tasks.run_interaction_monitor",
         "schedule": timedelta(hours=4),
-        "args": [24],  # Analyze last 24 hours (duplicates prevented by unique constraint)
+        "args": [4],  # Analyze last 4 hours (matches 4-hour schedule to avoid overlap)
         "options": {
             "expires": 1800,  # 30 minute expiry
         },

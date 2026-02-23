@@ -238,10 +238,11 @@ def can_create_reminder(phone_number: str) -> tuple[bool, str | None]:
     current_count = get_reminders_created_today(phone_number)
 
     if current_count >= limits['reminders_per_day']:
+        from config import PREMIUM_MONTHLY_PRICE
         return (
             False,
-            f"You've reached your daily limit of {limits['reminders_per_day']} reminders. "
-            f"Upgrade to Premium for unlimited reminders! Text UPGRADE for details."
+            f"You've used all {limits['reminders_per_day']} reminders for today — they reset at midnight. "
+            f"Need more? Text UPGRADE for unlimited reminders ({PREMIUM_MONTHLY_PRICE}/mo)."
         )
 
     return (True, None)
@@ -259,10 +260,11 @@ def can_create_list(phone_number: str) -> tuple[bool, str | None]:
     current_count = get_list_count(phone_number)
 
     if current_count >= limits['max_lists']:
+        from config import PREMIUM_MONTHLY_PRICE
         return (
             False,
             f"You've reached your limit of {limits['max_lists']} lists. "
-            f"Delete a list or upgrade to Premium for more! Text UPGRADE for details."
+            f"Delete a list or text UPGRADE for 20 lists ({PREMIUM_MONTHLY_PRICE}/mo)."
         )
 
     return (True, None)
@@ -280,10 +282,11 @@ def can_add_list_item(phone_number: str, list_id: int) -> tuple[bool, str | None
     current_count = get_item_count(list_id)
 
     if current_count >= limits['max_items_per_list']:
+        from config import PREMIUM_MONTHLY_PRICE
         return (
             False,
             f"This list has reached its limit of {limits['max_items_per_list']} items. "
-            f"Remove some items or upgrade to Premium for more! Text UPGRADE for details."
+            f"Remove some items or text UPGRADE for 30 items per list ({PREMIUM_MONTHLY_PRICE}/mo)."
         )
 
     return (True, None)
@@ -304,10 +307,11 @@ def can_save_memory(phone_number: str) -> tuple[bool, str | None]:
     current_count = get_memory_count(phone_number)
 
     if current_count >= limits['max_memories']:
+        from config import PREMIUM_MONTHLY_PRICE
         return (
             False,
             f"You've reached your limit of {limits['max_memories']} saved memories. "
-            f"Delete some memories or upgrade to Premium for unlimited storage! Text UPGRADE for details."
+            f"Delete some or text UPGRADE for unlimited memories ({PREMIUM_MONTHLY_PRICE}/mo)."
         )
 
     return (True, None)
@@ -322,10 +326,11 @@ def can_create_recurring_reminder(phone_number: str) -> tuple[bool, str | None]:
     limits = get_tier_limits(tier)
 
     if not limits['recurring_reminders']:
+        from config import PREMIUM_MONTHLY_PRICE
         return (
             False,
             "Recurring reminders are a Premium feature. "
-            "Upgrade to set daily, weekly, or monthly reminders! Text UPGRADE for details."
+            f"Text UPGRADE for daily, weekly & monthly reminders ({PREMIUM_MONTHLY_PRICE}/mo)."
         )
 
     return (True, None)
@@ -630,13 +635,13 @@ def format_memory_limit_message(phone_number: str) -> str:
     limits = get_tier_limits(tier)
     memory_limit = limits['max_memories']
 
-    # WHY
-    message = f"You've reached your limit ({memory_limit} memories on Free plan).\n\n"
+    # WHAT + WHY
+    message = f"I wasn't able to save that — you've hit your limit of {memory_limit} memories on the Free plan.\n\n"
 
     # HOW - provide two clear options
     message += "To save more:\n"
-    message += "• Delete old memories (text MEMORIES to see them)\n"
-    message += "• Text UPGRADE for unlimited memories"
+    message += "• Text UPGRADE for unlimited memories\n"
+    message += "• Or delete old ones (text MEMORIES to see them)"
 
     # Check if user had a trial
     trial_info = get_trial_info(phone_number)

@@ -197,7 +197,8 @@ BEFORE classifying any reminder request, check if it contains recurring keywords
 - "every weekday", "weekdays" → use action "reminder_recurring" with recurrence_type: "weekdays"
 - "every weekend", "weekends" → use action "reminder_recurring" with recurrence_type: "weekends"
 - "every month", "monthly" → use action "reminder_recurring" with recurrence_type: "monthly"
-If ANY of these patterns are found, use "reminder_recurring" - NOT "reminder" or "reminder_relative"!
+**EXCEPTION**: If the message ALSO contains "for the next X days/weeks" or "for X days" (a FINITE time period), do NOT use "reminder_recurring". Instead, create MULTIPLE separate "reminder" actions (one per day) using the "multiple" action wrapper. See RECURRING/MULTI-DAY REMINDERS section below.
+If ANY of these patterns are found (and no finite period exception applies), use "reminder_recurring" - NOT "reminder" or "reminder_relative"!
 
 For reminder requests with SPECIFIC TIMES:
 - If time includes AM/PM in ANY format: Process normally with action "reminder"
@@ -399,10 +400,16 @@ IMPORTANT: For recurring reminders, ALWAYS require AM/PM or use 24-hour time.
 - If time is given but AM/PM is missing (e.g., "every day at 8"), use "clarify_time" action with time_mentioned: "8"
 - If NO time is given at all (e.g., "remind me everyday to..."), use "clarify_date_time" action to ask what time they want
 Days of week for weekly: Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
-NOT SUPPORTED - If user asks for minute or hourly intervals (e.g., "every 5 minutes", "every 2 hours", "every hour"), return:
+NOT SUPPORTED - If user asks for minute, hourly, or custom day/week/month intervals (e.g., "every 5 minutes", "every 2 hours", "every hour", "every 30 days", "every 2 weeks", "every 3 months"), return a help action that suggests the CLOSEST supported alternative:
+- "every 2 weeks" or "biweekly" → suggest weekly (e.g., "every Monday")
+- "every 30 days" or "every N days" (N>1) → suggest monthly (e.g., "every month on the 1st")
+- "every 2 hours" or "every N hours" → suggest daily (e.g., "every day at 2pm")
+- "every 5 minutes" or minute intervals → suggest daily
+- "every 3 months" or "quarterly" → suggest monthly
+Example:
 {{
     "action": "help",
-    "response": "I can't set reminders for minute or hourly intervals. I support: every day, weekly (e.g., every Sunday), weekdays, weekends, or monthly. Try something like 'Remind me every day at 7pm to take medicine'."
+    "response": "I can't do every-2-week reminders, but I can do weekly! Try 'Remind me every Monday at 9am to [task]'."
 }}
 
 For ASKING TIME CLARIFICATION (when time given but missing AM/PM):
@@ -410,6 +417,7 @@ For ASKING TIME CLARIFICATION (when time given but missing AM/PM):
     "action": "clarify_time",
     "reminder_text": "what to remind them about",
     "time_mentioned": "the ambiguous time they said (e.g., '4:35')",
+    "reminder_date": "YYYY-MM-DD if a specific date/day was mentioned (e.g., 'Sunday', 'March 5th'), omit if no date",
     "response": "Got it! Do you mean [time] AM or PM?"
 }}
 
@@ -458,14 +466,15 @@ For HELP REQUESTS:
     "response": "User is asking how to use the service. Tell them to text INFO (or ? or GUIDE) for the full guide, or answer their specific question briefly."
 }}
 
-For CREATING A LIST:
+For CREATING A LIST (ONLY when no items are provided):
 {{
     "action": "create_list",
     "list_name": "the name of the list to create",
     "confirmation": "Created your [list name]!"
 }}
+IMPORTANT: If the user says "create a list" AND includes items in the same message (e.g., "Create a grocery list\nMilk\nEggs\nBread"), do NOT use create_list. Use add_to_list instead — the system will auto-create the list AND add the items in one step.
 
-For ADDING TO A SPECIFIC LIST:
+For ADDING TO A SPECIFIC LIST (also use this when creating a list WITH items):
 {{
     "action": "add_to_list",
     "list_name": "the name of the list",
@@ -484,6 +493,7 @@ CORRECT EXAMPLES - Follow these exactly:
 - User: "add chips and salsa to shopping list" → item_text: "chips and salsa"
 - User: "add apples, oranges, bananas" → item_text: "apples, oranges, bananas" (NOT just "apples")
 - User: "put toilet paper, paper towels, soap on my list" → item_text: "toilet paper, paper towels, soap"
+- User: "Create a grocery list\nMilk\nEggs\nBread" → action: "add_to_list", list_name: "grocery list", item_text: "Milk, Eggs, Bread" (NOT create_list — use add_to_list so items get added!)
 
 WRONG - NEVER DO THIS:
 - User says "add milk, eggs, bread" → item_text: "milk" (WRONG - missing eggs and bread!)
@@ -682,7 +692,22 @@ CRITICAL RULES:
                         OPENAI_MODEL
                     )
 
+                # Check for truncated response (max_tokens hit)
+                finish_reason = response.choices[0].finish_reason
                 raw_content = response.choices[0].message.content
+
+                if finish_reason == "length":
+                    logger.warning(f"AI response truncated (finish_reason=length, attempt {attempt + 1}): {raw_content[:200]}...")
+                    last_error = ValueError("Response truncated by max_tokens")
+                    if attempt < max_retries:
+                        logger.info("Retrying AI call (truncated response)...")
+                        continue
+                    # All retries exhausted with truncation - return a helpful message
+                    return {
+                        "action": "help",
+                        "response": "That request is a bit complex for me to handle all at once. Could you try breaking it into smaller parts? For example, set reminders one day at a time."
+                    }
+
                 result = json.loads(raw_content)
 
                 # Validate result has required fields
@@ -736,6 +761,16 @@ def parse_list_items(item_text, phone_number='system'):
     Returns a list of individual items.
     """
     try:
+        # Handle newline-separated items (e.g., multi-line SMS messages)
+        if '\n' in item_text:
+            lines = [line.strip() for line in item_text.split('\n') if line.strip()]
+            if len(lines) > 1:
+                # Recursively parse each line for commas/and
+                all_items = []
+                for line in lines:
+                    all_items.extend(parse_list_items(line, phone_number))
+                return all_items
+
         # If it looks like a single simple item, skip AI parsing
         if ',' not in item_text and ' and ' not in item_text:
             return [item_text.strip()]

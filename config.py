@@ -58,7 +58,7 @@ LOG_FILE_PATH = 'app.log'
 # OpenAI Configuration
 OPENAI_MODEL = "gpt-4o-mini"
 OPENAI_TEMPERATURE = 0.3
-OPENAI_MAX_TOKENS = 300
+OPENAI_MAX_TOKENS = 800
 
 # Reminder Configuration
 REMINDER_CHECK_INTERVAL = 30  # seconds (used by Celery Beat)
@@ -98,6 +98,7 @@ MAX_MESSAGE_LENGTH = 500
 # Request Timeout Configuration (in seconds)
 OPENAI_TIMEOUT = 12  # OpenAI API call timeout (must be < Twilio's 15s webhook timeout)
 REQUEST_TIMEOUT = 60  # Overall request timeout
+TWILIO_WEBHOOK_TIMEOUT = 14  # If processing exceeds this, send reply via direct SMS instead of TwiML
 
 # Encryption Configuration
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY")
@@ -124,7 +125,7 @@ else:
     logger.warning("SMTP not fully configured - support email notifications disabled")
 
 # Beta Mode - allows all users to access premium features like support
-BETA_MODE = os.environ.get("BETA_MODE", "true").lower() == "true"
+BETA_MODE = os.environ.get("BETA_MODE", "false").lower() == "true"
 if BETA_MODE:
     logger.info("Beta mode enabled - all users can access support")
 
@@ -162,13 +163,14 @@ TIER_FAMILY = 'family'
 
 # Free trial configuration
 FREE_TRIAL_DAYS = 14  # New users get 14-day Premium trial
-PREMIUM_MONTHLY_PRICE = "$6.99"
+PREMIUM_MONTHLY_PRICE = "$8.99"
+PREMIUM_ANNUAL_PRICE = "$89.99"
 
 # Pricing (in cents for Stripe)
 PRICING = {
     TIER_PREMIUM: {
-        'monthly': 699,           # $6.99/month
-        'annual': 7689,           # $76.89/year (1 month free)
+        'monthly': 899,           # $8.99/month
+        'annual': 8999,           # $89.99/year (~$7.50/mo, save $18)
     },
     TIER_FAMILY: {
         'monthly': 1499,          # $14.99/month (base, 4 members)

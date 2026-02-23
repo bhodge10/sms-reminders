@@ -43,6 +43,14 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+# Configure Celery for synchronous execution in tests
+# This ensures .delay() calls run inline instead of dispatching to Redis
+from celery_app import celery_app
+celery_app.conf.update(
+    task_always_eager=True,
+    task_eager_propagates=True,
+)
+
 
 class SMSCapture:
     """Captures outbound SMS messages instead of sending them."""

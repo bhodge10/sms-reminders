@@ -8,6 +8,7 @@ import asyncio
 import threading
 import time
 from datetime import datetime
+from html import escape as html_escape
 import pytz
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -699,7 +700,7 @@ def send_scheduled_broadcast(broadcast_id: int, message: str, audience: str, sen
                     (broadcast_id,)
                 )
                 conn.commit()
-            except:
+            except Exception:
                 pass
     finally:
         if conn:
@@ -709,6 +710,8 @@ def send_scheduled_broadcast(broadcast_id: int, message: str, audience: str, sen
 def check_scheduled_broadcasts():
     """Background thread that checks for due scheduled broadcasts"""
     logger.info("Starting scheduled broadcast checker")
+    consecutive_failures = 0
+    max_consecutive_failures = 10
 
     while True:
         conn = None
@@ -746,11 +749,18 @@ def check_scheduled_broadcasts():
                 except Exception as send_err:
                     logger.error(f"Error sending scheduled broadcast {broadcast_id}: {send_err}")
 
-        except Exception as e:
-            logger.error(f"Error in scheduled broadcast checker: {e}")
+            consecutive_failures = 0  # Reset on successful loop
 
-        # Check every 60 seconds
-        time.sleep(60)
+        except Exception as e:
+            consecutive_failures += 1
+            logger.error(f"Error in scheduled broadcast checker ({consecutive_failures}/{max_consecutive_failures}): {e}")
+            if consecutive_failures >= max_consecutive_failures:
+                logger.critical(f"Broadcast checker exceeded {max_consecutive_failures} consecutive failures, stopping thread")
+                return
+
+        # Backoff on repeated failures (60s normal, up to 5min on failures)
+        sleep_time = min(60 * (2 ** min(consecutive_failures, 3)), 300) if consecutive_failures > 0 else 60
+        time.sleep(sleep_time)
 
 
 def start_broadcast_checker():
@@ -876,7 +886,7 @@ async def debug_users(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error in debug users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/users/incomplete")
@@ -903,7 +913,7 @@ async def delete_incomplete_users(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error deleting incomplete users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/users/{phone_number}")
@@ -945,7 +955,12 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
 
         for table_name, column in tables:
             try:
-                c.execute(f'DELETE FROM {table_name} WHERE {column} = %s', (phone_number,))
+                # Use identifier quoting for table/column names (hardcoded whitelist above)
+                from psycopg2 import sql
+                query = sql.SQL('DELETE FROM {} WHERE {} = %s').format(
+                    sql.Identifier(table_name), sql.Identifier(column)
+                )
+                c.execute(query, (phone_number,))
                 deleted_counts[table_name] = c.rowcount
             except Exception:
                 # Table may not exist in all environments
@@ -954,12 +969,13 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
         conn.commit()
         return_db_connection(conn)
 
-        logger.info(f"Admin '{admin}' deleted user {phone_number}: {deleted_counts}")
+        masked_phone = f"***-***-{phone_number[-4:]}" if phone_number and len(phone_number) >= 4 else "***"
+        logger.info(f"Admin '{admin}' deleted user {masked_phone}: {deleted_counts}")
         return JSONResponse(content={
             "success": True,
-            "phone_number": phone_number,
+            "phone_number": masked_phone,
             "deleted_counts": deleted_counts,
-            "message": f"User {phone_number} and all associated data deleted"
+            "message": f"User {masked_phone} and all associated data deleted"
         })
     except HTTPException:
         return_db_connection(conn)
@@ -968,7 +984,7 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
         conn.rollback()
         return_db_connection(conn)
         logger.error(f"Error deleting user {phone_number}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1008,7 +1024,7 @@ async def update_staging_fallback(request: Request, admin: str = Depends(verify_
         return JSONResponse(content={"success": True, "enabled": enabled, "numbers": numbers})
     except Exception as e:
         logger.error(f"Error updating staging fallback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/settings/maintenance-message")
@@ -1034,7 +1050,7 @@ async def update_maintenance_message(request: Request, admin: str = Depends(veri
         return JSONResponse(content={"success": True, "message": message})
     except Exception as e:
         logger.error(f"Error updating maintenance message: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1246,7 +1262,7 @@ async def get_user_reminders_admin(phone: str, admin: str = Depends(verify_admin
             return_db_connection(conn)
     except Exception as e:
         logger.error(f"Error getting user reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/reminder/{reminder_id}/mark-sent")
@@ -1270,7 +1286,7 @@ async def mark_reminder_as_sent(reminder_id: int, admin: str = Depends(verify_ad
         raise
     except Exception as e:
         logger.error(f"Error marking reminder as sent: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1318,7 +1334,7 @@ async def cleanup_stuck_reminders(admin: str = Depends(verify_admin)):
         }
     except Exception as e:
         logger.error(f"Error cleaning stuck reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1377,7 +1393,7 @@ async def run_full_pipeline(
         })
     except Exception as e:
         logger.error(f"Error running full pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/monitoring/run")
@@ -1400,7 +1416,7 @@ async def run_interaction_monitor(
         })
     except Exception as e:
         logger.error(f"Error running interaction monitor: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/monitoring/issues")
@@ -1476,7 +1492,7 @@ async def get_monitoring_issues(
         return JSONResponse(content={"issues": issues, "count": len(issues)})
     except Exception as e:
         logger.error(f"Error getting monitoring issues: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1518,7 +1534,7 @@ async def validate_monitoring_issue(
         raise
     except Exception as e:
         logger.error(f"Error validating monitoring issue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1555,7 +1571,7 @@ async def mark_issue_false_positive(
         raise
     except Exception as e:
         logger.error(f"Error marking issue as false positive: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1616,7 +1632,7 @@ async def get_monitoring_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting monitoring stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1648,7 +1664,7 @@ async def run_issue_validator(
         })
     except Exception as e:
         logger.error(f"Error running issue validator: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/validator/patterns")
@@ -1661,7 +1677,7 @@ async def get_issue_patterns(admin: str = Depends(verify_admin)):
         return JSONResponse(content=patterns)
     except Exception as e:
         logger.error(f"Error getting issue patterns: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/validator/stats")
@@ -1723,7 +1739,7 @@ async def get_validator_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting validator stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1759,7 +1775,7 @@ async def get_system_health(days: int = 7, admin: str = Depends(verify_admin)):
         return JSONResponse(content=sanitize(metrics))
     except Exception as e:
         logger.error(f"Error getting health metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/open")
@@ -1777,7 +1793,7 @@ async def get_open_issues_tracker(limit: int = 50, admin: str = Depends(verify_a
         return JSONResponse(content={"issues": issues, "count": len(issues)})
     except Exception as e:
         logger.error(f"Error getting open issues: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/tracker/resolve/{issue_id}")
@@ -1817,7 +1833,7 @@ async def resolve_issue_tracker(
         raise
     except Exception as e:
         logger.error(f"Error resolving issue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/report")
@@ -1848,7 +1864,7 @@ async def get_weekly_report(admin: str = Depends(verify_admin)):
         return JSONResponse(content=convert_dates(report))
     except Exception as e:
         logger.error(f"Error generating report: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/trends")
@@ -1877,7 +1893,7 @@ async def get_health_trends(days: int = 30, admin: str = Depends(verify_admin)):
         return JSONResponse(content=sanitize_trend({"trend": trend, "days": days}))
     except Exception as e:
         logger.error(f"Error getting trends: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/tracker/snapshot")
@@ -1896,7 +1912,7 @@ async def save_daily_snapshot(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error saving snapshot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/resolution-types")
@@ -1907,7 +1923,7 @@ async def get_resolution_types(admin: str = Depends(verify_admin)):
         return JSONResponse(content=RESOLUTION_TYPES)
     except Exception as e:
         logger.error(f"Error getting resolution types: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1945,7 +1961,7 @@ async def get_issue_code_analysis(
         raise
     except Exception as e:
         logger.error(f"Error getting issue analysis: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/pattern/{pattern_id}")
@@ -1979,7 +1995,7 @@ async def get_pattern_code_analysis(
         raise
     except Exception as e:
         logger.error(f"Error getting pattern analysis: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/run")
@@ -2007,7 +2023,7 @@ async def run_code_analyzer(
         return JSONResponse(content=output)
     except Exception as e:
         logger.error(f"Error running code analyzer: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/analyzer/{analysis_id}/applied")
@@ -2034,7 +2050,7 @@ async def mark_analysis_applied(
         raise
     except Exception as e:
         logger.error(f"Error marking analysis as applied: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/stats")
@@ -2089,7 +2105,7 @@ async def get_analyzer_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting analyzer stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -2118,7 +2134,7 @@ async def get_alert_settings(admin: str = Depends(verify_admin)):
                 from urllib.parse import urlparse
                 parsed = urlparse(webhook_url)
                 webhook_display = f"***{parsed.netloc}***"
-            except:
+            except Exception:
                 webhook_display = "***configured***"
 
         # Mask phone numbers for security
@@ -2137,7 +2153,7 @@ async def get_alert_settings(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error getting alert settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/alerts/settings")
@@ -2184,7 +2200,7 @@ async def update_alert_settings(request: Request, admin: str = Depends(verify_ad
 
     except Exception as e:
         logger.error(f"Error updating alert settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/alerts/test")
@@ -2199,7 +2215,7 @@ async def send_test_alert(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error sending test alert: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/alerts/teams-webhook")
@@ -2211,7 +2227,7 @@ async def clear_teams_webhook(admin: str = Depends(verify_admin)):
         return JSONResponse(content={"success": True, "message": "Teams webhook cleared"})
     except Exception as e:
         logger.error(f"Error clearing Teams webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -2278,7 +2294,7 @@ async def get_all_recurring_reminders(admin: str = Depends(verify_admin)):
         return JSONResponse(content={"recurring": recurring_list, "count": len(recurring_list)})
     except Exception as e:
         logger.error(f"Error getting recurring reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2305,7 +2321,7 @@ async def pause_recurring_admin(recurring_id: int, admin: str = Depends(verify_a
         raise
     except Exception as e:
         logger.error(f"Error pausing recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2332,7 +2348,7 @@ async def resume_recurring_admin(recurring_id: int, admin: str = Depends(verify_
         raise
     except Exception as e:
         logger.error(f"Error resuming recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2384,7 +2400,7 @@ async def delete_recurring_admin(recurring_id: int, admin: str = Depends(verify_
         raise
     except Exception as e:
         logger.error(f"Error deleting recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2445,9 +2461,9 @@ async def public_updates_page():
 
             entries_html += f'''
             <div class="changelog-entry">
-                <span class="entry-badge" style="background-color: {badge_color}">{badge_label}</span>
-                <span class="entry-title">{title}</span>
-                {f'<p class="entry-description">{description}</p>' if description else ''}
+                <span class="entry-badge" style="background-color: {badge_color}">{html_escape(badge_label)}</span>
+                <span class="entry-title">{html_escape(title)}</span>
+                {f'<p class="entry-description">{html_escape(description)}</p>' if description else ''}
             </div>
             '''
 
@@ -2588,7 +2604,7 @@ async def get_changelog_entries(admin: str = Depends(verify_admin)):
         ]
     except Exception as e:
         logger.error(f"Error getting changelog: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2619,7 +2635,7 @@ async def add_changelog_entry(entry: ChangelogEntry, admin: str = Depends(verify
         raise
     except Exception as e:
         logger.error(f"Error adding changelog entry: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2645,7 +2661,7 @@ async def delete_changelog_entry(entry_id: int, admin: str = Depends(verify_admi
         raise
     except Exception as e:
         logger.error(f"Error deleting changelog entry: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2775,7 +2791,7 @@ async def cs_search_customers(
         return {"customers": customers, "count": len(customers)}
     except Exception as e:
         logger.error(f"CS search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2879,7 +2895,7 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
         raise
     except Exception as e:
         logger.error(f"CS get customer error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2913,7 +2929,7 @@ async def cs_get_customer_reminders(phone_number: str, admin: str = Depends(veri
         return {"reminders": reminders}
     except Exception as e:
         logger.error(f"CS get reminders error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2951,7 +2967,7 @@ async def cs_get_customer_lists(phone_number: str, admin: str = Depends(verify_a
         return {"lists": lists}
     except Exception as e:
         logger.error(f"CS get lists error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2981,7 +2997,7 @@ async def cs_get_customer_memories(phone_number: str, admin: str = Depends(verif
         return {"memories": memories}
     except Exception as e:
         logger.error(f"CS get memories error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3066,7 +3082,7 @@ async def cs_update_customer_tier(
         raise
     except Exception as e:
         logger.error(f"CS update tier error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3099,7 +3115,7 @@ async def cs_add_customer_note(
         return {"message": "Note added"}
     except Exception as e:
         logger.error(f"CS add note error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3132,7 +3148,7 @@ async def cs_delete_reminder(
         raise
     except Exception as e:
         logger.error(f"CS delete reminder error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)

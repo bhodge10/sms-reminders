@@ -17,7 +17,7 @@ from twilio.request_validator import RequestValidator
 
 # Local imports
 import secrets
-from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, PUBLIC_PHONE_NUMBER, ADMIN_USERNAME, ADMIN_PASSWORD, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, REQUEST_TIMEOUT
+from config import logger, ENVIRONMENT, MAX_LISTS_PER_USER, MAX_ITEMS_PER_LIST, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, PUBLIC_PHONE_NUMBER, ADMIN_USERNAME, ADMIN_PASSWORD, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, REQUEST_TIMEOUT, TWILIO_WEBHOOK_TIMEOUT
 from collections import defaultdict
 import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -54,7 +54,7 @@ from services.trial_messaging_service import (
 from services.metrics_service import track_user_activity, increment_message_count, set_referral_source
 from utils.timezone import get_user_current_time
 from utils.formatting import get_help_text, format_reminders_list, format_reminder_confirmation
-from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning
+from utils.validation import mask_phone_number, validate_list_name, validate_item_text, validate_message, log_security_event, detect_sensitive_data, get_sensitive_data_warning, sanitize_text
 from admin_dashboard import router as dashboard_router, start_broadcast_checker
 from cs_portal import router as cs_router
 from monitoring_dashboard import router as monitoring_router
@@ -65,6 +65,33 @@ def staging_prefix(message):
     if ENVIRONMENT == "staging":
         return f"[STAGING] {message}"
     return message
+
+
+def twiml_or_sms_fallback(phone_number, reply_text, request_start_time):
+    """
+    Return a TwiML response if within Twilio's webhook timeout window.
+    If processing took too long, send via direct SMS instead and return empty TwiML.
+    This ensures users always get a reply even if Twilio times out waiting for the webhook.
+    """
+    elapsed = time.time() - request_start_time
+    resp = MessagingResponse()
+
+    if elapsed > TWILIO_WEBHOOK_TIMEOUT:
+        # Twilio has likely already timed out — send reply via direct SMS
+        try:
+            send_sms(phone_number, staging_prefix(reply_text))
+            logger.warning(f"Webhook took {elapsed:.1f}s (>{TWILIO_WEBHOOK_TIMEOUT}s) — sent reply via direct SMS to ...{phone_number[-4:]}")
+        except Exception as sms_err:
+            logger.error(f"SMS fallback also failed after {elapsed:.1f}s: {sms_err}")
+            # Last resort: still include in TwiML in case Twilio is still listening
+            resp.message(staging_prefix(reply_text))
+    else:
+        # Normal path — TwiML response within timeout
+        resp.message(staging_prefix(reply_text))
+        if elapsed > 10:
+            logger.info(f"Webhook response took {elapsed:.1f}s (close to timeout) for ...{phone_number[-4:]}")
+
+    return Response(content=str(resp), media_type="application/xml")
 
 
 # Snooze duration parser
@@ -241,6 +268,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Rate limiting storage: {phone_number: [timestamp1, timestamp2, ...]}
 rate_limit_store = defaultdict(list)
 
+# Webhook idempotency: track processed MessageSids to prevent duplicate handling
+_processed_message_sids = {}
+
 def check_rate_limit(phone_number: str) -> bool:
     """Check if phone number has exceeded rate limit. Returns True if allowed."""
     current_time = time.time()
@@ -260,6 +290,38 @@ def check_rate_limit(phone_number: str) -> bool:
     rate_limit_store[phone_number].append(current_time)
     return True
 
+# IP-based rate limiting for public endpoints (signup, contact)
+_ip_rate_store = defaultdict(list)
+_IP_RATE_LIMIT = 5  # max requests per window
+_IP_RATE_WINDOW = 300  # 5 minute window
+
+def check_ip_rate_limit(ip: str) -> bool:
+    """Check if IP has exceeded public endpoint rate limit. Returns True if allowed."""
+    current_time = time.time()
+    window_start = current_time - _IP_RATE_WINDOW
+    _ip_rate_store[ip] = [ts for ts in _ip_rate_store[ip] if ts > window_start]
+    if len(_ip_rate_store[ip]) >= _IP_RATE_LIMIT:
+        log_security_event("IP_RATE_LIMIT", {"ip": ip, "count": len(_ip_rate_store[ip])})
+        return False
+    _ip_rate_store[ip].append(current_time)
+    return True
+
+# Auth failure rate limiting (per username)
+_auth_fail_store = defaultdict(list)
+_AUTH_FAIL_LIMIT = 5  # max failures per window
+_AUTH_FAIL_WINDOW = 300  # 5 minute lockout window
+
+def check_auth_rate_limit(username: str) -> bool:
+    """Check if username has exceeded auth failure rate limit. Returns True if allowed."""
+    current_time = time.time()
+    window_start = current_time - _AUTH_FAIL_WINDOW
+    _auth_fail_store[username] = [ts for ts in _auth_fail_store[username] if ts > window_start]
+    return len(_auth_fail_store[username]) < _AUTH_FAIL_LIMIT
+
+def record_auth_failure(username: str):
+    """Record an auth failure for rate limiting."""
+    _auth_fail_store[username].append(time.time())
+
 # HTTP Basic Auth for admin endpoints
 security = HTTPBasic()
 
@@ -268,10 +330,19 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     if not ADMIN_PASSWORD:
         raise HTTPException(status_code=500, detail="Admin password not configured")
 
+    # Check auth failure rate limit before attempting verification
+    if not check_auth_rate_limit(credentials.username):
+        log_security_event("AUTH_LOCKOUT", {"username": credentials.username, "endpoint": "admin"})
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed attempts. Try again in 5 minutes.",
+        )
+
     correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
     correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
 
     if not (correct_username and correct_password):
+        record_auth_failure(credentials.username)
         log_security_event("AUTH_FAILURE", {"username": credentials.username, "endpoint": "admin"})
         raise HTTPException(
             status_code=401,
@@ -307,6 +378,7 @@ logger.info(f"✅ Application initialized in {ENVIRONMENT} mode")
 @app.post("/sms")
 async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(...)):
     """Handle incoming SMS from Twilio"""
+    request_start_time = time.time()
     try:
         # Validate Twilio signature (skip in development and staging)
         # Note: Staging skips validation because fallback requests have signatures
@@ -329,6 +401,21 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if not validator.validate(url, params, signature):
                 log_security_event("INVALID_SIGNATURE", {"ip": request.client.host, "url": url[:50]})
                 raise HTTPException(status_code=403, detail="Invalid signature")
+
+        # Webhook idempotency: deduplicate by MessageSid to prevent
+        # duplicate processing if Twilio retries the webhook
+        form_data_for_sid = await request.form()
+        message_sid = form_data_for_sid.get("MessageSid", "")
+        if message_sid and message_sid in _processed_message_sids:
+            logger.info(f"Duplicate webhook for MessageSid {message_sid}, skipping")
+            resp = MessagingResponse()
+            return Response(content=str(resp), media_type="application/xml")
+        if message_sid:
+            _processed_message_sids[message_sid] = time.time()
+            # Clean old entries (older than 10 minutes) periodically
+            if len(_processed_message_sids) > 1000:
+                cutoff = time.time() - 600
+                _processed_message_sids.clear()
 
         incoming_msg = Body.strip()
 
@@ -369,7 +456,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Check rate limit
         if not check_rate_limit(phone_number):
             resp = MessagingResponse()
-            resp.message(staging_prefix("You're sending messages too quickly. Please wait a moment and try again."))
+            resp.message(staging_prefix("You're sending messages too quickly. Please wait about 30 seconds and try again."))
             return Response(content=str(resp), media_type="application/xml")
 
         logger.info(f"Received from {mask_phone_number(phone_number)}: {incoming_msg[:50]}...")
@@ -446,12 +533,15 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         c.execute("ROLLBACK TO SAVEPOINT mi_lookup")
 
                     if mi_ids:
-                        for table in ['code_analysis', 'issue_pattern_links', 'fix_proposals', 'issue_resolutions']:
+                        # Use indexed savepoint names to avoid SQL injection via table names
+                        monitoring_tables = ['code_analysis', 'issue_pattern_links', 'fix_proposals', 'issue_resolutions']
+                        for idx, table in enumerate(monitoring_tables):
                             try:
-                                c.execute(f"SAVEPOINT del_{table}")
-                                c.execute(f"DELETE FROM {table} WHERE issue_id = ANY(%s)", (mi_ids,))
+                                c.execute(f"SAVEPOINT del_mon_{idx}")
+                                from psycopg2 import sql
+                                c.execute(sql.SQL("DELETE FROM {} WHERE issue_id = ANY(%s)").format(sql.Identifier(table)), (mi_ids,))
                             except Exception:
-                                c.execute(f"ROLLBACK TO SAVEPOINT del_{table}")
+                                c.execute(f"ROLLBACK TO SAVEPOINT del_mon_{idx}")
                         try:
                             c.execute("SAVEPOINT del_mi")
                             c.execute("DELETE FROM monitoring_issues WHERE id = ANY(%s)", (mi_ids,))
@@ -462,12 +552,14 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     c.execute("DELETE FROM conversation_analysis WHERE log_id = ANY(%s)", (log_ids,))
 
                 # Delete remaining monitoring/analysis rows by phone_number
-                for table in ['conversation_analysis', 'monitoring_issues']:
+                cleanup_tables = ['conversation_analysis', 'monitoring_issues']
+                for idx, table in enumerate(cleanup_tables):
                     try:
-                        c.execute(f"SAVEPOINT del_{table}_ph")
-                        c.execute(f"DELETE FROM {table} WHERE phone_number = %s", (phone_number,))
+                        c.execute(f"SAVEPOINT del_ph_{idx}")
+                        from psycopg2 import sql
+                        c.execute(sql.SQL("DELETE FROM {} WHERE phone_number = %s").format(sql.Identifier(table)), (phone_number,))
                     except Exception:
-                        c.execute(f"ROLLBACK TO SAVEPOINT del_{table}_ph")
+                        c.execute(f"ROLLBACK TO SAVEPOINT del_ph_{idx}")
                 c.execute("DELETE FROM support_messages WHERE phone_number = %s", (phone_number,))
                 c.execute("DELETE FROM support_tickets WHERE phone_number = %s", (phone_number,))
                 c.execute("DELETE FROM confidence_logs WHERE phone_number = %s", (phone_number,))
@@ -660,11 +752,12 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
-        # STOP - Twilio reserved keyword (handled by Twilio Messaging Service)
-        # Return empty response so only Twilio's message is sent
+        # STOP / STOPALL / UNSUBSCRIBE / END / QUIT — TCPA opt-out keywords
+        # Twilio handles STOP natively; we also handle alternative keywords
+        # to ensure our opted_out flag stays in sync
         # ==========================================
-        if incoming_msg.upper() == "STOP":
-            logger.info(f"STOP command received from {mask_phone_number(phone_number)}")
+        if incoming_msg.upper() in ("STOP", "STOPALL", "UNSUBSCRIBE", "END", "QUIT"):
+            logger.info(f"Opt-out command '{incoming_msg.upper()}' received from {mask_phone_number(phone_number)}")
 
             # Mark user as opted out in our database
             mark_user_opted_out(phone_number)
@@ -863,11 +956,151 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             # (pending_nudge_response was already cleared by handle_nudge_response)
 
         # ==========================================
+        # PENDING REMINDER CONFIRMATION HANDLING
+        # ==========================================
+        # Check if user is responding to a pending confirmation (day clarification or low-confidence)
+        pending_confirmation = get_pending_reminder_confirmation(phone_number)
+
+        # ==========================================
+        # RECURRING REMINDER DAY CLARIFICATION
+        # ==========================================
+        # Handle response to "which day of the week/month?" question
+        if pending_confirmation and pending_confirmation.get('type') == 'needs_recurrence_day' and not is_new_reminder_request and not is_undo_command:
+            recurrence_type = pending_confirmation.get('recurrence_type')
+            reminder_text = pending_confirmation.get('reminder_text')
+            stored_time = pending_confirmation.get('time')
+            msg_text = incoming_msg.strip()
+
+            recurrence_day = None
+            time_str = stored_time
+
+            if recurrence_type == 'monthly':
+                # Extract day number (1-31) from response
+                day_match = re.search(r'\b(\d{1,2})\s*(st|nd|rd|th)?\b', msg_text, re.IGNORECASE)
+                if day_match:
+                    day_num = int(day_match.group(1))
+                    if 1 <= day_num <= 31:
+                        recurrence_day = day_num
+
+            elif recurrence_type == 'weekly':
+                # Extract day name from response
+                day_map = {
+                    'monday': 0, 'mon': 0,
+                    'tuesday': 1, 'tue': 1, 'tues': 1,
+                    'wednesday': 2, 'wed': 2,
+                    'thursday': 3, 'thu': 3, 'thur': 3, 'thurs': 3,
+                    'friday': 4, 'fri': 4,
+                    'saturday': 5, 'sat': 5,
+                    'sunday': 6, 'sun': 6
+                }
+                msg_lower = msg_text.lower()
+                for day_word, day_num in day_map.items():
+                    if re.search(r'\b' + day_word + r'\b', msg_lower):
+                        recurrence_day = day_num
+                        break
+
+            # Check if user provided a new time in their response
+            time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b', msg_text, re.IGNORECASE)
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2)) if time_match.group(2) else 0
+                am_pm_raw = time_match.group(3).lower().replace('.', '')
+                if 'p' in am_pm_raw and hour != 12:
+                    hour += 12
+                elif 'a' in am_pm_raw and hour == 12:
+                    hour = 0
+                time_str = f"{hour:02d}:{minute:02d}"
+
+            if recurrence_day is None:
+                # Couldn't parse day - re-ask with clearer prompt
+                if recurrence_type == 'monthly':
+                    reply_text = "I didn't catch the day. Please reply with a day of the month (e.g., '15th' or '1')."
+                else:
+                    reply_text = "I didn't catch the day. Please reply with a day of the week (e.g., 'Monday' or 'Sunday')."
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring_clarify", False)
+                resp = MessagingResponse()
+                resp.message(staging_prefix(reply_text))
+                return Response(content=str(resp), media_type="application/xml")
+
+            # Clear pending state
+            create_or_update_user(phone_number, pending_reminder_confirmation=None)
+
+            # Save the recurring reminder
+            try:
+                user_tz_str = get_user_timezone(phone_number)
+                recurring_id = save_recurring_reminder(
+                    phone_number=phone_number,
+                    reminder_text=reminder_text,
+                    recurrence_type=recurrence_type,
+                    recurrence_day=recurrence_day,
+                    reminder_time=time_str,
+                    timezone=user_tz_str
+                )
+
+                if not recurring_id:
+                    reply_text = "Sorry, I couldn't save that recurring reminder. Please try again."
+                    log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(reply_text))
+                    return Response(content=str(resp), media_type="application/xml")
+
+                # Generate the first occurrence immediately
+                from tasks.reminder_tasks import generate_first_occurrence
+                next_occurrence = generate_first_occurrence(recurring_id)
+
+                # Format confirmation message
+                hour, minute = map(int, time_str.split(':'))
+                display_time = datetime(2000, 1, 1, hour, minute).strftime('%I:%M %p').lstrip('0')
+
+                if recurrence_type == 'weekly':
+                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    pattern_text = f"every {days[recurrence_day]}"
+                elif recurrence_type == 'monthly':
+                    suffix = 'th'
+                    if recurrence_day in [1, 21, 31]:
+                        suffix = 'st'
+                    elif recurrence_day in [2, 22]:
+                        suffix = 'nd'
+                    elif recurrence_day in [3, 23]:
+                        suffix = 'rd'
+                    pattern_text = f"on the {recurrence_day}{suffix} of every month"
+                else:
+                    pattern_text = recurrence_type
+
+                reply_text = f"Got it! I'll remind you {pattern_text} at {display_time} {format_reminder_confirmation(reminder_text)}.\n\n"
+
+                if next_occurrence:
+                    tz = pytz.timezone(user_tz_str)
+                    if isinstance(next_occurrence, str):
+                        next_dt = datetime.fromisoformat(next_occurrence.replace('Z', '+00:00'))
+                    else:
+                        next_dt = next_occurrence
+                    if next_dt.tzinfo is None:
+                        next_dt = pytz.UTC.localize(next_dt)
+                    next_local = next_dt.astimezone(tz)
+                    next_str = next_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')
+                    reply_text += f"Next reminder: {next_str}\n\n"
+
+                reply_text += "(Text 'SHOW RECURRING' to see all, 'DELETE RECURRING [#]' to remove)"
+
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", True)
+                resp = MessagingResponse()
+                resp.message(staging_prefix(reply_text))
+                return Response(content=str(resp), media_type="application/xml")
+
+            except Exception as e:
+                logger.error(f"Error saving recurring reminder from day clarification: {e}")
+                create_or_update_user(phone_number, pending_reminder_confirmation=None)
+                reply_text = "Sorry, I couldn't save that recurring reminder. Please try again."
+                log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
+                resp = MessagingResponse()
+                resp.message(staging_prefix(reply_text))
+                return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # LOW-CONFIDENCE REMINDER CONFIRMATION
         # ==========================================
-        # Check if user is responding to a confirmation request for a low-confidence reminder
-        pending_confirmation = get_pending_reminder_confirmation(phone_number)
-        if pending_confirmation and pending_confirmation.get('type') != 'summary_undo' and not is_new_reminder_request:
+        if pending_confirmation and pending_confirmation.get('type') not in ('summary_undo', 'needs_recurrence_day') and not is_new_reminder_request:
             msg_lower = incoming_msg.strip().lower()
 
             # User confirms the reminder is correct
@@ -1019,8 +1252,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # Also skip if there's a pending_reminder_delete (delete confirmation) - let that handler deal with cancel
         pending_reminder_del = get_pending_reminder_delete(phone_number)
         has_pending_delete_confirm = pending_reminder_del is not None
-        # Also skip if there's a pending_reminder_time (clarify_time flow) - let that handler deal with cancel
-        has_pending_time_clarify = user_for_undo and len(user_for_undo) > 11 and user_for_undo[11] and user_for_undo[11] != "NEEDS_TIME"
+        # Also skip if there's a pending_reminder_time (clarify_time or NEEDS_TIME flow) - let that handler deal with cancel
+        has_pending_time_clarify = user_for_undo and len(user_for_undo) > 11 and user_for_undo[11]
 
         if is_undo_command and not has_pending_add and not has_pending_delete_confirm and not has_pending_time_clarify:
             # First check if there's a pending confirmation to cancel
@@ -1095,27 +1328,73 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     log_interaction(phone_number, incoming_msg, "Pending confirmation cancelled via undo", "undo", True)
                     return Response(content=str(resp), media_type="application/xml")
 
-            # No pending confirmation - check if we can offer to undo the last reminder
+            # No pending confirmation - find the most recent action to undo
             from models.reminder import get_most_recent_reminder
+            from models.list_model import get_most_recent_list_item
+            from models.memory import get_most_recent_memory
+
             recent_reminder = get_most_recent_reminder(phone_number)
+            recent_list_item = get_most_recent_list_item(phone_number)
+            recent_memory = get_most_recent_memory(phone_number)
+
+            # Find the most recent action by comparing created_at timestamps
+            candidates = []
             if recent_reminder:
-                reminder_id, reminder_text, reminder_date = recent_reminder
-                # Store for confirmation (using same format as other delete confirmations)
-                confirm_data = json.dumps({
-                    'awaiting_confirmation': True,
-                    'type': 'reminder',
-                    'id': reminder_id,
-                    'text': reminder_text
-                })
-                create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
-                resp = MessagingResponse()
-                resp.message(staging_prefix(f"Delete your most recent reminder: \"{reminder_text}\"?\n\nReply YES to delete or NO to keep it."))
-                log_interaction(phone_number, incoming_msg, "Offered to undo recent reminder", "undo_offer", True)
-                return Response(content=str(resp), media_type="application/xml")
+                candidates.append(('reminder', recent_reminder[3], recent_reminder))
+            if recent_list_item:
+                candidates.append(('list_item', recent_list_item[3], recent_list_item))
+            if recent_memory:
+                candidates.append(('memory', recent_memory[2], recent_memory))
+
+            if candidates:
+                # Sort by created_at descending, pick most recent
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                action_type, _, data = candidates[0]
+
+                if action_type == 'reminder':
+                    reminder_id, reminder_text, reminder_date, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'reminder',
+                        'id': reminder_id,
+                        'text': reminder_text
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Delete your most recent reminder: \"{reminder_text}\"?\n\nReply YES to delete or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent reminder", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                elif action_type == 'list_item':
+                    item_id, item_text, list_name, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'list_item',
+                        'id': item_id,
+                        'text': item_text,
+                        'list_name': list_name
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Remove \"{item_text}\" from {list_name}?\n\nReply YES to remove or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent list item", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                elif action_type == 'memory':
+                    memory_id, memory_text, _ = data
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'memory',
+                        'id': memory_id,
+                        'text': memory_text
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data)
+                    resp = MessagingResponse()
+                    resp.message(staging_prefix(f"Delete your most recent memory: \"{memory_text}\"?\n\nReply YES to delete or NO to keep it."))
+                    log_interaction(phone_number, incoming_msg, "Offered to undo recent memory", "undo_offer", True)
+                    return Response(content=str(resp), media_type="application/xml")
             else:
                 resp = MessagingResponse()
                 resp.message(staging_prefix("Nothing to undo! How can I help you?"))
-                log_interaction(phone_number, incoming_msg, "No recent reminder to undo", "undo_nothing", True)
+                log_interaction(phone_number, incoming_msg, "No recent action to undo", "undo_nothing", True)
                 return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
@@ -1201,7 +1480,17 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # VAGUE TIME FOLLOW-UP (clarify_specific_time flow)
         # ==========================================
         # Check if pending_reminder_time is "NEEDS_TIME" (from vague time like "in a bit")
-        if user and len(user) > 11 and user[10] and user[11] == "NEEDS_TIME" and not is_new_reminder_request:
+        # Also detect clear new-intent signals (memory, list commands) that should auto-cancel the pending time
+        is_new_intent = bool(re.search(
+            r'\b(remember\b|add to\b|my lists?\b|my reminders?\b|help\b|status\b|upgrade\b|memories\b|summary\b)',
+            incoming_msg, re.IGNORECASE
+        ))
+        # If user has NEEDS_TIME but sends a clear new intent, auto-cancel the pending reminder
+        if user and len(user) > 11 and user[10] and user[11] == "NEEDS_TIME" and (is_new_reminder_request or is_new_intent):
+            create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
+            logger.info(f"Auto-cancelled NEEDS_TIME pending state for {mask_phone_number(phone_number)} — new intent detected")
+
+        if user and len(user) > 11 and user[10] and user[11] == "NEEDS_TIME" and not is_new_reminder_request and not is_new_intent:
             pending_text = user[10]
 
             # Check for simple time like "3p", "3pm", "at 3pm", "8am"
@@ -1314,6 +1603,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 clean_time = pending_time.upper().replace("AM", "").replace("PM", "").replace("A.M.", "").replace("P.M.", "").strip()
                 # Also remove any trailing letters (handles "3P", "8A", etc.)
                 clean_time = re.sub(r'[AP]$', '', clean_time).strip()
+                # Remove "o'clock" variations (e.g., "1 O'CLOCK" -> "1")
+                clean_time = re.sub(r"O'?CLOCK", "", clean_time, flags=re.IGNORECASE).strip()
 
                 # Parse the time
                 time_parts = clean_time.split(":")
@@ -1326,12 +1617,21 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 elif am_pm == "AM" and hour == 12:
                     hour = 0
 
-                # Create reminder datetime in user's timezone
-                reminder_datetime = user_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                # Check if a specific date was stored during clarify_time (e.g., "Sunday")
+                pending_date_data = get_pending_reminder_date(phone_number)
+                if pending_date_data and pending_date_data.get('date'):
+                    # Use the stored date instead of today/tomorrow
+                    tz = pytz.timezone(user_tz)
+                    date_obj = datetime.strptime(pending_date_data['date'], '%Y-%m-%d')
+                    reminder_datetime = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    reminder_datetime = tz.localize(reminder_datetime)
+                else:
+                    # No date context - use today/tomorrow logic
+                    reminder_datetime = user_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-                # If time has already passed today, schedule for tomorrow
-                if reminder_datetime <= user_time:
-                    reminder_datetime = reminder_datetime + timedelta(days=1)
+                    # If time has already passed today, schedule for tomorrow
+                    if reminder_datetime <= user_time:
+                        reminder_datetime = reminder_datetime + timedelta(days=1)
 
                 # Convert to UTC for storage
                 reminder_datetime_utc = reminder_datetime.astimezone(pytz.UTC)
@@ -1344,8 +1644,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 readable_date = reminder_datetime.strftime('%A, %B %d at %I:%M %p')
                 reply_text = f"I'll remind you on {readable_date} {format_reminder_confirmation(pending_text)}."
 
-                # Clear pending reminder
-                create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None)
+                # Clear pending reminder (including date)
+                create_or_update_user(phone_number, pending_reminder_text=None, pending_reminder_time=None, pending_reminder_date=None)
 
                 # Check if this is user's first action and prompt for daily summary
                 if should_prompt_daily_summary(phone_number):
@@ -1407,10 +1707,20 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                             reply_msg = "Couldn't delete that recurring reminder."
 
                     elif delete_type == 'list_item':
-                        if delete_list_item(phone_number, delete_data['list_name'], delete_data['text']):
+                        from models.list_model import delete_list_item_by_id
+                        item_id = delete_data.get('id')
+                        if item_id and delete_list_item_by_id(item_id, phone_number):
+                            reply_msg = f"Removed '{delete_data['text']}' from {delete_data['list_name']}"
+                        elif delete_list_item(phone_number, delete_data['list_name'], delete_data['text']):
                             reply_msg = f"Removed '{delete_data['text']}' from {delete_data['list_name']}"
                         else:
                             reply_msg = "Couldn't delete that item."
+
+                    elif delete_type == 'memory':
+                        if delete_memory(phone_number, delete_data['id']):
+                            reply_msg = f"Deleted memory: {delete_data['text']}"
+                        else:
+                            reply_msg = "Couldn't delete that memory."
 
                     create_or_update_user(phone_number, pending_reminder_delete=None)
                     resp = MessagingResponse()
@@ -2167,7 +2477,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         if incoming_msg.upper() in ["UPGRADE", "SUBSCRIBE", "PREMIUM", "PRICING"]:
             from services.stripe_service import get_upgrade_message, get_user_subscription, create_checkout_session
-            from config import STRIPE_ENABLED, APP_BASE_URL
+            from config import STRIPE_ENABLED, APP_BASE_URL, PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
 
             subscription = get_user_subscription(phone_number)
 
@@ -2178,13 +2488,19 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 log_interaction(phone_number, incoming_msg, "Already subscribed", "upgrade_already_premium", True)
                 return Response(content=str(resp), media_type="application/xml")
 
-            # User selected Premium - create checkout link
-            if incoming_msg.upper() == "PREMIUM" and STRIPE_ENABLED:
+            # One-step upgrade: go straight to checkout link
+            if STRIPE_ENABLED:
                 result = create_checkout_session(phone_number, 'premium', 'monthly')
 
                 if 'url' in result:
+                    # Also generate annual checkout link
+                    annual_result = create_checkout_session(phone_number, 'premium', 'annual')
+                    annual_line = ""
+                    if 'url' in annual_result:
+                        annual_line = f"\n\nOr {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo — save $18):\n{annual_result['url']}"
+
                     resp = MessagingResponse()
-                    resp.message(f"Great choice! Complete your Premium subscription here:\n\n{result['url']}\n\nThis link expires in 24 hours.")
+                    resp.message(f"Remyndrs Premium — {PREMIUM_MONTHLY_PRICE}/month\nUnlimited reminders, lists & memories. Cancel anytime.\n\nMonthly:\n{result['url']}{annual_line}\n\nLinks expire in 24 hours.")
                     log_interaction(phone_number, incoming_msg, "Checkout link sent for premium", "upgrade_premium_checkout", True)
                 else:
                     resp = MessagingResponse()
@@ -2192,12 +2508,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     log_interaction(phone_number, incoming_msg, "Checkout fallback", "upgrade_premium_fallback", True)
                 return Response(content=str(resp), media_type="application/xml")
             else:
-                # Show pricing info
+                # Stripe not enabled - show pricing info
                 upgrade_msg = get_upgrade_message(phone_number)
                 resp = MessagingResponse()
                 resp.message(upgrade_msg)
                 log_interaction(phone_number, incoming_msg, "Upgrade info sent", "upgrade_info", True)
                 return Response(content=str(resp), media_type="application/xml")
+
+        if any(phrase in incoming_msg.upper() for phrase in ["CANCEL SUBSCRIPTION", "CANCEL PLAN", "CANCEL PREMIUM", "CANCEL MY SUBSCRIPTION", "CANCEL MY PLAN"]):
+            resp = MessagingResponse()
+            resp.message("To manage or cancel your subscription, text ACCOUNT to get your billing portal link.")
+            log_interaction(phone_number, incoming_msg, "Cancel subscription redirect", "cancel_subscription_redirect", True)
+            return Response(content=str(resp), media_type="application/xml")
 
         if incoming_msg.upper() in ["ACCOUNT", "MANAGE", "BILLING", "SUBSCRIPTION"]:
             from services.stripe_service import get_user_subscription, create_customer_portal_session
@@ -2324,7 +2646,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
 
             # Tier comparison for free users (not on trial)
             if tier == 'free' and not trial_info['is_trial']:
-                from config import get_tier_limits
+                from config import get_tier_limits, PREMIUM_MONTHLY_PRICE as _price
                 premium_limits = get_tier_limits('premium')
                 free_limits = get_tier_limits('free')
 
@@ -2334,7 +2656,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 status_lines.append(f"• {premium_limits['max_items_per_list']} items per list (you: {free_limits['max_items_per_list']})")
                 status_lines.append(f"• Unlimited memories (you: {free_limits['max_memories']})")
                 status_lines.append(f"• Recurring reminders")
-                status_lines.append(f"\nOnly $6.99/month - Text UPGRADE")
+                status_lines.append(f"\nOnly {_price}/month - Text UPGRADE")
 
             # Quick actions
             status_lines.append(f"\nQuick Actions:")
@@ -2389,7 +2711,21 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if last_reminder:
                 # Parse snooze duration
                 snooze_text = incoming_msg[6:].strip().lower()  # Everything after "snooze"
-                snooze_minutes = parse_snooze_duration(snooze_text)
+                requested_minutes = parse_snooze_duration(snooze_text)
+                snooze_minutes = requested_minutes
+                snooze_was_capped = False
+                # Check if user requested more than 24h max
+                if snooze_text and requested_minutes == 1440:
+                    # parse_snooze_duration caps at 1440 — check if user asked for more
+                    raw_match = re.match(r'^(\d+)', snooze_text)
+                    if raw_match:
+                        raw_val = int(raw_match.group(1))
+                        if 'h' in snooze_text and raw_val > 24:
+                            snooze_was_capped = True
+                        elif 'd' in snooze_text and raw_val > 1:
+                            snooze_was_capped = True
+                        elif raw_val > 1440 and 'h' not in snooze_text and 'd' not in snooze_text:
+                            snooze_was_capped = True
 
                 # Create new reminder with snoozed time (UTC is correct - snooze is relative to NOW)
                 new_reminder_time = datetime.utcnow() + timedelta(minutes=snooze_minutes)
@@ -2412,7 +2748,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         time_str = f"{hours} hour{'s' if hours != 1 else ''}"
 
                 resp = MessagingResponse()
-                resp.message(f"Snoozed! I'll remind you again in {time_str}.")
+                cap_note = " (max snooze is 24 hours)" if snooze_was_capped else ""
+                resp.message(f"Snoozed! I'll remind you again in {time_str}.{cap_note}")
                 log_interaction(phone_number, incoming_msg, f"Snoozed for {time_str}", "snooze", True)
                 return Response(content=str(resp), media_type="application/xml")
             else:
@@ -3351,6 +3688,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # MORE COMMANDS (Extended Help)
+        # ==========================================
+        if incoming_msg.upper() in ["MORE COMMANDS", "MORE", "ALL COMMANDS", "FULL COMMANDS"]:
+            from utils.formatting import get_extended_help_text
+            resp = MessagingResponse()
+            resp.message(get_extended_help_text())
+            log_interaction(phone_number, incoming_msg, "Extended help sent", "more_commands", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # PENDING STATE REMINDER (Context Switch Protection)
         # ==========================================
         # Check if user has any pending state that requires their response
@@ -3576,19 +3923,16 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if is_question_command:
             reply_text += "\n\nNeed more help? Text SUPPORT followed by your message to chat with a real person."
 
-        # Send response
-        resp = MessagingResponse()
-        resp.message(staging_prefix(reply_text))
-        return Response(content=str(resp), media_type="application/xml")
+        # Send response (with SMS fallback if processing took too long)
+        return twiml_or_sms_fallback(phone_number, reply_text, request_start_time)
 
     except HTTPException:
         # Re-raise HTTPException (e.g., for staging fallback 503)
         raise
     except Exception as e:
         logger.error(f"❌ CRITICAL ERROR in webhook: {e}", exc_info=True)
-        resp = MessagingResponse()
-        resp.message(staging_prefix("Sorry, something went wrong. Please try again in a moment."))
-        return Response(content=str(resp), media_type="application/xml")
+        error_msg = "Sorry, something went wrong. Please try again in a moment."
+        return twiml_or_sms_fallback(phone_number, error_msg, request_start_time)
 
 
 def process_single_action(ai_response, phone_number, incoming_msg):
@@ -3621,11 +3965,14 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 log_interaction(phone_number, incoming_msg, reply_text, "memory_limit_reached", False)
                 return reply_text
 
-            save_memory(phone_number, memory_text, ai_response)
+            was_update = save_memory(phone_number, memory_text, ai_response)
             # Echo back exactly what was saved for user trust
             saved_text = ai_response.get("memory_text", "")
             if saved_text:
-                base_reply = f'Got it! Saved: "{saved_text}"'
+                if was_update:
+                    base_reply = f'Updated: "{saved_text}"'
+                else:
+                    base_reply = f'Got it! Saved: "{saved_text}"'
             else:
                 base_reply = ai_response.get("confirmation", "Got it! I'll remember that.")
 
@@ -3707,10 +4054,12 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                         time_mentioned = time_match.group(1)
                         logger.info(f"Extracted time '{time_mentioned}' from AI response")
 
+                reminder_date = ai_response.get("reminder_date")  # Optional date context (e.g., "Sunday")
                 create_or_update_user(
                     phone_number,
                     pending_reminder_text=reminder_text,
-                    pending_reminder_time=time_mentioned
+                    pending_reminder_time=time_mentioned,
+                    pending_reminder_date=reminder_date
                 )
 
                 reply_text = ai_response.get("response", f"Do you mean {time_mentioned} AM or PM?")
@@ -3733,7 +4082,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                 date_obj = datetime.strptime(reminder_date, '%Y-%m-%d')
                 date_str = date_obj.strftime('%A, %B %d')
                 reply_text = f"I'll remind you on {date_str} to {reminder_text}. What time would you like the reminder?"
-            except:
+            except (ValueError, TypeError):
                 reply_text = ai_response.get("response", "What time would you like the reminder?")
             log_interaction(phone_number, incoming_msg, reply_text, "clarify_date_time", True)
 
@@ -3775,7 +4124,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     try:
                         date_obj = datetime.strptime(reminder_date_only, '%Y-%m-%d')
                         date_str = date_obj.strftime('%A, %B %d')
-                    except:
+                    except (ValueError, TypeError):
                         date_str = "that day"
                     reply_text = f"I'll remind you on {date_str} to {reminder_text}. What time would you like the reminder?"
                     log_interaction(phone_number, incoming_msg, reply_text, "clarify_date_time", True)
@@ -4053,11 +4402,29 @@ def process_single_action(ai_response, phone_number, incoming_msg):
 
                 # For weekly and monthly, validate recurrence_day
                 if recurrence_type == 'weekly' and recurrence_day is None:
+                    # Store pending state so user's response has context
+                    pending_data = json.dumps({
+                        'type': 'needs_recurrence_day',
+                        'action': 'reminder_recurring',
+                        'reminder_text': reminder_text,
+                        'recurrence_type': recurrence_type,
+                        'time': time_str
+                    })
+                    create_or_update_user(phone_number, pending_reminder_confirmation=pending_data)
                     reply_text = "Please specify which day of the week (e.g., 'every Sunday at 6pm')."
                     log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
                     return reply_text
 
                 if recurrence_type == 'monthly' and recurrence_day is None:
+                    # Store pending state so user's response has context
+                    pending_data = json.dumps({
+                        'type': 'needs_recurrence_day',
+                        'action': 'reminder_recurring',
+                        'reminder_text': reminder_text,
+                        'recurrence_type': recurrence_type,
+                        'time': time_str
+                    })
+                    create_or_update_user(phone_number, pending_reminder_confirmation=pending_data)
                     reply_text = "Please specify which day of the month (e.g., 'every 1st at noon')."
                     log_interaction(phone_number, incoming_msg, reply_text, "reminder_recurring", False)
                     return reply_text
@@ -4075,7 +4442,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     try:
                         hour, minute = map(int, time_str.split(':'))
                         display_time = datetime(2000, 1, 1, hour, minute).strftime('%I:%M %p').lstrip('0')
-                    except:
+                    except (ValueError, TypeError, AttributeError):
                         display_time = time_str
 
                     # Format recurrence pattern for display
@@ -4718,7 +5085,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
                     log_interaction(phone_number, incoming_msg, reply_text, "delete_memory_fallback", True)
                     return reply_text
                 else:
-                    reply_text = f"No pending reminders or memories found matching '{search_term}'."
+                    reply_text = f"No pending reminders or memories found matching '{search_term}'. Text MY REMINDERS to see your list."
             elif len(matching_reminders) == 1:
                 # Single match - ask for confirmation first
                 reminder_id, reminder_text, reminder_date = matching_reminders[0]
@@ -4812,7 +5179,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             matching_reminders = search_pending_reminders(phone_number, search_term)
 
             if len(matching_reminders) == 0:
-                reply_text = f"No pending reminders found matching '{search_term}'."
+                reply_text = f"No pending reminders found matching '{search_term}'. Text MY REMINDERS to see your list."
             elif len(matching_reminders) == 1:
                 reminder_id, reminder_text, current_date = matching_reminders[0]
 
@@ -5004,14 +5371,14 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             log_interaction(phone_number, incoming_msg, reply_text, "delete_memory", True)
 
         else:  # help or error
-            reply_text = ai_response.get("response", "Hi! Text me to remember things, set reminders, or ask me about stored info.")
+            reply_text = ai_response.get("response", "I'm not sure what you mean. You can ask me to set a reminder, save a memory, or manage a list — just text naturally!")
             log_interaction(phone_number, incoming_msg, reply_text, "help", True)
 
         return reply_text
 
     except Exception as e:
         logger.error(f"Error processing action: {e}", exc_info=True)
-        return "Sorry, I couldn't complete that action."
+        return "Hmm, something went wrong with that. Could you try rephrasing? For example: 'Remind me at 3pm to call mom' or 'Remember my WiFi is ABC123'."
 
 
 # =====================================================
@@ -5054,7 +5421,7 @@ async def payment_info(session_id: str = None):
     plan = "Premium"
     first_name = None
 
-    if session_id and STRIPE_ENABLED:
+    if session_id and STRIPE_ENABLED and re.match(r'^cs_[a-zA-Z0-9_]+$', session_id):
         try:
             import stripe
             session = stripe.checkout.Session.retrieve(session_id)
@@ -5072,9 +5439,10 @@ async def payment_info(session_id: str = None):
 @app.get("/payment/success")
 async def payment_success(session_id: str = None):
     """Redirect to Netlify success page"""
+    import urllib.parse
     redirect_url = "https://remyndrs.com/payment/success"
-    if session_id:
-        redirect_url += f"?session_id={session_id}"
+    if session_id and re.match(r'^cs_[a-zA-Z0-9_]+$', session_id):
+        redirect_url += f"?session_id={urllib.parse.quote(session_id)}"
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
@@ -5107,6 +5475,14 @@ async def desktop_signup(request: Request):
     User enters phone number on website, receives text to begin onboarding.
     """
     try:
+        # IP rate limiting to prevent SMS spam
+        client_ip = request.client.host if request.client else "unknown"
+        if not check_ip_rate_limit(client_ip):
+            return JSONResponse(
+                status_code=429,
+                content={"success": False, "error": "Too many requests. Please try again in a few minutes."}
+            )
+
         data = await request.json()
         phone_number = data.get('phone')
 
@@ -5182,10 +5558,18 @@ async def website_contact(request: Request):
     who can't use SMS links directly.
     """
     try:
+        # IP rate limiting to prevent spam
+        client_ip = request.client.host if request.client else "unknown"
+        if not check_ip_rate_limit(client_ip):
+            return JSONResponse(
+                status_code=429,
+                content={"success": False, "error": "Too many requests. Please try again in a few minutes."}
+            )
+
         data = await request.json()
         phone_number = data.get('phone')
         contact_type = data.get('type', '').lower()
-        message = data.get('message', '').strip()
+        message = sanitize_text(data.get('message', '').strip())
 
         if not phone_number:
             return JSONResponse(
@@ -5498,7 +5882,7 @@ async def admin_stats(admin: str = Depends(verify_admin)):
         },
         "top_users": [
             {
-                "phone_number": user[0],
+                "phone_number": f"***-***-{user[0][-4:]}" if user[0] and len(user[0]) >= 4 else "***",
                 "interactions": user[1]
             } for user in top_users
         ],
