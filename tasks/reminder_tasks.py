@@ -1108,6 +1108,86 @@ def send_mid_trial_value_reminders(self):
 
 
 # =====================================================
+# SMART NUDGES
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_smart_nudges(self):
+    """
+    Periodic task to send smart nudges to eligible users.
+    Runs every minute via Celery Beat (mirrors daily summary pattern).
+
+    For each minute, checks which users have their nudge time set to
+    that minute (in their local timezone) and generates/sends their nudge.
+    """
+    import pytz
+    from datetime import datetime
+    from models.user import get_users_due_for_smart_nudge, claim_user_for_smart_nudge
+    from services.nudge_service import generate_nudge, send_nudge_to_user, is_nudge_eligible
+
+    try:
+        utc_now = datetime.now(pytz.UTC)
+
+        # Get users whose local time matches their nudge time preference
+        due_users = get_users_due_for_smart_nudge()
+
+        if not due_users:
+            logger.debug("No users due for smart nudge")
+            return {"sent": 0}
+
+        logger.info(f"Checking smart nudges for {len(due_users)} candidates")
+
+        sent_count = 0
+        for user in due_users:
+            try:
+                phone_number = user['phone_number']
+                timezone_str = user['timezone']
+                first_name = user.get('first_name', '')
+                premium_status = user.get('premium_status', 'free')
+
+                # Get user's local date and day
+                user_tz = pytz.timezone(timezone_str)
+                user_now = utc_now.astimezone(user_tz)
+                user_today = user_now.date()
+                current_day = user_now.strftime('%A')
+
+                # Check tier eligibility
+                if not is_nudge_eligible(premium_status, current_day):
+                    logger.debug(f"Skipping nudge for {phone_number[-4:]}: not eligible (tier={premium_status}, day={current_day})")
+                    continue
+
+                # Atomically claim this user to prevent duplicates
+                if not claim_user_for_smart_nudge(phone_number, user_today):
+                    continue
+
+                # Generate nudge using AI
+                nudge_data = generate_nudge(phone_number, timezone_str, first_name, premium_status)
+
+                if not nudge_data:
+                    logger.info(f"No nudge generated for {phone_number[-4:]}")
+                    continue
+
+                # Send the nudge
+                if send_nudge_to_user(phone_number, nudge_data):
+                    sent_count += 1
+                    logger.info(f"Sent smart nudge to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+
+            except Exception as e:
+                logger.error(f"Error sending smart nudge to {user['phone_number'][-4:]}: {e}")
+                continue
+
+        return {"sent": sent_count}
+
+    except Exception as exc:
+        logger.exception("Error in send_smart_nudges")
+        raise self.retry(exc=exc)
+
+
+# =====================================================
 # DAY 3 ENGAGEMENT NUDGE
 # =====================================================
 

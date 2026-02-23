@@ -36,6 +36,9 @@ ALLOWED_USER_FIELDS = {
     'post_trial_reengagement_sent',
     'post_trial_14d_sent',
     'winback_30d_sent',
+    # Smart nudges
+    'smart_nudges_enabled', 'smart_nudge_time', 'smart_nudge_last_sent',
+    'pending_nudge_response',
 }
 
 
@@ -838,6 +841,206 @@ def get_user_nudge_status(phone_number: str) -> dict:
     except Exception as e:
         logger.error(f"Error getting nudge status: {e}")
         return {'scheduled_at': None, 'sent': False, 'interactions': 0, 'opted_out': False}
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# SMART NUDGES FUNCTIONS
+# =====================================================
+
+def get_smart_nudge_settings(phone_number: str) -> Optional[dict[str, Any]]:
+    """Get user's smart nudge settings.
+
+    Returns:
+        dict: {'enabled': bool, 'time': str (HH:MM), 'last_sent': date or None}
+        or None if user not found
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute(
+                'SELECT smart_nudges_enabled, smart_nudge_time, smart_nudge_last_sent FROM users WHERE phone_hash = %s',
+                (phone_hash,)
+            )
+            result = c.fetchone()
+            if not result:
+                c.execute(
+                    'SELECT smart_nudges_enabled, smart_nudge_time, smart_nudge_last_sent FROM users WHERE phone_number = %s',
+                    (phone_number,)
+                )
+                result = c.fetchone()
+        else:
+            c.execute(
+                'SELECT smart_nudges_enabled, smart_nudge_time, smart_nudge_last_sent FROM users WHERE phone_number = %s',
+                (phone_number,)
+            )
+            result = c.fetchone()
+
+        if result:
+            return {
+                'enabled': result[0] or False,
+                'time': str(result[1]) if result[1] else '09:00',
+                'last_sent': result[2]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting smart nudge settings: {e}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_users_due_for_smart_nudge() -> list[dict[str, Any]]:
+    """Get all users who should receive their smart nudge now.
+
+    Timezone-aware: finds users whose local time matches their nudge time
+    preference and haven't received a nudge today.
+
+    Returns:
+        List of dicts: [{'phone_number': str, 'timezone': str, 'first_name': str, 'premium_status': str}]
+    """
+    import pytz
+    from datetime import datetime
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT phone_number, timezone, first_name, smart_nudge_time, smart_nudge_last_sent, premium_status
+            FROM users
+            WHERE smart_nudges_enabled = TRUE
+              AND onboarding_complete = TRUE
+              AND (opted_out IS NULL OR opted_out = FALSE)
+        ''')
+
+        results = c.fetchall()
+        due_users = []
+
+        utc_now = datetime.now(pytz.UTC)
+
+        for row in results:
+            phone_number, user_tz_str, first_name, nudge_time, last_sent, premium_status = row
+
+            try:
+                user_tz = pytz.timezone(user_tz_str or 'America/New_York')
+                user_now = utc_now.astimezone(user_tz)
+
+                # Parse user's nudge time preference
+                if nudge_time:
+                    time_str = str(nudge_time)
+                    time_parts = time_str.split(':')
+                    user_hour = int(time_parts[0])
+                    user_minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                else:
+                    user_hour, user_minute = 9, 0  # Default 9:00 AM
+
+                # Check if current local time matches preference (within same minute)
+                if user_now.hour == user_hour and user_now.minute == user_minute:
+                    # Check if we already sent today (in user's local date)
+                    user_today = user_now.date()
+                    if last_sent != user_today:
+                        due_users.append({
+                            'phone_number': phone_number,
+                            'timezone': user_tz_str or 'America/New_York',
+                            'first_name': first_name,
+                            'premium_status': premium_status or 'free'
+                        })
+            except Exception as e:
+                logger.error(f"Error checking nudge for user {phone_number[-4:]}: {e}")
+                continue
+
+        return due_users
+    except Exception as e:
+        logger.error(f"Error getting users for smart nudge: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def claim_user_for_smart_nudge(phone_number: str, user_local_date: date) -> bool:
+    """Atomically claim a user for smart nudge to prevent duplicates.
+
+    Uses UPDATE ... WHERE to atomically check and update in one operation.
+
+    Args:
+        phone_number: User's phone number
+        user_local_date: The user's local date
+
+    Returns:
+        bool: True if successfully claimed, False if already sent today
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE users
+            SET smart_nudge_last_sent = %s
+            WHERE phone_number = %s
+              AND (smart_nudge_last_sent IS NULL OR smart_nudge_last_sent != %s)
+            RETURNING phone_number
+        ''', (user_local_date, phone_number, user_local_date))
+
+        result = c.fetchone()
+        conn.commit()
+
+        if result:
+            logger.info(f"Claimed smart nudge for {phone_number[-4:]}")
+            return True
+        else:
+            logger.debug(f"Smart nudge already sent for {phone_number[-4:]}")
+            return False
+    except Exception as e:
+        logger.error(f"Error claiming smart nudge for {phone_number[-4:]}: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_pending_nudge_response(phone_number: str) -> Optional[dict[str, Any]]:
+    """Get user's pending nudge response (for nudge interaction handling).
+
+    Returns:
+        dict: The parsed nudge response data, or None if no pending response
+    """
+    import json
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        if ENCRYPTION_ENABLED:
+            from utils.encryption import hash_phone
+            phone_hash = hash_phone(phone_number)
+            c.execute('SELECT pending_nudge_response FROM users WHERE phone_hash = %s', (phone_hash,))
+            result = c.fetchone()
+            if not result:
+                c.execute('SELECT pending_nudge_response FROM users WHERE phone_number = %s', (phone_number,))
+                result = c.fetchone()
+        else:
+            c.execute('SELECT pending_nudge_response FROM users WHERE phone_number = %s', (phone_number,))
+            result = c.fetchone()
+
+        if result and result[0]:
+            return json.loads(result[0])
+        return None
+    except Exception as e:
+        logger.error(f"Error getting pending nudge response: {e}")
+        return None
     finally:
         if conn:
             return_db_connection(conn)

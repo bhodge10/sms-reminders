@@ -258,6 +258,32 @@ When a user created a monthly or weekly recurring reminder without specifying th
 ### Desktop Signup Flow (Feb 2026)
 Added `POST /api/signup` endpoint for desktop visitors. Phone validation, E.164 formatting, sends welcome SMS. Frontend form on remyndrs.com with responsive design. Uses CORSMiddleware.
 
+### Smart Nudges: Proactive AI Intelligence Layer (Feb 2026)
+Transforms Remyndrs from a reactive command processor into a proactive personal assistant. Sends ONE intelligent, contextual insight per day by analyzing all stored user data (memories, reminders, lists, interaction patterns).
+
+**8 Nudge Types:** date_extraction, reminder_followup, cross_reference, stale_list, pattern_recognition, weekly_reflection, memory_anniversary, upcoming_preparation. AI picks the most relevant each day.
+
+**Tier Strategy:**
+- Premium/Trial: Daily nudges (all 8 types)
+- Free: Weekly reflection only (Sundays)
+
+**User Controls:** `NUDGE ON`, `NUDGE OFF`, `NUDGE TIME 9AM`, `NUDGE STATUS`. Nudge responses: `YES`, `DONE`, `SNOOZE`, `NO`, `STOP` (disables entirely).
+
+**Soft-Launch:** Nudges are OFF by default. Enable manually with `NUDGE ON`. Auto-enable for trial users is prepared but commented out in `services/onboarding_service.py` and `services/first_action_service.py`. Uncomment to activate post-launch.
+
+**Implementation:**
+- **Core engine:** `services/nudge_service.py` - data gathering, AI prompt, generation, tier gating, response handling
+- **Celery task:** `tasks/reminder_tasks.py` `send_smart_nudges` - timezone-aware, atomic claiming (mirrors daily summary pattern)
+- **Beat schedule:** `celery_config.py` - runs every minute
+- **Keyword handlers:** `main.py` - NUDGE ON/OFF/TIME/STATUS, response handlers (YES/DONE/SNOOZE/NO/STOP), UNDO support
+- **User model:** `models/user.py` - `get_users_due_for_smart_nudge()`, `claim_user_for_smart_nudge()`, `get_smart_nudge_settings()`, `get_pending_nudge_response()`
+
+**DB changes:** New `smart_nudges` table. New user columns: `smart_nudges_enabled`, `smart_nudge_time`, `smart_nudge_last_sent`, `pending_nudge_response`.
+
+**Key design:** Auto-clear pending nudge response if user sends a real command (>3 chars). STOP reply disables nudges. AI can return `nudge_type: "none"` (no nudge > bad nudge). Confidence threshold of 50. All nudge texts under 280 chars (2 SMS segments).
+
+**Testing:** `tests/test_smart_nudges.py` - unit tests for service, keyword handlers, response handling, Celery task, config, and user model.
+
 ### Memory Upsert — Duplicate Detection (Feb 2026)
 `save_memory()` in `models/memory.py` now detects duplicate memories before inserting. Uses Jaccard keyword similarity (stop words filtered, 60% threshold) to find existing memories with high overlap. If a match is found, the existing memory is updated in place (text, parsed_data, and created_at refreshed) instead of creating a duplicate row. `save_memory()` returns `bool` — `True` if updated, `False` if new insert. Both call sites (`main.py` ~line 3575, `routes/handlers/memories.py` ~line 40) show "Updated: ..." vs "Got it! Saved: ..." accordingly.
 

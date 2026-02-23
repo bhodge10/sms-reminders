@@ -83,3 +83,12 @@ def get_daily_summary_prompt_message(action_confirmation):
     return f"""{action_confirmation}
 
 Tip: Want a daily summary of your reminders each morning? Text SUMMARY ON to enable it!"""
+
+
+# SMART NUDGES: One-shot tip after first action
+# Uncomment post-launch when ready to activate alongside trial auto-enable:
+# def get_smart_nudge_prompt_message(action_confirmation):
+#     """Generate a one-shot smart nudge tip to append after first action"""
+#     return f"""{action_confirmation}
+#
+# Tip: Want daily AI-powered insights based on your data? Text NUDGE ON to enable!"""
