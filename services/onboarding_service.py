@@ -318,6 +318,10 @@ Email for account recovery?
             # Remove from abandoned onboarding tracking
             mark_onboarding_complete(phone_number)
 
+            # SMART NUDGES: Auto-enable during trial for engagement
+            # Uncomment post-launch when ready to activate for new trial users:
+            # create_or_update_user(phone_number, smart_nudges_enabled=True)
+
             # Get user's name for personalized message
             user = get_user(phone_number)
             first_name = user[1]

@@ -23,7 +23,7 @@ import time
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 from database import init_db, log_interaction, get_setting, log_confidence
-from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out, cancel_engagement_nudge, increment_post_onboarding_interactions
+from models.user import get_user, is_user_onboarded, create_or_update_user, get_user_timezone, get_last_active_list, get_pending_list_item, get_pending_reminder_delete, get_pending_memory_delete, get_pending_reminder_date, get_pending_list_create, mark_user_opted_out, get_user_first_name, get_pending_reminder_confirmation, is_user_opted_out, cancel_engagement_nudge, increment_post_onboarding_interactions, get_pending_nudge_response
 from models.memory import save_memory, get_memories, search_memories, delete_memory
 from models.reminder import (
     save_reminder, get_user_reminders, search_pending_reminders, delete_reminder,
@@ -847,6 +847,22 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         is_undo_command = msg_lower_clean in ['undo', "that's wrong", 'thats wrong', 'wrong', 'fix that', 'that was wrong', 'not what i meant', 'cancel']
 
         # ==========================================
+        # SMART NUDGE RESPONSE HANDLING
+        # ==========================================
+        # Check if user is responding to a smart nudge
+        pending_nudge = get_pending_nudge_response(phone_number)
+        if pending_nudge and not is_undo_command and not is_new_reminder_request:
+            from services.nudge_service import handle_nudge_response
+            nudge_reply = handle_nudge_response(phone_number, incoming_msg, pending_nudge)
+            if nudge_reply:
+                resp = MessagingResponse()
+                resp.message(staging_prefix(nudge_reply))
+                log_interaction(phone_number, incoming_msg, nudge_reply[:100], "nudge_response", True)
+                return Response(content=str(resp), media_type="application/xml")
+            # If nudge_reply is None, fall through to normal processing
+            # (pending_nudge_response was already cleared by handle_nudge_response)
+
+        # ==========================================
         # LOW-CONFIDENCE REMINDER CONFIRMATION
         # ==========================================
         # Check if user is responding to a confirmation request for a low-confidence reminder
@@ -1039,6 +1055,37 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         resp.message(staging_prefix("Daily summary turned off."))
 
                     log_interaction(phone_number, incoming_msg, "Summary settings reverted via undo", "undo_summary", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                elif pending_confirmation.get('type') == 'nudge_undo':
+                    # Revert to previous nudge settings
+                    previous_enabled = pending_confirmation.get('previous_enabled', False)
+                    previous_time = pending_confirmation.get('previous_time')
+
+                    update_kwargs = {
+                        'smart_nudges_enabled': previous_enabled,
+                        'pending_reminder_confirmation': None,
+                    }
+                    if previous_time:
+                        update_kwargs['smart_nudge_time'] = previous_time
+
+                    create_or_update_user(phone_number, **update_kwargs)
+
+                    if previous_enabled and previous_time:
+                        h, m = map(int, previous_time.split(':'))
+                        disp_am_pm = 'AM' if h < 12 else 'PM'
+                        disp_h = h if h <= 12 else h - 12
+                        if disp_h == 0:
+                            disp_h = 12
+                        resp = MessagingResponse()
+                        resp.message(staging_prefix(f"Smart nudges reverted to {disp_h}:{m:02d} {disp_am_pm}."))
+                    elif previous_enabled:
+                        resp = MessagingResponse()
+                        resp.message(staging_prefix("Smart nudges reverted to previous settings."))
+                    else:
+                        resp = MessagingResponse()
+                        resp.message(staging_prefix("Smart nudges turned off."))
+
+                    log_interaction(phone_number, incoming_msg, "Nudge settings reverted via undo", "undo_nudge", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
                     # Regular pending confirmation - cancel it
@@ -2541,6 +2588,159 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             resp = MessagingResponse()
             resp.message(staging_prefix(f"Daily summary set for {display_time}! You'll receive a summary of your day's reminders each morning."))
             log_interaction(phone_number, incoming_msg, f"Daily summary time set to {time_str}", "daily_summary_time", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
+        # SMART NUDGE COMMANDS
+        # ==========================================
+
+        # Enable smart nudges: "NUDGE ON", "NUDGES ON"
+        if msg_upper in ["NUDGE ON", "NUDGES ON", "SMART NUDGE ON", "SMART NUDGES ON"]:
+            from models.user import get_smart_nudge_settings
+
+            # Get current settings for undo
+            current_settings = get_smart_nudge_settings(phone_number)
+            previous_enabled = current_settings['enabled'] if current_settings else False
+            previous_time = current_settings['time'] if current_settings else None
+
+            undo_data = json.dumps({
+                'type': 'nudge_undo',
+                'previous_enabled': previous_enabled,
+                'previous_time': previous_time,
+                'action': 'enabled'
+            })
+
+            create_or_update_user(phone_number, smart_nudges_enabled=True, pending_reminder_confirmation=undo_data)
+
+            settings = get_smart_nudge_settings(phone_number)
+            time_str = settings['time'] if settings else '09:00'
+            time_parts = time_str.split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            am_pm = 'AM' if hour < 12 else 'PM'
+            display_hour = hour if hour <= 12 else hour - 12
+            if display_hour == 0:
+                display_hour = 12
+            display_time = f"{display_hour}:{minute:02d} {am_pm}"
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(f"Smart nudges enabled! You'll receive a daily insight at {display_time}.\n\nTo change the time: NUDGE TIME 9AM\nTo disable: NUDGE OFF"))
+            log_interaction(phone_number, incoming_msg, "Smart nudges enabled", "nudge_on", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Disable smart nudges: "NUDGE OFF", "NUDGES OFF"
+        if msg_upper in ["NUDGE OFF", "NUDGES OFF", "SMART NUDGE OFF", "SMART NUDGES OFF", "DISABLE NUDGE", "DISABLE NUDGES"]:
+            from models.user import get_smart_nudge_settings
+
+            current_settings = get_smart_nudge_settings(phone_number)
+            previous_enabled = current_settings['enabled'] if current_settings else False
+            previous_time = current_settings['time'] if current_settings else None
+
+            undo_data = json.dumps({
+                'type': 'nudge_undo',
+                'previous_enabled': previous_enabled,
+                'previous_time': previous_time,
+                'action': 'disabled'
+            })
+
+            create_or_update_user(
+                phone_number,
+                smart_nudges_enabled=False,
+                pending_nudge_response=None,
+                pending_reminder_confirmation=undo_data
+            )
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix("Smart nudges disabled. You'll no longer receive daily insights.\n\nTo re-enable: NUDGE ON"))
+            log_interaction(phone_number, incoming_msg, "Smart nudges disabled", "nudge_off", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Check nudge status: "NUDGE STATUS", "MY NUDGE", "NUDGE"
+        if msg_upper in ["NUDGE STATUS", "MY NUDGE", "MY NUDGES", "NUDGE SETTINGS"]:
+            from models.user import get_smart_nudge_settings
+
+            settings = get_smart_nudge_settings(phone_number)
+
+            if settings and settings['enabled']:
+                time_str = settings['time']
+                time_parts = time_str.split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                am_pm = 'AM' if hour < 12 else 'PM'
+                display_hour = hour if hour <= 12 else hour - 12
+                if display_hour == 0:
+                    display_hour = 12
+                display_time = f"{display_hour}:{minute:02d} {am_pm}"
+
+                resp = MessagingResponse()
+                resp.message(staging_prefix(f"Smart nudges: ON at {display_time}\n\nCommands:\n- NUDGE OFF - Disable\n- NUDGE TIME 9AM - Change time"))
+            else:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Smart nudges: OFF\n\nSmart nudges send you one helpful insight per day based on your reminders, lists, and memories.\n\nTo enable: NUDGE ON"))
+
+            log_interaction(phone_number, incoming_msg, "Nudge status checked", "nudge_status", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # Set nudge time: "NUDGE TIME 9AM", "NUDGE TIME 10:30PM"
+        nudge_time_match = re.match(
+            r'^(?:smart\s+)?nudge(?:s)?\s+(?:time\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)$',
+            incoming_msg.strip(),
+            re.IGNORECASE
+        )
+        if not nudge_time_match:
+            nudge_time_match = re.match(
+                r'^(?:change|set|move|update)\s+(?:my\s+)?(?:smart\s+)?nudge(?:s)?\s+(?:time\s+)?(?:to\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)\b',
+                incoming_msg.strip(),
+                re.IGNORECASE
+            )
+
+        if nudge_time_match:
+            hour = int(nudge_time_match.group(1))
+            minute = int(nudge_time_match.group(2)) if nudge_time_match.group(2) else 0
+            am_pm_raw = nudge_time_match.group(3).upper()
+            am_pm = 'AM' if am_pm_raw in ['AM', 'A'] else 'PM'
+
+            # Convert to 24-hour format
+            if am_pm == 'PM' and hour != 12:
+                hour += 12
+            elif am_pm == 'AM' and hour == 12:
+                hour = 0
+
+            if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                resp = MessagingResponse()
+                resp.message(staging_prefix("Please enter a valid time like 9AM, 10:30AM, or 6PM"))
+                return Response(content=str(resp), media_type="application/xml")
+
+            time_str = f"{hour:02d}:{minute:02d}"
+
+            from models.user import get_smart_nudge_settings
+            current_settings = get_smart_nudge_settings(phone_number)
+            previous_enabled = current_settings['enabled'] if current_settings else False
+            previous_time = current_settings['time'] if current_settings else None
+
+            undo_data = json.dumps({
+                'type': 'nudge_undo',
+                'previous_enabled': previous_enabled,
+                'previous_time': previous_time,
+                'new_time': time_str
+            })
+
+            create_or_update_user(
+                phone_number,
+                smart_nudges_enabled=True,
+                smart_nudge_time=time_str,
+                pending_reminder_confirmation=undo_data
+            )
+
+            display_am_pm = 'AM' if hour < 12 else 'PM'
+            display_hour = hour if hour <= 12 else hour - 12
+            if display_hour == 0:
+                display_hour = 12
+            display_time = f"{display_hour}:{minute:02d} {display_am_pm}"
+
+            resp = MessagingResponse()
+            resp.message(staging_prefix(f"Smart nudge time set to {display_time}! You'll receive a daily insight at that time."))
+            log_interaction(phone_number, incoming_msg, f"Nudge time set to {time_str}", "nudge_time", True)
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================

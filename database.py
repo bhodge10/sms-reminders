@@ -524,6 +524,25 @@ def init_db():
             # Broadcast system improvements
             "ALTER TABLE scheduled_broadcasts ADD COLUMN IF NOT EXISTS target_phone TEXT",
             "ALTER TABLE broadcast_logs ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'immediate'",
+            # Smart Nudges: proactive AI intelligence layer
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudges_enabled BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudge_time TIME DEFAULT '09:00'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudge_last_sent DATE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_nudge_response TEXT",
+            # Smart nudges history table
+            """CREATE TABLE IF NOT EXISTS smart_nudges (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                nudge_type TEXT NOT NULL,
+                nudge_text TEXT NOT NULL,
+                ai_raw_response TEXT,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_response TEXT,
+                user_responded_at TIMESTAMP,
+                action_taken TEXT,
+                created_reminder_id INTEGER REFERENCES reminders(id),
+                metadata TEXT
+            )""",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -547,6 +566,9 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_users_daily_summary ON users(daily_summary_enabled) WHERE daily_summary_enabled = TRUE",
             # Onboarding recovery: index for finding abandoned signups
             "CREATE INDEX IF NOT EXISTS idx_onboarding_progress_abandoned ON onboarding_progress(followup_24h_sent, last_activity_at) WHERE cancelled = FALSE",
+            # Smart nudges: index for efficient querying of users who need nudge
+            "CREATE INDEX IF NOT EXISTS idx_users_smart_nudges ON users(smart_nudges_enabled) WHERE smart_nudges_enabled = TRUE",
+            "CREATE INDEX IF NOT EXISTS idx_smart_nudges_phone ON smart_nudges(phone_number, sent_at)",
         ]
 
         for migration in migrations:

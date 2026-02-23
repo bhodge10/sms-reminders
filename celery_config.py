@@ -43,6 +43,14 @@ beat_schedule = {
             "expires": 55,  # Task expires if not picked up in 55 seconds
         },
     },
+    # Send smart nudges every minute (checks for users whose local time matches their preference)
+    "send-smart-nudges": {
+        "task": "tasks.reminder_tasks.send_smart_nudges",
+        "schedule": timedelta(minutes=1),
+        "options": {
+            "expires": 55,  # Task expires if not picked up in 55 seconds
+        },
+    },
     # Send abandoned onboarding follow-ups every hour
     "abandoned-onboarding-followups": {
         "task": "tasks.reminder_tasks.send_abandoned_onboarding_followups",

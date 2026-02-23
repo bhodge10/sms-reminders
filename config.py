@@ -207,6 +207,18 @@ TIER_LIMITS = {
     },
 }
 
+# =====================================================
+# SMART NUDGES CONFIGURATION
+# =====================================================
+NUDGE_DEFAULT_TIME = "09:00"       # Default nudge time (9:00 AM local)
+NUDGE_MAX_TOKENS = 300             # Max tokens for nudge AI response
+NUDGE_TEMPERATURE = 0.4            # Slightly creative temperature
+NUDGE_CONFIDENCE_THRESHOLD = 50    # Minimum confidence to send a nudge (0-100)
+NUDGE_MAX_CHARS = 280              # Max characters per nudge (2 SMS segments)
+
+# Anthropic API Key (for future Agent 4 AI file identification)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
 def get_tier_limits(tier: str) -> dict:
     """Get limits for a given tier. Defaults to free tier if unknown."""
     return TIER_LIMITS.get(tier, TIER_LIMITS[TIER_FREE])
