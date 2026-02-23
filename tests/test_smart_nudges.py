@@ -417,6 +417,10 @@ class TestNudgeConfig:
         assert NUDGE_CONFIDENCE_THRESHOLD == 50
         assert NUDGE_MAX_CHARS == 280
 
+    def test_combined_nudge_max_chars_exists(self):
+        from config import COMBINED_NUDGE_MAX_CHARS
+        assert COMBINED_NUDGE_MAX_CHARS == 1500
+
 
 # =====================================================
 # USER MODEL TESTS
@@ -431,3 +435,256 @@ class TestUserNudgeFields:
         assert 'smart_nudge_time' in ALLOWED_USER_FIELDS
         assert 'smart_nudge_last_sent' in ALLOWED_USER_FIELDS
         assert 'pending_nudge_response' in ALLOWED_USER_FIELDS
+
+
+# =====================================================
+# COMBINED SUMMARY + NUDGE TESTS
+# =====================================================
+
+class TestFormatCompactSummary:
+    """Test the compact summary formatter used in combined nudge messages."""
+
+    def test_formats_reminders(self):
+        import pytz
+        from datetime import datetime, date
+        from tasks.reminder_tasks import format_compact_summary
+
+        tz = pytz.timezone('America/New_York')
+        today = date(2026, 2, 23)
+        utc_dt = datetime(2026, 2, 23, 19, 0, 0, tzinfo=pytz.UTC)  # 2:00 PM ET
+        reminders = [(1, 'Call dentist', utc_dt), (2, 'Team meeting', utc_dt)]
+
+        result = format_compact_summary(reminders, today, tz)
+        assert "Today's reminders" in result
+        assert 'Monday, February 23' in result
+        assert '1.' in result
+        assert '2.' in result
+        assert 'Call dentist' in result
+        assert 'Team meeting' in result
+
+    def test_empty_reminders_returns_empty_string(self):
+        import pytz
+        from datetime import date
+        from tasks.reminder_tasks import format_compact_summary
+
+        tz = pytz.timezone('America/New_York')
+        today = date(2026, 2, 23)
+        result = format_compact_summary([], today, tz)
+        assert result == ""
+
+
+class TestCombinedSummaryNudge:
+    """Test that send_smart_nudges combines reminders + nudge into one message."""
+
+    def _make_nudge_data(self, nudge_text='Great insight!'):
+        return {
+            'nudge_type': 'weekly_reflection',
+            'nudge_text': nudge_text,
+            'confidence': 80,
+            'suggested_reminder_text': None,
+            'related_reminder_id': None,
+            'raw_response': '{}',
+        }
+
+    @patch('models.user.mark_daily_summary_sent')
+    @patch('services.nudge_service.send_nudge_to_user', return_value=True)
+    @patch('services.nudge_service.generate_nudge')
+    @patch('models.reminder.get_reminders_for_date')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
+    def test_nudge_with_reminders_combines_message(
+        self, mock_get_users, mock_claim, mock_eligible, mock_reminders,
+        mock_generate, mock_send_nudge, mock_mark_summary
+    ):
+        """When both reminders and nudge exist, sends combined message."""
+        from tasks.reminder_tasks import send_smart_nudges
+        import pytz
+        from datetime import datetime
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'premium_status': 'premium',
+        }]
+        utc_dt = datetime(2026, 2, 23, 19, 0, 0, tzinfo=pytz.UTC)
+        mock_reminders.return_value = [(1, 'Call dentist', utc_dt)]
+        mock_generate.return_value = self._make_nudge_data()
+
+        result = send_smart_nudges()
+        assert result['sent'] == 1
+        mock_send_nudge.assert_called_once()
+        # The nudge_data passed to send_nudge_to_user should have combined text
+        sent_data = mock_send_nudge.call_args[0][1]
+        assert "Today's reminders" in sent_data['nudge_text']
+        assert 'Great insight!' in sent_data['nudge_text']
+        # daily_summary_last_sent should be marked
+        mock_mark_summary.assert_called_once_with('+15551234567')
+
+    @patch('services.nudge_service.send_nudge_to_user', return_value=True)
+    @patch('services.nudge_service.generate_nudge')
+    @patch('models.reminder.get_reminders_for_date')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
+    def test_nudge_without_reminders_sends_nudge_only(
+        self, mock_get_users, mock_claim, mock_eligible, mock_reminders,
+        mock_generate, mock_send_nudge
+    ):
+        """When no reminders but nudge exists, sends just the nudge."""
+        from tasks.reminder_tasks import send_smart_nudges
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'premium_status': 'premium',
+        }]
+        mock_reminders.return_value = []
+        mock_generate.return_value = self._make_nudge_data()
+
+        result = send_smart_nudges()
+        assert result['sent'] == 1
+        sent_data = mock_send_nudge.call_args[0][1]
+        assert sent_data['nudge_text'] == 'Great insight!'
+
+    @patch('models.user.mark_daily_summary_sent')
+    @patch('services.sms_service.send_sms')
+    @patch('services.nudge_service.generate_nudge', return_value=None)
+    @patch('models.reminder.get_reminders_for_date')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
+    def test_no_nudge_but_reminders_sends_compact_summary(
+        self, mock_get_users, mock_claim, mock_eligible, mock_reminders,
+        mock_generate, mock_send_sms, mock_mark_summary
+    ):
+        """When AI returns no nudge but reminders exist, sends compact summary."""
+        from tasks.reminder_tasks import send_smart_nudges
+        import pytz
+        from datetime import datetime
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'premium_status': 'premium',
+        }]
+        utc_dt = datetime(2026, 2, 23, 19, 0, 0, tzinfo=pytz.UTC)
+        mock_reminders.return_value = [(1, 'Call dentist', utc_dt)]
+
+        result = send_smart_nudges()
+        assert result['sent'] == 1
+        # Should have called send_sms directly with compact summary
+        mock_send_sms.assert_called_once()
+        sent_message = mock_send_sms.call_args[0][1]
+        assert "Today's reminders" in sent_message
+        assert 'Call dentist' in sent_message
+        mock_mark_summary.assert_called_once()
+
+    @patch('services.sms_service.send_sms')
+    @patch('services.nudge_service.generate_nudge', return_value=None)
+    @patch('models.reminder.get_reminders_for_date')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
+    def test_no_nudge_no_reminders_sends_nothing(
+        self, mock_get_users, mock_claim, mock_eligible, mock_reminders,
+        mock_generate, mock_send_sms
+    ):
+        """When neither nudge nor reminders, nothing is sent."""
+        from tasks.reminder_tasks import send_smart_nudges
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'premium_status': 'premium',
+        }]
+        mock_reminders.return_value = []
+
+        result = send_smart_nudges()
+        assert result['sent'] == 0
+        mock_send_sms.assert_not_called()
+
+    @patch('models.user.mark_daily_summary_sent')
+    @patch('services.nudge_service.send_nudge_to_user', return_value=True)
+    @patch('services.nudge_service.generate_nudge')
+    @patch('models.reminder.get_reminders_for_date')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
+    def test_combined_message_truncated_at_limit(
+        self, mock_get_users, mock_claim, mock_eligible, mock_reminders,
+        mock_generate, mock_send_nudge, mock_mark_summary
+    ):
+        """Combined message is truncated at COMBINED_NUDGE_MAX_CHARS."""
+        from tasks.reminder_tasks import send_smart_nudges
+        from config import COMBINED_NUDGE_MAX_CHARS
+        import pytz
+        from datetime import datetime
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'premium_status': 'premium',
+        }]
+        utc_dt = datetime(2026, 2, 23, 19, 0, 0, tzinfo=pytz.UTC)
+        # Create many reminders to make a long summary
+        mock_reminders.return_value = [(i, f'Reminder {i} with a long text to fill space', utc_dt) for i in range(50)]
+        mock_generate.return_value = self._make_nudge_data('A' * 500)
+
+        result = send_smart_nudges()
+        assert result['sent'] == 1
+        sent_data = mock_send_nudge.call_args[0][1]
+        assert len(sent_data['nudge_text']) <= COMBINED_NUDGE_MAX_CHARS
+
+    @patch('models.user.get_users_due_for_daily_summary')
+    def test_daily_summary_skips_nudge_enabled_users(self, mock_get_users):
+        """send_daily_summaries skips users with smart_nudges_enabled=True."""
+        from tasks.reminder_tasks import send_daily_summaries
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'smart_nudges_enabled': True,
+        }]
+
+        result = send_daily_summaries()
+        assert result['sent'] == 0
+
+    @patch('models.user.get_users_due_for_daily_summary')
+    @patch('models.user.claim_user_for_daily_summary', return_value=True)
+    @patch('models.reminder.get_reminders_for_date', return_value=[])
+    @patch('tasks.reminder_tasks.send_sms')
+    def test_daily_summary_sends_to_non_nudge_users(
+        self, mock_send_sms, mock_reminders, mock_claim, mock_get_users
+    ):
+        """send_daily_summaries still works for users without nudges."""
+        from tasks.reminder_tasks import send_daily_summaries
+
+        mock_get_users.return_value = [{
+            'phone_number': '+15551234567',
+            'timezone': 'America/New_York',
+            'first_name': 'Brad',
+            'smart_nudges_enabled': False,
+        }]
+
+        result = send_daily_summaries()
+        assert result['sent'] == 1
+        mock_send_sms.assert_called_once()
+
+    def test_nudge_prompt_contains_rule_9(self):
+        """build_nudge_prompt includes rule about not listing reminders."""
+        from services.nudge_service import build_nudge_prompt
+        user_data = {
+            'current_date': '2026-02-23', 'current_day': 'Monday',
+            'memories': [{'text': 'Test', 'created_at': '2026-01-01'}],
+            'upcoming_reminders': [], 'recently_completed_reminders': [],
+            'lists': [], 'recent_nudges': [],
+        }
+        prompt = build_nudge_prompt(user_data, 'User', 'premium')
+        assert 'DO NOT list or summarize upcoming reminders' in prompt

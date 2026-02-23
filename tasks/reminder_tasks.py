@@ -503,6 +503,11 @@ def send_daily_summaries(self):
                 timezone_str = user['timezone']
                 first_name = user.get('first_name', '')
 
+                # Skip users with smart nudges enabled — nudge task handles their morning message
+                if user.get('smart_nudges_enabled', False):
+                    logger.debug(f"Skipping daily summary for {phone_number[-4:]}: smart nudges enabled")
+                    continue
+
                 # Get user's local date
                 user_tz = pytz.timezone(timezone_str)
                 user_now = utc_now.astimezone(user_tz)
@@ -590,6 +595,49 @@ def format_daily_summary(reminders, first_name, date, user_tz):
 
     lines.append("")
     lines.append("(You'll still receive each reminder at its scheduled time)")
+
+    return "\n".join(lines)
+
+
+def format_compact_summary(reminders, date, user_tz):
+    """Format a compact reminder summary for combined nudge messages.
+
+    Shorter than format_daily_summary — no greeting, no footer.
+    Used by send_smart_nudges to prepend reminders before the AI nudge.
+
+    Args:
+        reminders: List of (id, reminder_text, reminder_date_utc) tuples
+        date: User's local date
+        user_tz: User's pytz timezone object
+
+    Returns:
+        Formatted compact summary string, or empty string if no reminders
+    """
+    import pytz
+    from datetime import datetime
+
+    if not reminders:
+        return ""
+
+    date_str = date.strftime('%A, %B %d')
+    lines = [f"Today's reminders ({date_str}):"]
+
+    for i, (reminder_id, text, reminder_date_utc) in enumerate(reminders, 1):
+        try:
+            if isinstance(reminder_date_utc, datetime):
+                utc_dt = reminder_date_utc
+                if utc_dt.tzinfo is None:
+                    utc_dt = pytz.UTC.localize(utc_dt)
+            else:
+                utc_dt = datetime.strptime(str(reminder_date_utc), '%Y-%m-%d %H:%M:%S')
+                utc_dt = pytz.UTC.localize(utc_dt)
+
+            local_dt = utc_dt.astimezone(user_tz)
+            time_str = local_dt.strftime('%I:%M %p').lstrip('0')
+        except (ValueError, TypeError, AttributeError):
+            time_str = "TBD"
+
+        lines.append(f"{i}. {time_str} - {text}")
 
     return "\n".join(lines)
 
@@ -1123,11 +1171,21 @@ def send_smart_nudges(self):
 
     For each minute, checks which users have their nudge time set to
     that minute (in their local timezone) and generates/sends their nudge.
+
+    When a user also has daily summaries enabled, this task takes over their
+    morning message: it prepends today's reminders (compact format) above
+    the AI nudge, then marks daily_summary_last_sent so the summary task
+    doesn't double-send.
     """
     import pytz
     from datetime import datetime
-    from models.user import get_users_due_for_smart_nudge, claim_user_for_smart_nudge
+    from models.user import (
+        get_users_due_for_smart_nudge, claim_user_for_smart_nudge,
+        get_daily_summary_settings, mark_daily_summary_sent,
+    )
+    from models.reminder import get_reminders_for_date
     from services.nudge_service import generate_nudge, send_nudge_to_user, is_nudge_eligible
+    from config import COMBINED_NUDGE_MAX_CHARS
 
     try:
         utc_now = datetime.now(pytz.UTC)
@@ -1164,17 +1222,39 @@ def send_smart_nudges(self):
                 if not claim_user_for_smart_nudge(phone_number, user_today):
                     continue
 
+                # Fetch today's reminders for combined message
+                reminders = get_reminders_for_date(phone_number, user_today, timezone_str)
+                compact_summary = format_compact_summary(reminders, user_today, user_tz)
+
                 # Generate nudge using AI
                 nudge_data = generate_nudge(phone_number, timezone_str, first_name, premium_status)
 
-                if not nudge_data:
-                    logger.info(f"No nudge generated for {phone_number[-4:]}")
-                    continue
-
-                # Send the nudge
-                if send_nudge_to_user(phone_number, nudge_data):
+                # Build combined message
+                if nudge_data and compact_summary:
+                    # Both reminders and nudge — combine them
+                    combined = compact_summary + "\n\n" + nudge_data['nudge_text']
+                    if len(combined) > COMBINED_NUDGE_MAX_CHARS:
+                        combined = combined[:COMBINED_NUDGE_MAX_CHARS - 3] + "..."
+                    nudge_data['nudge_text'] = combined
+                    if send_nudge_to_user(phone_number, nudge_data):
+                        sent_count += 1
+                        mark_daily_summary_sent(phone_number)
+                        logger.info(f"Sent combined nudge+summary to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+                elif nudge_data and not compact_summary:
+                    # Nudge only, no reminders today
+                    if send_nudge_to_user(phone_number, nudge_data):
+                        sent_count += 1
+                        logger.info(f"Sent smart nudge to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+                elif not nudge_data and compact_summary:
+                    # No nudge but reminders exist — send compact summary as fallback
+                    from services.sms_service import send_sms as send_sms_direct
+                    send_sms_direct(phone_number, compact_summary)
+                    mark_daily_summary_sent(phone_number)
                     sent_count += 1
-                    logger.info(f"Sent smart nudge to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+                    logger.info(f"Sent compact summary (no nudge) to {phone_number[-4:]}")
+                else:
+                    # No nudge and no reminders — nothing to send
+                    logger.info(f"No nudge or reminders for {phone_number[-4:]}")
 
             except Exception as e:
                 logger.error(f"Error sending smart nudge to {user['phone_number'][-4:]}: {e}")

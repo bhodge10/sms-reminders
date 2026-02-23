@@ -538,7 +538,8 @@ def get_users_due_for_daily_summary() -> list[dict[str, Any]]:
 
         # Get all users with daily summary enabled
         c.execute('''
-            SELECT phone_number, timezone, first_name, daily_summary_time, daily_summary_last_sent
+            SELECT phone_number, timezone, first_name, daily_summary_time, daily_summary_last_sent,
+                   COALESCE(smart_nudges_enabled, FALSE)
             FROM users
             WHERE daily_summary_enabled = TRUE
               AND onboarding_complete = TRUE
@@ -551,7 +552,7 @@ def get_users_due_for_daily_summary() -> list[dict[str, Any]]:
         utc_now = datetime.now(pytz.UTC)
 
         for row in results:
-            phone_number, user_tz_str, first_name, summary_time, last_sent = row
+            phone_number, user_tz_str, first_name, summary_time, last_sent, nudges_enabled = row
 
             try:
                 user_tz = pytz.timezone(user_tz_str or 'America/New_York')
@@ -574,7 +575,8 @@ def get_users_due_for_daily_summary() -> list[dict[str, Any]]:
                         due_users.append({
                             'phone_number': phone_number,
                             'timezone': user_tz_str or 'America/New_York',
-                            'first_name': first_name
+                            'first_name': first_name,
+                            'smart_nudges_enabled': nudges_enabled or False,
                         })
             except Exception as e:
                 logger.error(f"Error checking summary for user {phone_number[-4:]}: {e}")

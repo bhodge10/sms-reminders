@@ -493,3 +493,22 @@ Three long-standing test failures fixed in PR #156. Suite now at 112 passed, 0 f
 3. **`test_sent_reminder_not_resent`:** `save_reminder()` returns `None` (not the inserted ID). The test did `UPDATE SET sent=TRUE WHERE id=NULL` — matching no rows. The reminder stayed `sent=FALSE` and was picked up by `claim_due_reminders`. Fixed by matching on `phone_number + reminder_text` instead of ID.
 
 **Files changed:** `tests/conftest.py`, `tests/test_background_tasks.py`, `tests/test_reminders.py`
+
+### Combined Daily Summary + Smart Nudges (Feb 2026)
+Users with both daily summaries and smart nudges enabled were receiving TWO separate morning messages. Now the nudge task takes over the morning message entirely for nudge-enabled users: it prepends today's reminders (compact format) above the AI insight and marks `daily_summary_last_sent` so the summary task skips them.
+
+**Behavior matrix:**
+- **Nudge + reminders:** Combined message — compact reminder list + AI nudge
+- **Nudge only (no reminders):** Just the AI nudge text
+- **No nudge but reminders exist:** Compact summary sent as fallback
+- **No nudge and no reminders:** Nothing sent
+
+**Implementation:**
+- `format_compact_summary()` in `tasks/reminder_tasks.py` — shorter format (no greeting/footer), just header + numbered list
+- `send_daily_summaries()` skips users with `smart_nudges_enabled = TRUE`
+- `send_smart_nudges()` fetches reminders via `get_reminders_for_date()`, combines with nudge, marks `daily_summary_last_sent`
+- `get_users_due_for_daily_summary()` in `models/user.py` now returns `smart_nudges_enabled` field
+- `build_nudge_prompt()` in `services/nudge_service.py` has Rule 9: AI told not to list reminders (shown separately)
+- `COMBINED_NUDGE_MAX_CHARS = 1500` in `config.py` — combined message truncation limit
+
+**Files changed:** `config.py`, `services/nudge_service.py`, `models/user.py`, `tasks/reminder_tasks.py`, `tests/test_smart_nudges.py`
