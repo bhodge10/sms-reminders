@@ -336,11 +336,11 @@ class TestNudgeKeywordHandlers:
 class TestSendSmartNudgesTask:
     """Test the Celery task for sending smart nudges."""
 
-    @patch('tasks.reminder_tasks.send_nudge_to_user')
-    @patch('tasks.reminder_tasks.generate_nudge')
-    @patch('tasks.reminder_tasks.is_nudge_eligible', return_value=True)
-    @patch('tasks.reminder_tasks.claim_user_for_smart_nudge', return_value=True)
-    @patch('tasks.reminder_tasks.get_users_due_for_smart_nudge')
+    @patch('services.nudge_service.send_nudge_to_user')
+    @patch('services.nudge_service.generate_nudge')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
     def test_sends_nudge_to_eligible_users(self, mock_get_users, mock_claim, mock_eligible, mock_generate, mock_send):
         from tasks.reminder_tasks import send_smart_nudges
 
@@ -362,17 +362,17 @@ class TestSendSmartNudgesTask:
         mock_generate.assert_called_once()
         mock_send.assert_called_once()
 
-    @patch('tasks.reminder_tasks.get_users_due_for_smart_nudge')
+    @patch('models.user.get_users_due_for_smart_nudge')
     def test_no_users_due(self, mock_get_users):
         from tasks.reminder_tasks import send_smart_nudges
         mock_get_users.return_value = []
         result = send_smart_nudges()
         assert result['sent'] == 0
 
-    @patch('tasks.reminder_tasks.generate_nudge', return_value=None)
-    @patch('tasks.reminder_tasks.is_nudge_eligible', return_value=True)
-    @patch('tasks.reminder_tasks.claim_user_for_smart_nudge', return_value=True)
-    @patch('tasks.reminder_tasks.get_users_due_for_smart_nudge')
+    @patch('services.nudge_service.generate_nudge', return_value=None)
+    @patch('services.nudge_service.is_nudge_eligible', return_value=True)
+    @patch('models.user.claim_user_for_smart_nudge', return_value=True)
+    @patch('models.user.get_users_due_for_smart_nudge')
     def test_no_nudge_generated(self, mock_get_users, mock_claim, mock_eligible, mock_generate):
         from tasks.reminder_tasks import send_smart_nudges
 
@@ -386,8 +386,8 @@ class TestSendSmartNudgesTask:
         result = send_smart_nudges()
         assert result['sent'] == 0
 
-    @patch('tasks.reminder_tasks.is_nudge_eligible', return_value=False)
-    @patch('tasks.reminder_tasks.get_users_due_for_smart_nudge')
+    @patch('services.nudge_service.is_nudge_eligible', return_value=False)
+    @patch('models.user.get_users_due_for_smart_nudge')
     def test_free_tier_skipped_on_weekday(self, mock_get_users, mock_eligible):
         from tasks.reminder_tasks import send_smart_nudges
 
