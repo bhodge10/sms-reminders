@@ -202,6 +202,7 @@ RULES:
 6. If there's nothing genuinely useful to say, return nudge_type: "none"
 7. DO NOT repeat content from recently sent nudges
 8. For weekly_reflection, summarize actual numbers from the data
+9. DO NOT list or summarize upcoming reminders in the nudge text — they are shown separately above your message.
 
 Return JSON:
 {{

@@ -217,6 +217,7 @@ NUDGE_MAX_TOKENS = 300             # Max tokens for nudge AI response
 NUDGE_TEMPERATURE = 0.4            # Slightly creative temperature
 NUDGE_CONFIDENCE_THRESHOLD = 50    # Minimum confidence to send a nudge (0-100)
 NUDGE_MAX_CHARS = 280              # Max characters per nudge (2 SMS segments)
+COMBINED_NUDGE_MAX_CHARS = 1500    # Max total length for combined summary + nudge message
 
 # Anthropic API Key (for future Agent 4 AI file identification)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
