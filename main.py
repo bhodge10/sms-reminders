@@ -605,7 +605,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 resp = MessagingResponse()
                 resp.message(
                     "Your account has been deleted and your subscription cancelled. "
-                    "All data has been removed. If you ever want to come back, text START."
+                    "All data has been removed. If you ever want to come back, just text us HELLO!"
                 )
                 log_interaction(phone_number, "YES DELETE ACCOUNT", "Account deleted", "delete_account_confirmed", True)
                 return Response(content=str(resp), media_type="application/xml")
