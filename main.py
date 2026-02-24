@@ -416,10 +416,12 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
         if message_sid:
             _processed_message_sids[message_sid] = time.time()
-            # Clean old entries (older than 10 minutes) periodically
+            # Evict expired entries (older than 10 minutes) periodically
             if len(_processed_message_sids) > 1000:
                 cutoff = time.time() - 600
-                _processed_message_sids.clear()
+                expired = [sid for sid, ts in _processed_message_sids.items() if ts < cutoff]
+                for sid in expired:
+                    del _processed_message_sids[sid]
 
         incoming_msg = Body.strip()
 
@@ -5413,7 +5415,7 @@ async def stripe_webhook(request: Request):
 
     except Exception as e:
         logger.error(f"Stripe webhook error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 
 @app.get("/api/payment-info")
@@ -5952,7 +5954,7 @@ async def cleanup_duplicate_reminders(admin: str = Depends(verify_admin)):
         if conn:
             conn.rollback()
         logger.exception(f"Error cleaning up duplicate reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)

@@ -6,6 +6,7 @@ Handles all user-related database operations
 from datetime import date
 from typing import Any, Optional, Tuple
 
+from psycopg2 import sql
 from database import get_db_connection, return_db_connection
 from config import logger, ENCRYPTION_ENABLED
 from utils.db_helpers import USER_COLUMNS
@@ -115,40 +116,45 @@ def create_or_update_user(phone_number: str, **kwargs: Any) -> None:
 
             # Add phone_hash if encryption enabled and user doesn't have it yet
             if ENCRYPTION_ENABLED and phone_hash and not exists[1]:
-                update_fields.append("phone_hash = %s")
+                update_fields.append(sql.SQL("{} = %s").format(sql.Identifier('phone_hash')))
                 values.append(phone_hash)
 
             for key, value in kwargs.items():
                 if key not in ALLOWED_USER_FIELDS:
                     logger.warning(f"Ignoring invalid field in user update: {key}")
                     continue
-                update_fields.append(f"{key} = %s")
+                update_fields.append(sql.SQL("{} = %s").format(sql.Identifier(key)))
                 values.append(value)
 
             if update_fields:
                 values.append(phone_number)
-                query = f"UPDATE users SET {', '.join(update_fields)} WHERE phone_number = %s"
+                query = sql.SQL("UPDATE users SET {} WHERE phone_number = %s").format(
+                    sql.SQL(', ').join(update_fields)
+                )
                 c.execute(query, values)
         else:
             # Insert new user with any provided fields
-            fields = ['phone_number']
+            fields = [sql.Identifier('phone_number')]
             values = [phone_number]
-            placeholders = ['%s']
+            placeholders = [sql.SQL('%s')]
 
             if ENCRYPTION_ENABLED and phone_hash:
-                fields.append('phone_hash')
+                fields.append(sql.Identifier('phone_hash'))
                 values.append(phone_hash)
-                placeholders.append('%s')
+                placeholders.append(sql.SQL('%s'))
 
             for key, value in kwargs.items():
                 if key not in ALLOWED_USER_FIELDS:
                     logger.warning(f"Ignoring invalid field in user insert: {key}")
                     continue
-                fields.append(key)
+                fields.append(sql.Identifier(key))
                 values.append(value)
-                placeholders.append('%s')
+                placeholders.append(sql.SQL('%s'))
 
-            query = f"INSERT INTO users ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
+            query = sql.SQL("INSERT INTO users ({}) VALUES ({})").format(
+                sql.SQL(', ').join(fields),
+                sql.SQL(', ').join(placeholders)
+            )
             c.execute(query, values)
 
         conn.commit()
