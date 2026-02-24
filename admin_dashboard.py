@@ -26,6 +26,7 @@ from database import (
 )
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
 from utils.validation import log_security_event
+from utils.auth import enforce_auth_rate_limit, record_auth_failure
 import re
 
 # Broadcast time window (8am - 8pm in user's local timezone)
@@ -70,10 +71,13 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     if not ADMIN_PASSWORD:
         raise HTTPException(status_code=500, detail="Admin password not configured")
 
+    enforce_auth_rate_limit(credentials.username, "dashboard")
+
     correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
     correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
 
     if not (correct_username and correct_password):
+        record_auth_failure(credentials.username)
         log_security_event("AUTH_FAILURE", {"username": credentials.username, "endpoint": "dashboard"})
         raise HTTPException(
             status_code=401,
