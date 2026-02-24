@@ -512,3 +512,25 @@ Users with both daily summaries and smart nudges enabled were receiving TWO sepa
 - `COMBINED_NUDGE_MAX_CHARS = 1500` in `config.py` — combined message truncation limit
 
 **Files changed:** `config.py`, `services/nudge_service.py`, `models/user.py`, `tasks/reminder_tasks.py`, `tests/test_smart_nudges.py`
+
+### Round 6 Security Audit (Feb 2026)
+Final security pass across the full codebase. 2 high, 4 medium, 2 low issues found and fixed in PRs #164 and #165. No critical vulnerabilities.
+
+**PR #164 — High-Priority (H1 + H2):**
+
+- **H1 — HTTP Security Headers Middleware:** Added `SecurityHeadersMiddleware` in `main.py` (after `TimeoutMiddleware`) that sets 7 headers on all responses: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Strict-Transport-Security: max-age=31536000; includeSubDomains`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, and `Content-Security-Policy` (with `'unsafe-inline'` for admin dashboard inline scripts/styles).
+
+- **H2 — Consolidated Auth Rate Limiting:** Extracted `check_auth_rate_limit()`, `record_auth_failure()`, and new `enforce_auth_rate_limit()` from `main.py` into shared `utils/auth.py` module. Applied brute-force protection (5 failures / 5-minute lockout) to all 4 auth endpoints. Previously only `main.py:verify_admin()` had protection; `admin_dashboard.py:verify_admin()`, `monitoring_dashboard.py:verify_admin()`, and `cs_portal.py:verify_cs_auth()` could be brute-forced without limit.
+
+**Files changed:** `main.py`, `admin_dashboard.py`, `monitoring_dashboard.py`, `cs_portal.py`, `utils/auth.py` (new)
+
+**PR #165 — Medium/Low-Priority (M1–M4 + L1–L2):**
+
+- **M1 — Stripe Webhook Exception Leak:** `main.py:5412` — `str(e)` → `"Internal server error"` (already logged at line 5411).
+- **M2 — Admin Duplicate Reminders Exception Leak:** `main.py:5951` — `detail=str(e)` → `detail="Internal server error"` (already logged at line 5950).
+- **M3 — F-string SQL → psycopg2.sql.Identifier():** `create_or_update_user()` in `models/user.py` converted from f-string SQL to `psycopg2.sql.SQL` + `sql.Identifier()` for dynamic field names in both UPDATE and INSERT paths. Defense-in-depth alongside existing `ALLOWED_USER_FIELDS` whitelist.
+- **M4 — Webhook Idempotency Full-Clear Bug:** `main.py:416-418` — `_processed_message_sids.clear()` dropped ALL tracking when dict exceeded 1000 entries, creating a window for duplicate processing. Replaced with TTL-based eviction that only removes entries older than 10 minutes.
+- **L1 — Bare except in Test File:** `tests/test_background_tasks.py:294` — `except:` → `except Exception:`.
+- **L2 — Unpinned Dependency Upper Bounds:** Added `<major+1.0.0` caps to all `>=`-only deps in `requirements-prod.txt`: twilio `<10.0.0`, openai `<2.0.0`, python-dateutil `<3.0.0`, psycopg2-binary `<3.0.0`, cryptography `<44.0.0`, celery `<6.0.0`, redis `<6.0.0`, stripe `<12.0.0`, anthropic `<1.0.0`, pyperclip `<2.0.0`.
+
+**Files changed:** `main.py`, `models/user.py`, `tests/test_background_tasks.py`, `requirements-prod.txt`
