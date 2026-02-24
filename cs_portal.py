@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from database import get_db_connection, return_db_connection
 from config import logger, CS_USERNAME, CS_PASSWORD, ADMIN_USERNAME, ADMIN_PASSWORD
+from utils.auth import enforce_auth_rate_limit, record_auth_failure
 
 router = APIRouter()
 security = HTTPBasic()
@@ -17,6 +18,8 @@ security = HTTPBasic()
 
 def verify_cs_auth(credentials: HTTPBasicCredentials = Depends(security)):
     """Verify CS portal credentials (accepts CS or Admin credentials)"""
+    enforce_auth_rate_limit(credentials.username, "cs_portal")
+
     # Check CS credentials
     cs_user_ok = secrets.compare_digest(credentials.username.encode("utf8"), CS_USERNAME.encode("utf8"))
     cs_pass_ok = CS_PASSWORD and secrets.compare_digest(credentials.password.encode("utf8"), CS_PASSWORD.encode("utf8"))
@@ -32,6 +35,7 @@ def verify_cs_auth(credentials: HTTPBasicCredentials = Depends(security)):
         logger.info(f"CS portal access: user=admin (admin credentials used for CS portal)")
         return credentials.username
 
+    record_auth_failure(credentials.username)
     logger.warning(f"CS portal auth failure: username={credentials.username}")
     raise HTTPException(
         status_code=401,

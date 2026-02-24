@@ -242,6 +242,24 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 app.add_middleware(TimeoutMiddleware)
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
 # Global exception handler - sanitize all error responses
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -306,21 +324,7 @@ def check_ip_rate_limit(ip: str) -> bool:
     _ip_rate_store[ip].append(current_time)
     return True
 
-# Auth failure rate limiting (per username)
-_auth_fail_store = defaultdict(list)
-_AUTH_FAIL_LIMIT = 5  # max failures per window
-_AUTH_FAIL_WINDOW = 300  # 5 minute lockout window
-
-def check_auth_rate_limit(username: str) -> bool:
-    """Check if username has exceeded auth failure rate limit. Returns True if allowed."""
-    current_time = time.time()
-    window_start = current_time - _AUTH_FAIL_WINDOW
-    _auth_fail_store[username] = [ts for ts in _auth_fail_store[username] if ts > window_start]
-    return len(_auth_fail_store[username]) < _AUTH_FAIL_LIMIT
-
-def record_auth_failure(username: str):
-    """Record an auth failure for rate limiting."""
-    _auth_fail_store[username].append(time.time())
+from utils.auth import check_auth_rate_limit, record_auth_failure, enforce_auth_rate_limit
 
 # HTTP Basic Auth for admin endpoints
 security = HTTPBasic()
