@@ -291,7 +291,7 @@ class TestTaskErrorHandling:
             try:
                 from tasks.reminder_tasks import check_and_send_reminders
                 check_and_send_reminders()
-            except:
+            except Exception:
                 pass  # May raise on first failure
 
         # Verify retry mechanism was triggered
