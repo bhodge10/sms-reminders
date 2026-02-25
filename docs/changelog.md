@@ -1,5 +1,10 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Recurring Reminders Losing Recurrence Through clarify_time Flow Fix (Feb 2026)
+When a user sent a recurring reminder without AM/PM (e.g., "every day at 5 remind me to take meds"), the `clarify_time` action had no recurrence fields in its JSON schema. After the user replied with AM/PM, a one-time reminder was created instead of a recurring one.
+
+**Fix:** Added `recurrence_type` and `recurrence_day` fields to the `clarify_time` schema in `services/ai_service.py`. The clarify_time handler in `main.py` now JSON-encodes recurrence info into `pending_reminder_date`. Updated `get_pending_reminder_date()` in `models/user.py` to parse JSON (backward compatible with plain date strings). Both the AM/PM response handler and the safeguard path now detect recurrence info and route to `save_recurring_reminder()` + `generate_first_occurrence()` instead of `save_reminder()`.
+
 ## Contact Messages — Separate from Support Tickets (Feb 2026)
 FEEDBACK, BUG, and web question/feedback/bug submissions no longer create support tickets. They go to a new lightweight `contact_messages` table instead. Only SUPPORT requests create tracked tickets in `support_tickets`.
 
