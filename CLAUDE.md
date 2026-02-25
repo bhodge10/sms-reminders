@@ -86,7 +86,7 @@ SMS -> Twilio webhook (/sms) -> main.py validates -> ai_service.py processes wit
 | `utils/db_helpers.py` | Encryption-aware database query helpers |
 
 ### Database Tables
-`users`, `reminders`, `recurring_reminders`, `memories`, `lists`, `list_items`, `interactions`, `support_tickets`, `broadcast_messages`, `conversation_flags`, `smart_nudges`, `monitoring_issues`, `monitoring_runs`, `issue_patterns`, `issue_pattern_links`, `validation_runs`, `issue_resolutions`, `pattern_resolutions`, `health_snapshots`, `fix_proposals`, `fix_proposal_runs`
+`users`, `reminders`, `recurring_reminders`, `memories`, `lists`, `list_items`, `interactions`, `support_tickets`, `contact_messages`, `broadcast_messages`, `conversation_flags`, `smart_nudges`, `monitoring_issues`, `monitoring_runs`, `issue_patterns`, `issue_pattern_links`, `validation_runs`, `issue_resolutions`, `pattern_resolutions`, `health_snapshots`, `fix_proposals`, `fix_proposal_runs`
 
 ## Deployment
 

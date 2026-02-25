@@ -1,5 +1,22 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Contact Messages — Separate from Support Tickets (Feb 2026)
+FEEDBACK, BUG, and web question/feedback/bug submissions no longer create support tickets. They go to a new lightweight `contact_messages` table instead. Only SUPPORT requests create tracked tickets in `support_tickets`.
+
+**New table:** `contact_messages` (id, phone_number, message, category, source, resolved, created_at)
+
+**New functions in `services/support_service.py`:** `save_contact_message()`, `get_contact_messages()`, `toggle_contact_message_resolved()`
+
+**Dashboard changes:**
+- Admin dashboard: new "Contact Messages" collapsible section with category filter and resolve toggle
+- CS portal: new "Contact Messages" tab with badge count, category filter, resolve/unresolve actions
+- Legacy Feedback tab relabeled in CS portal
+
+**Routing changes:**
+- SMS FEEDBACK/BUG handlers → `save_contact_message()` (was `create_categorized_ticket()`)
+- `/api/contact` endpoint → `save_contact_message()` for feedback/bug/question, `create_categorized_ticket()` only for support
+- Email notifications still sent for all types via `send_feedback_notification()`
+
 ## Progressive Education for Tier Limits (Feb 2026)
 Complete overhaul of tier limit messaging to improve free-to-premium conversion. Replaced confusing messages like "Added 0 items... (7 items skipped - list full)" with clear WHY-WHAT-HOW explanations. Implemented Education Pyramid (Levels 1-4) with progressive counters, warnings, and educational blocking. Enhanced STATUS command to show tier comparison. All functionality tested with 13 new unit tests. See `PROGRESSIVE_EDUCATION_IMPLEMENTATION.md` for details.
 
