@@ -62,6 +62,13 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
         c.execute("SELECT COUNT(*) FROM feedback WHERE resolved = FALSE")
         result = c.fetchone()
         unresolved_feedback = result[0] if result else 0
+        # Count unresolved contact messages
+        try:
+            c.execute("SELECT COUNT(*) FROM contact_messages WHERE resolved = FALSE")
+            result = c.fetchone()
+            unresolved_contact_msgs = result[0] if result else 0
+        except Exception:
+            unresolved_contact_msgs = 0
     except Exception as e:
         logger.error(f"Error getting ticket count: {e}")
     finally:
@@ -528,9 +535,13 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
                 Support Tickets
                 <span class="badge" id="ticketBadge">{open_tickets}</span>
             </button>
+            <button onclick="showView('contact-messages')" id="btn-contact-messages">
+                Contact Messages
+                <span class="badge" id="contactMsgBadge" style="background: #f39c12;">{unresolved_contact_msgs}</span>
+            </button>
             <button onclick="showView('feedback')" id="btn-feedback">
-                Feedback
-                <span class="badge" id="feedbackBadge" style="background: #f39c12;">{unresolved_feedback}</span>
+                Feedback (Legacy)
+                <span class="badge" id="feedbackBadge" style="background: #95a5a6;">{unresolved_feedback}</span>
             </button>
         </div>
     </div>
@@ -654,6 +665,45 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
             </div>
         </div>
 
+        <!-- Contact Messages View -->
+        <div id="view-contact-messages" class="view-section">
+            <div class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2>Contact Messages</h2>
+                    <label style="cursor: pointer;">
+                        <input type="checkbox" id="showResolvedContactMsgs" onchange="loadContactMessages()"> Show resolved
+                    </label>
+                </div>
+                <p style="color: #7f8c8d; margin-bottom: 15px; font-size: 0.9em;">Feedback, bug reports, and questions from SMS and web forms.</p>
+                <div class="filter-row" style="margin-bottom: 15px;">
+                    <label>Category:</label>
+                    <select id="contactMsgCategoryFilter" onchange="loadContactMessages()">
+                        <option value="">All</option>
+                        <option value="feedback">Feedback</option>
+                        <option value="bug">Bug</option>
+                        <option value="question">Question</option>
+                    </select>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Customer</th>
+                            <th>Category</th>
+                            <th>Source</th>
+                            <th>Message</th>
+                            <th>Date</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="contactMsgsBody">
+                        <tr><td colspan="8" class="loading">Loading contact messages...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- Feedback View (legacy feedback table) -->
         <div id="view-feedback" class="view-section">
             <div class="section">
@@ -663,7 +713,7 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
                         <input type="checkbox" id="showResolvedFeedback" onchange="loadFeedback()"> Show resolved
                     </label>
                 </div>
-                <p style="color: #7f8c8d; margin-bottom: 15px; font-size: 0.9em;">New feedback/bug reports now create support tickets. This tab shows older entries from the legacy feedback table.</p>
+                <p style="color: #7f8c8d; margin-bottom: 15px; font-size: 0.9em;">Older entries from the legacy feedback table. New submissions go to Contact Messages.</p>
                 <table>
                     <thead>
                         <tr>
@@ -807,6 +857,8 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
             if (view === 'tickets') {{
                 loadAllTickets();
                 loadSlaInfo();
+            }} else if (view === 'contact-messages') {{
+                loadContactMessages();
             }} else if (view === 'feedback') {{
                 loadFeedback();
             }}
@@ -1173,6 +1225,57 @@ async def cs_portal(request: Request, user: str = Depends(verify_cs_auth)):
             if (minutes < 60) return minutes + 'm';
             if (minutes < 1440) return Math.round(minutes / 60) + 'h';
             return Math.round(minutes / 1440) + 'd';
+        }}
+
+        // Contact Messages
+        async function loadContactMessages() {{
+            const includeResolved = document.getElementById('showResolvedContactMsgs').checked;
+            const category = document.getElementById('contactMsgCategoryFilter').value;
+            const tbody = document.getElementById('contactMsgsBody');
+
+            let url = `/cs/contact-messages?include_resolved=${{includeResolved}}`;
+            if (category) url += `&category=${{category}}`;
+
+            try {{
+                const response = await fetch(url);
+                const data = await response.json();
+                const messages = data.messages || [];
+
+                const unresolvedCount = messages.filter(m => !m.resolved).length;
+                document.getElementById('contactMsgBadge').textContent = unresolvedCount;
+
+                if (messages.length === 0) {{
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No contact messages</td></tr>';
+                    return;
+                }}
+
+                tbody.innerHTML = messages.map(m => `
+                    <tr style="${{m.resolved ? 'opacity: 0.6;' : ''}}">
+                        <td>#${{m.id}}</td>
+                        <td>${{m.user_name || 'Unknown'}} (...${{m.phone_number.slice(-4)}})</td>
+                        <td><span class="cat-${{m.category}}">${{m.category.toUpperCase()}}</span></td>
+                        <td><span class="source-${{m.source}}">${{m.source.toUpperCase()}}</span></td>
+                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${{m.message}}</td>
+                        <td>${{m.created_at ? new Date(m.created_at).toLocaleString() : 'N/A'}}</td>
+                        <td>${{m.resolved ? '<span style="color:#27ae60">Resolved</span>' : '<span style="color:#e74c3c">Open</span>'}}</td>
+                        <td>${{!m.resolved ?
+                            `<button class="btn btn-success" onclick="resolveContactMsg(${{m.id}})">Resolve</button>` :
+                            `<button class="btn btn-warning" onclick="resolveContactMsg(${{m.id}})">Unresolve</button>`}}
+                        </td>
+                    </tr>
+                `).join('');
+            }} catch (e) {{
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Error loading contact messages</td></tr>';
+            }}
+        }}
+
+        async function resolveContactMsg(id) {{
+            try {{
+                const response = await fetch(`/cs/contact-messages/${{id}}/toggle`, {{ method: 'POST' }});
+                if (response.ok) loadContactMessages();
+            }} catch (e) {{
+                alert('Error updating contact message');
+            }}
         }}
 
         // Feedback (legacy table)
@@ -2081,6 +2184,28 @@ async def cs_assign_ticket(ticket_id: int, request: Request, user: str = Depends
     except Exception as e:
         logger.error(f"Error assigning ticket: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# =====================================================
+# CONTACT MESSAGES ENDPOINTS
+# =====================================================
+
+@router.get("/cs/contact-messages")
+async def cs_get_contact_messages(category: str = None, include_resolved: bool = False, user: str = Depends(verify_cs_auth)):
+    """Get contact messages (feedback, bug reports, questions)"""
+    from services.support_service import get_contact_messages
+    messages = get_contact_messages(category_filter=category, include_resolved=include_resolved)
+    return {"messages": messages}
+
+
+@router.post("/cs/contact-messages/{message_id}/toggle")
+async def cs_toggle_contact_message(message_id: int, user: str = Depends(verify_cs_auth)):
+    """Toggle resolved status of a contact message"""
+    from services.support_service import toggle_contact_message_resolved
+    success = toggle_contact_message_resolved(message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Contact message not found")
+    return {"success": True}
 
 
 # =====================================================

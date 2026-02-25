@@ -13,7 +13,7 @@ Support Mode:
 from datetime import datetime, timedelta
 from database import get_db_connection, return_db_connection
 from config import logger
-from services.email_service import send_support_notification
+from services.email_service import send_support_notification, send_feedback_notification
 from services.sms_service import send_sms
 
 # How long after last activity to keep user in support mode (minutes)
@@ -111,6 +111,123 @@ def create_categorized_ticket(phone_number: str, message: str, category: str, so
         if conn:
             conn.rollback()
         return {'success': False, 'error': str(e)}
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def save_contact_message(phone_number: str, message: str, category: str, source: str = 'sms') -> dict:
+    """
+    Save a lightweight contact message (feedback, bug report, or question).
+    These go to the contact_messages table instead of support_tickets.
+
+    Args:
+        phone_number: User's phone number
+        message: The message content
+        category: 'feedback', 'bug', or 'question'
+        source: 'sms' or 'web'
+
+    Returns:
+        dict with id and success status
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute(
+            """INSERT INTO contact_messages (phone_number, message, category, source)
+               VALUES (%s, %s, %s, %s) RETURNING id""",
+            (phone_number, message, category, source)
+        )
+        msg_id = c.fetchone()[0]
+        conn.commit()
+
+        # Send email notification
+        user_name = get_user_name(phone_number)
+        send_feedback_notification(category, phone_number, message, source, user_name)
+
+        logger.info(f"Saved {category} contact message #{msg_id} from {source} for ...{phone_number[-4:]}")
+        return {'success': True, 'id': msg_id}
+
+    except Exception as e:
+        logger.error(f"Error saving contact message: {e}")
+        if conn:
+            conn.rollback()
+        return {'success': False, 'error': str(e)}
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_contact_messages(category_filter: str = None, include_resolved: bool = False) -> list:
+    """Get contact messages for admin/CS dashboard"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        query = """
+            SELECT cm.id, cm.phone_number, cm.message, cm.category, cm.source,
+                   cm.resolved, cm.created_at, u.first_name
+            FROM contact_messages cm
+            LEFT JOIN users u ON cm.phone_number = u.phone_number
+            WHERE 1=1
+        """
+        params = []
+
+        if not include_resolved:
+            query += " AND cm.resolved = FALSE"
+
+        if category_filter:
+            query += " AND cm.category = %s"
+            params.append(category_filter)
+
+        query += " ORDER BY cm.created_at DESC"
+
+        c.execute(query, params)
+        rows = c.fetchall()
+        return [
+            {
+                'id': r[0],
+                'phone_number': r[1],
+                'message': r[2][:200] + '...' if r[2] and len(r[2]) > 200 else r[2],
+                'category': r[3],
+                'source': r[4],
+                'resolved': r[5],
+                'created_at': r[6].isoformat() if r[6] else None,
+                'user_name': r[7]
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error getting contact messages: {e}")
+        return []
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def toggle_contact_message_resolved(message_id: int) -> bool:
+    """Toggle the resolved status of a contact message"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT resolved FROM contact_messages WHERE id = %s", (message_id,))
+        result = c.fetchone()
+        if not result:
+            return False
+        new_status = not result[0]
+        c.execute(
+            "UPDATE contact_messages SET resolved = %s WHERE id = %s",
+            (new_status, message_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error toggling contact message resolved: {e}")
+        return False
     finally:
         if conn:
             return_db_connection(conn)

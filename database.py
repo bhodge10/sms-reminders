@@ -347,6 +347,19 @@ def init_db():
             )
         ''')
 
+        # Lightweight contact messages (feedback, bug reports, questions) - not full tickets
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS contact_messages (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                message TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'sms',
+                resolved BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Customer service notes
         c.execute('''
             CREATE TABLE IF NOT EXISTS customer_notes (
