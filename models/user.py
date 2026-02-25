@@ -3,6 +3,7 @@ User Model
 Handles all user-related database operations
 """
 
+import json
 from datetime import date
 from typing import Any, Optional, Tuple
 
@@ -388,7 +389,17 @@ def get_pending_reminder_date(phone_number: str) -> Optional[dict[str, Any]]:
             result = c.fetchone()
 
         if result and result[1]:
-            return {'text': result[0], 'date': result[1]}
+            pending_date = result[1]
+            # Try JSON parsing for recurrence info stored by clarify_time
+            try:
+                parsed = json.loads(pending_date)
+                if isinstance(parsed, dict):
+                    parsed['text'] = result[0]
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Plain date string (backward compatible)
+            return {'text': result[0], 'date': pending_date}
         return None
     except Exception as e:
         logger.error(f"Error getting pending reminder date: {e}")
