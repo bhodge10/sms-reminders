@@ -418,6 +418,8 @@ For ASKING TIME CLARIFICATION (when time given but missing AM/PM):
     "reminder_text": "what to remind them about",
     "time_mentioned": "the ambiguous time they said (e.g., '4:35')",
     "reminder_date": "YYYY-MM-DD if a specific date/day was mentioned (e.g., 'Sunday', 'March 5th'), omit if no date",
+    "recurrence_type": "daily/weekly/weekdays/weekends/monthly if this is a recurring reminder, omit if one-time",
+    "recurrence_day": "day number (0-6 for weekly, 1-31 for monthly) if weekly/monthly, omit otherwise",
     "response": "Got it! Do you mean [time] AM or PM?"
 }}
 
