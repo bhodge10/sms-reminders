@@ -2389,13 +2389,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if command == "FEEDBACK":
             feedback_message = message_text.strip()
             if feedback_message:
-                # Route through support tickets with category='feedback'
-                from services.support_service import create_categorized_ticket
-                result = create_categorized_ticket(phone_number, feedback_message, 'feedback', 'sms')
+                # Save as lightweight contact message (not a support ticket)
+                from services.support_service import save_contact_message
+                result = save_contact_message(phone_number, feedback_message, 'feedback', 'sms')
                 if result['success']:
                     resp = MessagingResponse()
                     resp.message("Thank you for your feedback! We appreciate you taking the time to share your thoughts with us.")
-                    log_interaction(phone_number, incoming_msg, f"Feedback ticket #{result['ticket_id']}", "feedback", True)
+                    log_interaction(phone_number, incoming_msg, f"Feedback message #{result['id']}", "feedback", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
                     resp = MessagingResponse()
@@ -2413,13 +2413,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         if command == "BUG":
             bug_message = message_text.strip()
             if bug_message:
-                # Route through support tickets with category='bug'
-                from services.support_service import create_categorized_ticket
-                result = create_categorized_ticket(phone_number, bug_message, 'bug', 'sms')
+                # Save as lightweight contact message (not a support ticket)
+                from services.support_service import save_contact_message
+                result = save_contact_message(phone_number, bug_message, 'bug', 'sms')
                 if result['success']:
                     resp = MessagingResponse()
                     resp.message("Thank you for reporting this bug! Our team will look into it.")
-                    log_interaction(phone_number, incoming_msg, f"Bug ticket #{result['ticket_id']}", "bug_report", True)
+                    log_interaction(phone_number, incoming_msg, f"Bug message #{result['id']}", "bug_report", True)
                     return Response(content=str(resp), media_type="application/xml")
                 else:
                     resp = MessagingResponse()
@@ -5609,11 +5609,16 @@ async def website_contact(request: Request):
                 content={"success": False, "error": "Please enter a valid US phone number"}
             )
 
-        # Route through support tickets with appropriate category
-        from services.support_service import create_categorized_ticket
-        result = create_categorized_ticket(formatted_phone, message, contact_type, 'web')
+        # Route support requests to tickets, everything else to contact messages
+        if contact_type == 'support':
+            from services.support_service import create_categorized_ticket
+            result = create_categorized_ticket(formatted_phone, message, contact_type, 'web')
+        else:
+            from services.support_service import save_contact_message
+            result = save_contact_message(formatted_phone, message, contact_type, 'web')
+
         if not result['success']:
-            logger.error(f"Error creating ticket for web contact: {result.get('error')}")
+            logger.error(f"Error saving web contact ({contact_type}): {result.get('error')}")
             return JSONResponse(
                 status_code=500,
                 content={"success": False, "error": "Something went wrong. Please try again."}

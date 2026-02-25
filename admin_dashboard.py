@@ -847,6 +847,28 @@ async def toggle_feedback_resolved(feedback_id: int, admin: str = Depends(verify
 
 
 # =====================================================
+# CONTACT MESSAGES API ENDPOINTS
+# =====================================================
+
+@router.get("/admin/contact-messages")
+async def get_contact_messages_endpoint(category: str = None, include_resolved: bool = False, admin: str = Depends(verify_admin)):
+    """Get contact messages (feedback, bug reports, questions)"""
+    from services.support_service import get_contact_messages
+    messages = get_contact_messages(category_filter=category, include_resolved=include_resolved)
+    return JSONResponse(content={"messages": messages})
+
+
+@router.post("/admin/contact-messages/{message_id}/toggle")
+async def toggle_contact_message(message_id: int, admin: str = Depends(verify_admin)):
+    """Toggle resolved status of a contact message"""
+    from services.support_service import toggle_contact_message_resolved
+    success = toggle_contact_message_resolved(message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Contact message not found")
+    return JSONResponse(content={"success": True})
+
+
+# =====================================================
 # COST ANALYTICS API ENDPOINT
 # =====================================================
 
@@ -3800,6 +3822,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <a href="#overview">Overview</a>
         <a href="#broadcast">Broadcast</a>
         <a href="#support">Support Tickets</a>
+        <a href="#contact-messages">Contact Messages</a>
         <a href="#feedback">Feedback</a>
         <a href="#costs">Costs</a>
         <a href="#conversations">Conversations</a>
@@ -4138,7 +4161,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
         <div class="section-content">
             <p style="color: #7f8c8d; margin-bottom: 15px;">
-                Users can text "Support [message]" to create tickets. Feedback and bug reports also create tickets.
+                Users can text "Support [message]" to create tickets. Feedback and bug reports go to <a href="#contact-messages" style="color: #3498db;">Contact Messages</a>.
                 <a href="/cs" style="color: #3498db; font-weight: 600;">Open CS Portal</a> for full ticket management with filtering, assignment, and canned responses.
             </p>
 
@@ -4176,6 +4199,35 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                         <button onclick="reopenCurrentTicket()" id="reopenTicketBtn" class="btn" style="background: #f39c12; display: none;">Reopen Ticket</button>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contact Messages Section -->
+    <div id="contact-messages" class="collapsible-section section-anchor">
+        <div class="section-header" onclick="toggleSection('contact-messages')">
+            <h2>📨 Contact Messages <span id="contactMsgCount" style="font-size: 0.7em; color: #7f8c8d;"></span></h2>
+            <span class="section-toggle">▼</span>
+        </div>
+        <div class="section-content">
+            <p style="color: #7f8c8d; margin-bottom: 15px;">
+                Feedback, bug reports, and questions from SMS and web. These are lightweight messages — not support tickets.
+            </p>
+            <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center;">
+                <label>
+                    <input type="checkbox" id="showResolvedContactMsgs" onchange="loadContactMessages()"> Show resolved
+                </label>
+                <label>Category:
+                    <select id="contactMsgCategory" onchange="loadContactMessages()" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="">All</option>
+                        <option value="feedback">Feedback</option>
+                        <option value="bug">Bug</option>
+                        <option value="question">Question</option>
+                    </select>
+                </label>
+            </div>
+            <div id="contactMessagesList">
+                <p style="color: #95a5a6;">Loading...</p>
             </div>
         </div>
     </div>
@@ -6050,6 +6102,67 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
         }}
 
+        // Contact Messages functions
+        async function loadContactMessages() {{
+            try {{
+                const includeResolved = document.getElementById('showResolvedContactMsgs').checked;
+                const category = document.getElementById('contactMsgCategory').value;
+                let url = `/admin/contact-messages?include_resolved=${{includeResolved}}`;
+                if (category) url += `&category=${{category}}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+                const messages = data.messages || [];
+
+                const container = document.getElementById('contactMessagesList');
+                const unresolvedCount = messages.filter(m => !m.resolved).length;
+                document.getElementById('contactMsgCount').textContent = unresolvedCount > 0 ? `(${{unresolvedCount}} unresolved)` : '';
+
+                if (messages.length === 0) {{
+                    container.innerHTML = '<p style="color: #95a5a6;">No contact messages.</p>';
+                    return;
+                }}
+
+                const catColors = {{ feedback: '#f39c12', bug: '#e74c3c', question: '#3498db' }};
+                const srcColors = {{ sms: '#9b59b6', web: '#2ecc71' }};
+
+                container.innerHTML = messages.map(m => {{
+                    const catColor = catColors[m.category] || '#95a5a6';
+                    const srcColor = srcColors[m.source] || '#95a5a6';
+                    const date = new Date(m.created_at).toLocaleString();
+                    const resolvedStyle = m.resolved ? 'opacity: 0.6;' : '';
+                    return `
+                        <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid ${{catColor}}; ${{resolvedStyle}}">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <strong>${{m.user_name || 'Unknown'}}</strong> (...${{m.phone_number.slice(-4)}})
+                                    <span style="background: ${{catColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">${{m.category.toUpperCase()}}</span>
+                                    <span style="background: ${{srcColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 4px;">${{m.source.toUpperCase()}}</span>
+                                </div>
+                                <button onclick="toggleContactMsg(${{m.id}})" class="btn" style="background: ${{m.resolved ? '#f39c12' : '#27ae60'}}; font-size: 0.85em; padding: 5px 12px;">
+                                    ${{m.resolved ? 'Unresolve' : 'Resolve'}}
+                                </button>
+                            </div>
+                            <div style="color: #333; margin-top: 8px;">${{m.message}}</div>
+                            <div style="color: #95a5a6; font-size: 0.8em; margin-top: 5px;">${{date}}${{m.resolved ? ' — Resolved' : ''}}</div>
+                        </div>
+                    `;
+                }}).join('');
+            }} catch (e) {{
+                console.error('Error loading contact messages:', e);
+                document.getElementById('contactMessagesList').innerHTML = '<p style="color: #e74c3c;">Error loading contact messages</p>';
+            }}
+        }}
+
+        async function toggleContactMsg(id) {{
+            try {{
+                const response = await fetch(`/admin/contact-messages/${{id}}/toggle`, {{ method: 'POST' }});
+                if (response.ok) loadContactMessages();
+            }} catch (e) {{
+                alert('Error updating contact message');
+            }}
+        }}
+
         // Support ticket functions
         let currentTicketId = null;
         let currentTicketStatus = null;
@@ -6259,6 +6372,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         loadFlaggedConversations();
         loadChangelog();
         loadSupportTickets();
+        loadContactMessages();
         loadRecurring();
 
         // Handle URL hash for deep linking to support tickets
