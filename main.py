@@ -866,6 +866,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             "hi, i'd like to sign up!": "reddit",
             "hey, i'd like to sign up!": "google",
             "sign me up!": "tiktok",
+            "kristen": "influencer-kristen",
         }
         if not is_user_onboarded(phone_number):
             referral_source = REFERRAL_MESSAGES.get(incoming_msg.lower().strip())
