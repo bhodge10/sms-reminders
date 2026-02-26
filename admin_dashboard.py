@@ -2920,7 +2920,8 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
                 phone_number, first_name, last_name, email, zip_code, timezone,
                 onboarding_complete, created_at, premium_status, premium_since,
                 subscription_status, stripe_customer_id, stripe_subscription_id,
-                last_active_at, total_messages
+                last_active_at, total_messages,
+                COALESCE(opted_out, FALSE) as opted_out, opted_out_at
             FROM users WHERE phone_number = %s
         ''', (phone_number,))
         user = c.fetchone()
@@ -2990,6 +2991,8 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
             "stripe_subscription_id": user[12],
             "last_active_at": str(user[13]) if user[13] else None,
             "total_messages": user[14] or 0,
+            "opted_out": user[15],
+            "opted_out_at": str(user[16]) if user[16] else None,
             "stats": {
                 "reminders": reminder_count,
                 "pending_reminders": pending_reminders,
@@ -3191,6 +3194,43 @@ async def cs_update_customer_tier(
         raise
     except Exception as e:
         logger.error(f"CS update tier error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/cs/customer/{phone_number}/clear-opted-out")
+async def cs_clear_opted_out(phone_number: str, admin: str = Depends(verify_admin)):
+    """Manually clear the opted_out flag for a user"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('SELECT opted_out FROM users WHERE phone_number = %s', (phone_number,))
+        user = c.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        c.execute('''
+            UPDATE users SET opted_out = FALSE, opted_out_at = NULL
+            WHERE phone_number = %s
+        ''', (phone_number,))
+
+        c.execute('''
+            INSERT INTO customer_notes (phone_number, note, created_by)
+            VALUES (%s, %s, %s)
+        ''', (phone_number, "Manually cleared opted_out flag", admin))
+
+        conn.commit()
+        logger.info(f"CS: {admin} cleared opted_out for ***{phone_number[-4:]}")
+
+        return {"message": "Opted-out flag cleared"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CS clear opted_out error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
@@ -6886,6 +6926,13 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <div><strong>Last Active:</strong> ${{data.last_active_at ? new Date(data.last_active_at).toLocaleDateString() : '-'}}</div>
                     <div><strong>Tier:</strong> <span style="color: ${{data.tier === 'premium' ? '#9b59b6' : '#3498db'}}; font-weight: 500;">${{data.tier}}</span></div>
                     <div><strong>Subscription Status:</strong> ${{data.subscription_status || '-'}}</div>
+                    ${{data.opted_out ? `
+                        <div style="margin-top: 8px; padding: 8px 12px; background: #fdedec; border: 1px solid #e74c3c; border-radius: 4px;">
+                            <span style="color: #e74c3c; font-weight: bold;">Opted Out</span>
+                            <span style="color: #7f8c8d; font-size: 0.85em; margin-left: 6px;">${{data.opted_out_at ? 'since ' + new Date(data.opted_out_at).toLocaleDateString() : ''}}</span>
+                            <button onclick="clearOptedOut()" style="margin-left: 10px; background: #e74c3c; color: white; border: none; padding: 4px 10px; border-radius: 3px; font-size: 0.8em; cursor: pointer;">Clear Flag</button>
+                        </div>
+                    ` : ''}}
                 `;
 
                 // Stats
@@ -7043,6 +7090,22 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }} else {{
                 datePicker.style.display = 'none';
                 datePicker.value = '';
+            }}
+        }}
+
+        async function clearOptedOut() {{
+            if (!csCurrentPhone) return;
+            if (!confirm('Clear the opted-out flag for this user? They will be included in future broadcasts.')) return;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/clear-opted-out`, {{
+                    method: 'POST'
+                }});
+                if (!response.ok) throw new Error('Failed to clear flag');
+                alert('Opted-out flag cleared successfully.');
+                csLoadCustomer(csCurrentPhone);
+            }} catch (e) {{
+                alert('Error clearing opted-out flag: ' + e.message);
             }}
         }}
 

@@ -1408,6 +1408,13 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # Check if user has a pending reminder and their message contains AM or PM
         user = get_user(phone_number)
+
+        # Auto-clear stale opted_out flag — if a user is texting us (past the STOP
+        # handler), they're clearly not opted out at the Twilio level.
+        if user and len(user) > 21 and user[21]:
+            logger.info(f"Auto-clearing stale opted_out flag for {mask_phone_number(phone_number)} — user is actively texting")
+            create_or_update_user(phone_number, opted_out=False, opted_out_at=None)
+
         msg_upper = incoming_msg.upper()
         # Check for AM/PM in various formats: "8am", "8 am", "8:00am", "8a", "8:00a", "a.m.", etc.
         # Also recognize "morning" as AM and "afternoon"/"evening"/"night" as PM
