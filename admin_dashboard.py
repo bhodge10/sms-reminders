@@ -25,7 +25,8 @@ from database import (
     get_monitoring_connection, return_monitoring_connection
 )
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
-from utils.validation import log_security_event
+from utils.validation import log_security_event, mask_phone_number
+from utils.encryption import safe_decrypt
 from utils.auth import enforce_auth_rate_limit, record_auth_failure
 import re
 
@@ -99,7 +100,7 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
         conn = get_db_connection()
         c = conn.cursor()
 
-        # Get users with their timezones and plan types
+        # Get users with their timezones and plan types (exclude opted-out users)
         c.execute('''
             SELECT
                 phone_number,
@@ -107,6 +108,7 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
                 timezone
             FROM users
             WHERE onboarding_complete = TRUE
+            AND (opted_out = FALSE OR opted_out IS NULL)
         ''')
         results = c.fetchall()
 
@@ -136,6 +138,87 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
     except Exception as e:
         logger.error(f"Error getting broadcast stats: {e}")
         raise HTTPException(status_code=500, detail="Error getting stats")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/broadcast/recipients-preview")
+async def get_recipients_preview(audience: str = "all", admin: str = Depends(verify_admin)):
+    """Preview which users will receive a broadcast and who's excluded (and why)"""
+    if audience not in ("all", "free", "premium"):
+        raise HTTPException(status_code=400, detail="Invalid audience. Must be all, free, or premium.")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Get all onboarded users with relevant fields
+        c.execute('''
+            SELECT phone_number, first_name, timezone,
+                   COALESCE(premium_status, 'free') as plan,
+                   COALESCE(opted_out, FALSE) as opted_out
+            FROM users
+            WHERE onboarding_complete = TRUE
+        ''')
+        rows = c.fetchall()
+
+        included = []
+        excluded = []
+        excluded_opted_out = 0
+        excluded_outside_window = 0
+
+        for phone, first_name, timezone_str, plan, opted_out in rows:
+            # Apply audience filter
+            if audience == "free" and plan == "premium":
+                continue
+            if audience == "premium" and plan != "premium":
+                continue
+
+            masked = mask_phone_number(phone)
+            name = safe_decrypt(first_name, "") if first_name else None
+
+            # Determine local time for display
+            try:
+                tz = pytz.timezone(timezone_str or DEFAULT_TIMEZONE)
+            except pytz.UnknownTimezoneError:
+                tz = pytz.timezone(DEFAULT_TIMEZONE)
+            local_now = datetime.now(tz)
+            local_time_str = local_now.strftime("%I:%M %p").lstrip("0")
+
+            user_info = {
+                "phone": masked,
+                "name": name,
+                "tier": plan,
+                "timezone": timezone_str or DEFAULT_TIMEZONE,
+                "local_time": local_time_str
+            }
+
+            if opted_out:
+                excluded.append({**user_info, "reason": "opted_out"})
+                excluded_opted_out += 1
+            elif not is_within_broadcast_window(timezone_str):
+                excluded.append({**user_info, "reason": "outside_window"})
+                excluded_outside_window += 1
+            else:
+                included.append(user_info)
+
+        total_onboarded = len(included) + len(excluded)
+
+        return JSONResponse(content={
+            "included": included,
+            "excluded": excluded,
+            "summary": {
+                "total_onboarded": total_onboarded,
+                "included": len(included),
+                "excluded_opted_out": excluded_opted_out,
+                "excluded_outside_window": excluded_outside_window
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting recipients preview: {e}")
+        raise HTTPException(status_code=500, detail="Error getting recipients preview")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3999,6 +4082,58 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div style="margin-top: 8px; font-size: 0.85em; color: #7f8c8d;">
                 <em>Broadcasts only send to users between 8:00 AM and 8:00 PM in their local timezone</em>
             </div>
+            <div id="previewBtnContainer" style="margin-top: 10px;">
+                <button type="button" onclick="loadRecipientsPreview()" id="previewRecipientsBtn" class="btn" style="background: #8e44ad; color: white; padding: 6px 14px; font-size: 0.85em;">
+                    Preview Recipients
+                </button>
+                <span id="previewLoading" style="display: none; color: #7f8c8d; margin-left: 8px; font-size: 0.85em;">Loading...</span>
+            </div>
+        </div>
+
+        <div id="recipientsPreviewPanel" style="display: none; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden;">
+            <div style="background: #f8f9fa; padding: 12px 15px; border-bottom: 1px solid #ddd;">
+                <strong id="previewSummaryLine"></strong>
+            </div>
+            <div style="padding: 15px;">
+                <div id="includedSection">
+                    <h4 style="margin: 0 0 8px 0; color: #27ae60; cursor: pointer;" onclick="togglePreviewSection('includedTable')">
+                        Included <span id="includedCount"></span>
+                    </h4>
+                    <div id="includedTable" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #eafaf1;">
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Phone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Name</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Tier</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Timezone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Local Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="includedTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="excludedSection" style="margin-top: 15px;">
+                    <h4 style="margin: 0 0 8px 0; color: #e74c3c; cursor: pointer;" onclick="togglePreviewSection('excludedTable')">
+                        Excluded <span id="excludedCount"></span>
+                    </h4>
+                    <div id="excludedTable" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #fdedec;">
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Phone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Name</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Reason</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Timezone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Local Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="excludedTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="progress-info" id="progressInfo">
@@ -4616,6 +4751,8 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 15px 0; white-space: pre-wrap;">
                 <em id="modalMessage"></em>
             </div>
+            <div id="modalExcludedWarning" style="display: none; background: #fef9e7; border: 1px solid #f39c12; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-size: 0.9em;">
+            </div>
             <p style="color: #e74c3c;"><strong>This action cannot be undone.</strong></p>
             <div class="modal-buttons">
                 <button class="btn btn-secondary" onclick="hideConfirmModal()">Cancel</button>
@@ -5005,6 +5142,102 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             return '$' + value.toFixed(2);
         }}
 
+        let lastPreviewData = null;
+
+        function escapeHtml(str) {{
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }}
+
+        async function loadRecipientsPreview() {{
+            const audience = document.getElementById('audience').value;
+            if (audience === 'single') return;
+
+            const btn = document.getElementById('previewRecipientsBtn');
+            const loading = document.getElementById('previewLoading');
+            btn.disabled = true;
+            loading.style.display = 'inline';
+
+            try {{
+                const response = await fetch(`/admin/broadcast/recipients-preview?audience=${{audience}}`);
+                if (!response.ok) throw new Error('Failed to fetch preview');
+                const data = await response.json();
+                lastPreviewData = data;
+                renderRecipientsPreview(data);
+            }} catch (e) {{
+                console.error('Error loading recipients preview:', e);
+                document.getElementById('recipientsPreviewPanel').style.display = 'none';
+            }} finally {{
+                btn.disabled = false;
+                loading.style.display = 'none';
+            }}
+        }}
+
+        function renderRecipientsPreview(data) {{
+            const panel = document.getElementById('recipientsPreviewPanel');
+            panel.style.display = 'block';
+
+            const summary = data.summary;
+            const excludedTotal = summary.excluded_opted_out + summary.excluded_outside_window;
+            document.getElementById('previewSummaryLine').innerHTML =
+                `<span style="color: #27ae60;">${{summary.included}} will receive</span>` +
+                (excludedTotal > 0 ? ` &nbsp;|&nbsp; <span style="color: #e74c3c;">${{excludedTotal}} excluded</span>` : '') +
+                ` &nbsp;|&nbsp; <span style="color: #7f8c8d;">${{summary.total_onboarded}} total onboarded</span>`;
+
+            document.getElementById('includedCount').textContent = `(${{data.included.length}})`;
+            document.getElementById('excludedCount').textContent = `(${{data.excluded.length}})`;
+
+            // Render included table
+            const includedBody = document.getElementById('includedTableBody');
+            includedBody.innerHTML = '';
+            if (data.included.length === 0) {{
+                includedBody.innerHTML = '<tr><td colspan="5" style="padding: 8px; color: #95a5a6; text-align: center;">No users in window</td></tr>';
+            }} else {{
+                data.included.forEach(u => {{
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.phone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.name) || '<span style="color:#95a5a6">-</span>'}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;"><span style="background: ${{u.tier === 'premium' ? '#f39c12' : '#3498db'}}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${{u.tier}}</span></td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.85em;">${{escapeHtml(u.timezone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.local_time)}}</td>
+                    `;
+                    includedBody.appendChild(row);
+                }});
+            }}
+
+            // Render excluded table
+            const excludedBody = document.getElementById('excludedTableBody');
+            excludedBody.innerHTML = '';
+            const excludedSection = document.getElementById('excludedSection');
+            if (data.excluded.length === 0) {{
+                excludedSection.style.display = 'none';
+            }} else {{
+                excludedSection.style.display = 'block';
+                data.excluded.forEach(u => {{
+                    const row = document.createElement('tr');
+                    const reasonLabel = u.reason === 'opted_out'
+                        ? '<span style="background: #e74c3c; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Opted Out</span>'
+                        : '<span style="background: #e67e22; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Outside Window</span>';
+                    row.innerHTML = `
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.phone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.name) || '<span style="color:#95a5a6">-</span>'}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{reasonLabel}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.85em;">${{escapeHtml(u.timezone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.local_time)}}</td>
+                    `;
+                    excludedBody.appendChild(row);
+                }});
+            }}
+        }}
+
+        function togglePreviewSection(sectionId) {{
+            const section = document.getElementById(sectionId);
+            section.style.display = section.style.display === 'none' ? 'block' : 'none';
+        }}
+
         function updatePreview() {{
             const audience = document.getElementById('audience').value;
             const message = document.getElementById('message').value;
@@ -5012,6 +5245,11 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
             // Show/hide single phone input
             document.getElementById('singlePhoneGroup').style.display = isSingle ? 'block' : 'none';
+
+            // Show/hide preview recipients button; hide panel on audience change
+            document.getElementById('previewBtnContainer').style.display = isSingle ? 'none' : 'block';
+            document.getElementById('recipientsPreviewPanel').style.display = 'none';
+            lastPreviewData = null;
 
             // Update character count
             document.getElementById('charCount').textContent = message.length;
@@ -5129,6 +5367,24 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 modalSubtitle.innerHTML = 'You are about to send the following message to <strong>' + inWindowCount + '</strong> users:';
                 confirmBtn.textContent = 'Send Now';
                 confirmBtn.style.background = '#e74c3c';
+            }}
+
+            // Show excluded warning if preview data available
+            const excludedWarning = document.getElementById('modalExcludedWarning');
+            if (!isSingle && lastPreviewData && lastPreviewData.summary) {{
+                const s = lastPreviewData.summary;
+                const excludedTotal = s.excluded_opted_out + s.excluded_outside_window;
+                if (excludedTotal > 0) {{
+                    let parts = [];
+                    if (s.excluded_opted_out > 0) parts.push(s.excluded_opted_out + ' opted out');
+                    if (s.excluded_outside_window > 0) parts.push(s.excluded_outside_window + ' outside time window');
+                    excludedWarning.innerHTML = `⚠️ <strong>${{excludedTotal}} user${{excludedTotal !== 1 ? 's' : ''}} excluded:</strong> ${{parts.join(', ')}}`;
+                    excludedWarning.style.display = 'block';
+                }} else {{
+                    excludedWarning.style.display = 'none';
+                }}
+            }} else {{
+                excludedWarning.style.display = 'none';
             }}
 
             document.getElementById('confirmModal').classList.add('active');
