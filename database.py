@@ -580,6 +580,17 @@ def init_db():
                 created_reminder_id INTEGER REFERENCES reminders(id),
                 metadata TEXT
             )""",
+            # Twilio actual cost tracking (polled daily from Usage Records API)
+            """CREATE TABLE IF NOT EXISTS twilio_costs (
+                id SERIAL PRIMARY KEY,
+                cost_date DATE NOT NULL UNIQUE,
+                inbound_count INTEGER DEFAULT 0,
+                inbound_cost NUMERIC(10,4) DEFAULT 0,
+                outbound_count INTEGER DEFAULT 0,
+                outbound_cost NUMERIC(10,4) DEFAULT 0,
+                total_cost NUMERIC(10,4) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -606,6 +617,8 @@ def init_db():
             # Smart nudges: index for efficient querying of users who need nudge
             "CREATE INDEX IF NOT EXISTS idx_users_smart_nudges ON users(smart_nudges_enabled) WHERE smart_nudges_enabled = TRUE",
             "CREATE INDEX IF NOT EXISTS idx_smart_nudges_phone ON smart_nudges(phone_number, sent_at)",
+            # Twilio costs: index for date-range queries
+            "CREATE INDEX IF NOT EXISTS idx_twilio_costs_date ON twilio_costs(cost_date)",
         ]
 
         for migration in migrations:

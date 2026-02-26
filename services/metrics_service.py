@@ -452,10 +452,62 @@ def get_cost_analytics():
 
             results[period_name] = period_data
 
+        # Add actual Twilio costs alongside estimates
+        results['twilio_actual'] = get_twilio_actual_costs()
+
         return results
 
     except Exception as e:
         logger.error(f"Error getting cost analytics: {e}")
+        return {}
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_twilio_actual_costs():
+    """Get actual Twilio costs from the twilio_costs table.
+
+    Returns summary for today, last 7 days, and last 30 days.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        periods = {
+            'day': '1 day',
+            'week': '7 days',
+            'month': '30 days',
+        }
+
+        results = {}
+        for period_name, interval in periods.items():
+            c.execute('''
+                SELECT
+                    COALESCE(SUM(inbound_count), 0),
+                    COALESCE(SUM(inbound_cost), 0),
+                    COALESCE(SUM(outbound_count), 0),
+                    COALESCE(SUM(outbound_cost), 0),
+                    COALESCE(SUM(total_cost), 0),
+                    COUNT(*)
+                FROM twilio_costs
+                WHERE cost_date >= CURRENT_DATE - %s::interval
+            ''', (interval,))
+            row = c.fetchone()
+            results[period_name] = {
+                'inbound_count': row[0],
+                'inbound_cost': float(row[1]),
+                'outbound_count': row[2],
+                'outbound_cost': float(row[3]),
+                'total_cost': float(row[4]),
+                'days_with_data': row[5],
+            }
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error getting Twilio actual costs: {e}")
         return {}
     finally:
         if conn:

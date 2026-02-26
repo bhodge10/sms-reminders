@@ -175,6 +175,21 @@ beat_schedule = {
         },
     },
 
+    # ===========================================
+    # TWILIO COST POLLING
+    # ===========================================
+
+    # Poll Twilio Usage Records API daily for actual SMS costs
+    "poll-twilio-costs-daily": {
+        "task": "tasks.twilio_tasks.poll_twilio_costs",
+        "schedule": crontab(hour=6, minute=30),  # 6:30 AM UTC — after Twilio finalizes previous day
+        "options": {"expires": 3600},
+    },
+
+    # ===========================================
+    # MONITORING PIPELINE TASKS (Agent 1 + 2 + 3)
+    # ===========================================
+
     # Save daily health snapshot at midnight UTC
     # Ensures consistent trend data even if pipeline fails
     "monitoring-daily-snapshot": {

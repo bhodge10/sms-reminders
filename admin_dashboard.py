@@ -4289,8 +4289,12 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 </tr>
             </table>
 
+            <div id="twilioActualSummary" style="margin-top: 15px; padding: 12px 15px; background: #f8f9fa; border-radius: 6px; font-size: 0.9em; display: none;">
+                <!-- Populated by JS -->
+            </div>
+
             <div style="margin-top: 15px; font-size: 0.85em; color: #7f8c8d;">
-                <em>SMS: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing</em>
+                <em>SMS Estimated: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing | Actual SMS costs polled daily from Twilio</em>
             </div>
         </div>
     </div>
@@ -5175,11 +5179,55 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <td class="money"><strong>${{formatCurrency(total.cost_per_user)}}</strong></td>
                 `;
             }}
+
+            // Render Twilio actual vs estimated summary
+            renderTwilioActualSummary(period, total);
+        }}
+
+        function renderTwilioActualSummary(period, totalEstimated) {{
+            const container = document.getElementById('twilioActualSummary');
+            const twilioData = costData.twilio_actual;
+
+            if (!twilioData || Object.keys(twilioData).length === 0) {{
+                container.style.display = 'block';
+                container.innerHTML = '<span style="color: #95a5a6;">No Twilio data yet \u2014 actual costs are polled daily at 6:30 AM UTC.</span>';
+                return;
+            }}
+
+            // Map period tabs to twilio_actual keys (hour has no Twilio data)
+            const periodMap = {{ 'day': 'day', 'week': 'week', 'month': 'month' }};
+            const actualPeriod = periodMap[period];
+            if (!actualPeriod || !twilioData[actualPeriod]) {{
+                container.style.display = 'block';
+                container.innerHTML = '<span style="color: #95a5a6;">Twilio actual costs not available for this period.</span>';
+                return;
+            }}
+
+            const actual = twilioData[actualPeriod];
+            const estimatedSms = totalEstimated ? totalEstimated.sms_cost : 0;
+            const actualSms = actual.total_cost;
+            const diff = actualSms - estimatedSms;
+            const diffColor = diff <= 0 ? '#27ae60' : '#e74c3c';
+            const diffSign = diff <= 0 ? '' : '+';
+
+            container.style.display = 'block';
+            container.innerHTML = `
+                <div style="display: flex; gap: 25px; align-items: center; flex-wrap: wrap;">
+                    <span><strong>SMS Estimated:</strong> ${{formatCurrency(estimatedSms)}}</span>
+                    <span><strong>SMS Actual (Twilio):</strong> ${{formatCurrency(actualSms)}}</span>
+                    <span style="color: ${{diffColor}}; font-weight: 600;">Difference: ${{diffSign}}${{formatCurrency(Math.abs(diff))}}</span>
+                    <span style="color: #95a5a6; font-size: 0.85em;">(${{actual.days_with_data}} day${{actual.days_with_data !== 1 ? 's' : ''}} of data)</span>
+                </div>
+                <div style="margin-top: 6px; font-size: 0.85em; color: #7f8c8d;">
+                    Inbound: ${{actual.inbound_count}} msgs / ${{formatCurrency(actual.inbound_cost)}} |
+                    Outbound: ${{actual.outbound_count}} msgs / ${{formatCurrency(actual.outbound_cost)}}
+                </div>
+            `;
         }}
 
         function formatCurrency(value) {{
             if (value === 0) return '$0.00';
-            if (value < 0.01) return '<$0.01';
+            if (value < 0.01 && value > 0) return '<$0.01';
             return '$' + value.toFixed(2);
         }}
 
