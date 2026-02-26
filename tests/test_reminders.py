@@ -342,3 +342,186 @@ class TestReminderTimezoneHandling:
 
         result = await simulator.send_message(phone, "MY REMINDERS")
         # Response should show time in Eastern timezone format
+
+
+class TestMultiDayReminders:
+    """Tests for multi-day reminder creation (e.g., 'for the next 5 days')."""
+
+    @pytest.mark.asyncio
+    async def test_every_day_for_next_five_days(self, simulator, onboarded_user, ai_mock):
+        """Test creating reminders for the next 5 days via 'multiple' action."""
+        phone = onboarded_user["phone"]
+
+        # Set user to active trial so the free tier 2-reminder/day limit doesn't block
+        from models.user import create_or_update_user
+        from database import get_db_connection, return_db_connection
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE users SET premium_status = 'trial', trial_end_date = NOW() + INTERVAL '14 days' WHERE phone_number = %s", (phone,))
+        conn.commit()
+        return_db_connection(conn)
+
+        # Build 5 reminder actions, one per day at 5:00 PM local time
+        actions = []
+        for i in range(1, 6):
+            day = (datetime.utcnow() + timedelta(days=i)).replace(hour=17, minute=0, second=0)
+            actions.append({
+                "action": "reminder",
+                "reminder_text": "it's time to quit working",
+                "reminder_date": day.strftime("%Y-%m-%d %H:%M:%S"),
+                "confidence": 95
+            })
+
+        multiple_response = {
+            "action": "multiple",
+            "actions": actions
+        }
+
+        # Register both original and normalized forms (main.py normalizes "5pm" -> "5:PM")
+        ai_mock.set_response(
+            "remind me every day for the next five days at 5pm that it's time to quit working",
+            multiple_response
+        )
+        ai_mock.set_response(
+            "remind me every day for the next five days at 5:pm that it's time to quit working",
+            multiple_response
+        )
+
+        result = await simulator.send_message(
+            phone,
+            "Remind me every day for the next five days at 5 PM that it's time to quit working"
+        )
+
+        # Should get confirmation(s) - the multiple handler joins replies with \n\n
+        output = result["output"].lower()
+        assert "remind" in output or "got it" in output, \
+            f"Expected reminder confirmation, got: {result['output']}"
+
+        # Verify reminders were created in the database
+        from models.reminder import get_user_reminders
+        reminders = get_user_reminders(phone)
+        unsent = [r for r in reminders if not r[4]]  # r[4] = sent
+        assert len(unsent) >= 5, \
+            f"Expected at least 5 unsent reminders, got {len(unsent)}"
+
+    @pytest.mark.asyncio
+    async def test_multi_day_reminder_not_classified_as_recurring(self, simulator, onboarded_user, ai_mock):
+        """Test that 'every day for the next 3 days' uses multiple action, not reminder_recurring."""
+        phone = onboarded_user["phone"]
+
+        # Set user to active trial so the free tier 2-reminder/day limit doesn't block
+        from database import get_db_connection, return_db_connection
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE users SET premium_status = 'trial', trial_end_date = NOW() + INTERVAL '14 days' WHERE phone_number = %s", (phone,))
+        conn.commit()
+        return_db_connection(conn)
+
+        # The correct response for "for the next 3 days" is multiple separate reminders
+        actions = []
+        for i in range(1, 4):
+            day = (datetime.utcnow() + timedelta(days=i)).replace(hour=8, minute=0, second=0)
+            actions.append({
+                "action": "reminder",
+                "reminder_text": "take medication",
+                "reminder_date": day.strftime("%Y-%m-%d %H:%M:%S"),
+                "confidence": 95
+            })
+
+        multiple_response = {
+            "action": "multiple",
+            "actions": actions
+        }
+
+        ai_mock.set_response(
+            "remind me for the next 3 days at 8am to take medication",
+            multiple_response
+        )
+        ai_mock.set_response(
+            "remind me for the next 3 days at 8:am to take medication",
+            multiple_response
+        )
+
+        result = await simulator.send_message(
+            phone,
+            "Remind me for the next 3 days at 8am to take medication"
+        )
+
+        output = result["output"].lower()
+        assert "remind" in output or "got it" in output, \
+            f"Expected reminder confirmation, got: {result['output']}"
+
+        from models.reminder import get_user_reminders
+        reminders = get_user_reminders(phone)
+        unsent = [r for r in reminders if not r[4]]
+        assert len(unsent) >= 3, \
+            f"Expected at least 3 unsent reminders, got {len(unsent)}"
+
+
+class TestClarifyTimeOclock:
+    """Tests for clarify_time flow with o'clock patterns and date context."""
+
+    @pytest.mark.asyncio
+    async def test_oclock_with_standalone_pm_and_date_context(self, simulator, onboarded_user, ai_mock):
+        """Test: 'Remind me Sunday at 1 o'clock to look at Robyn's registry' -> 'Pm'
+        Verifies o'clock is stripped from time and Sunday date is preserved."""
+        phone = onboarded_user["phone"]
+
+        # Calculate next Sunday's date for the AI response
+        from datetime import date
+        today = date.today()
+        days_until_sunday = (6 - today.weekday()) % 7
+        if days_until_sunday == 0:
+            days_until_sunday = 7
+        next_sunday = today + timedelta(days=days_until_sunday)
+        sunday_str = next_sunday.strftime("%Y-%m-%d")
+
+        clarify_response = {
+            "action": "clarify_time",
+            "reminder_text": "look at Robyn's registry",
+            "time_mentioned": "1 o'clock",
+            "reminder_date": sunday_str,
+            "response": "Got it! Do you mean 1 o'clock AM or PM?"
+        }
+
+        ai_mock.set_response("remind me sunday at 1 o'clock to look at robyn's registry", clarify_response)
+        ai_mock.set_response("remind me sunday at 1 o'clock to look at robyn's registry", clarify_response)
+
+        result = await simulator.send_message(phone, "Remind me Sunday at 1 o'clock to look at Robyn's registry")
+
+        # Should ask for AM/PM
+        assert "am" in result["output"].lower() or "pm" in result["output"].lower()
+
+        # User replies with standalone "Pm"
+        result = await simulator.send_message(phone, "Pm")
+
+        # Should confirm reminder is set for Sunday at 1 PM
+        output = result["output"].lower()
+        assert "remind" in output, f"Expected reminder confirmation, got: {result['output']}"
+        assert "1:00 pm" in output or "1 pm" in output, f"Expected 1 PM in output, got: {result['output']}"
+        assert "sunday" in output, f"Expected Sunday in output, got: {result['output']}"
+
+    @pytest.mark.asyncio
+    async def test_oclock_without_date_falls_back_to_today_tomorrow(self, simulator, onboarded_user, ai_mock):
+        """Test: 'Remind me at 3 o'clock to call mom' -> 'Pm' (no date context)
+        Verifies o'clock is stripped and today/tomorrow logic applies."""
+        phone = onboarded_user["phone"]
+
+        clarify_response = {
+            "action": "clarify_time",
+            "reminder_text": "call mom",
+            "time_mentioned": "3 o'clock",
+            "response": "Got it! Do you mean 3 o'clock AM or PM?"
+        }
+
+        ai_mock.set_response("remind me at 3 o'clock to call mom", clarify_response)
+        ai_mock.set_response("remind me at 3 o'clock to call mom", clarify_response)
+
+        result = await simulator.send_message(phone, "Remind me at 3 o'clock to call mom")
+        assert "am" in result["output"].lower() or "pm" in result["output"].lower()
+
+        result = await simulator.send_message(phone, "Pm")
+
+        output = result["output"].lower()
+        assert "remind" in output, f"Expected reminder confirmation, got: {result['output']}"
+        assert "3:00 pm" in output or "3 pm" in output, f"Expected 3 PM in output, got: {result['output']}"

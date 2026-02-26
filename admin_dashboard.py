@@ -8,6 +8,7 @@ import asyncio
 import threading
 import time
 from datetime import datetime
+from html import escape as html_escape
 import pytz
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -24,7 +25,9 @@ from database import (
     get_monitoring_connection, return_monitoring_connection
 )
 from config import ADMIN_USERNAME, ADMIN_PASSWORD, logger
-from utils.validation import log_security_event
+from utils.validation import log_security_event, mask_phone_number
+from utils.encryption import safe_decrypt
+from utils.auth import enforce_auth_rate_limit, record_auth_failure
 import re
 
 # Broadcast time window (8am - 8pm in user's local timezone)
@@ -69,10 +72,13 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     if not ADMIN_PASSWORD:
         raise HTTPException(status_code=500, detail="Admin password not configured")
 
+    enforce_auth_rate_limit(credentials.username, "dashboard")
+
     correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
     correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
 
     if not (correct_username and correct_password):
+        record_auth_failure(credentials.username)
         log_security_event("AUTH_FAILURE", {"username": credentials.username, "endpoint": "dashboard"})
         raise HTTPException(
             status_code=401,
@@ -94,7 +100,7 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
         conn = get_db_connection()
         c = conn.cursor()
 
-        # Get users with their timezones and plan types
+        # Get users with their timezones and plan types (exclude opted-out users)
         c.execute('''
             SELECT
                 phone_number,
@@ -102,6 +108,7 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
                 timezone
             FROM users
             WHERE onboarding_complete = TRUE
+            AND (opted_out = FALSE OR opted_out IS NULL)
         ''')
         results = c.fetchall()
 
@@ -131,6 +138,87 @@ async def get_broadcast_stats(admin: str = Depends(verify_admin)):
     except Exception as e:
         logger.error(f"Error getting broadcast stats: {e}")
         raise HTTPException(status_code=500, detail="Error getting stats")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.get("/admin/broadcast/recipients-preview")
+async def get_recipients_preview(audience: str = "all", admin: str = Depends(verify_admin)):
+    """Preview which users will receive a broadcast and who's excluded (and why)"""
+    if audience not in ("all", "free", "premium"):
+        raise HTTPException(status_code=400, detail="Invalid audience. Must be all, free, or premium.")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Get all onboarded users with relevant fields
+        c.execute('''
+            SELECT phone_number, first_name, timezone,
+                   COALESCE(premium_status, 'free') as plan,
+                   COALESCE(opted_out, FALSE) as opted_out
+            FROM users
+            WHERE onboarding_complete = TRUE
+        ''')
+        rows = c.fetchall()
+
+        included = []
+        excluded = []
+        excluded_opted_out = 0
+        excluded_outside_window = 0
+
+        for phone, first_name, timezone_str, plan, opted_out in rows:
+            # Apply audience filter
+            if audience == "free" and plan == "premium":
+                continue
+            if audience == "premium" and plan != "premium":
+                continue
+
+            masked = mask_phone_number(phone)
+            name = safe_decrypt(first_name, "") if first_name else None
+
+            # Determine local time for display
+            try:
+                tz = pytz.timezone(timezone_str or DEFAULT_TIMEZONE)
+            except pytz.UnknownTimezoneError:
+                tz = pytz.timezone(DEFAULT_TIMEZONE)
+            local_now = datetime.now(tz)
+            local_time_str = local_now.strftime("%I:%M %p").lstrip("0")
+
+            user_info = {
+                "phone": masked,
+                "name": name,
+                "tier": plan,
+                "timezone": timezone_str or DEFAULT_TIMEZONE,
+                "local_time": local_time_str
+            }
+
+            if opted_out:
+                excluded.append({**user_info, "reason": "opted_out", "phone_full": phone})
+                excluded_opted_out += 1
+            elif not is_within_broadcast_window(timezone_str):
+                excluded.append({**user_info, "reason": "outside_window"})
+                excluded_outside_window += 1
+            else:
+                included.append(user_info)
+
+        total_onboarded = len(included) + len(excluded)
+
+        return JSONResponse(content={
+            "included": included,
+            "excluded": excluded,
+            "summary": {
+                "total_onboarded": total_onboarded,
+                "included": len(included),
+                "excluded_opted_out": excluded_opted_out,
+                "excluded_outside_window": excluded_outside_window
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting recipients preview: {e}")
+        raise HTTPException(status_code=500, detail="Error getting recipients preview")
     finally:
         if conn:
             return_db_connection(conn)
@@ -699,7 +787,7 @@ def send_scheduled_broadcast(broadcast_id: int, message: str, audience: str, sen
                     (broadcast_id,)
                 )
                 conn.commit()
-            except:
+            except Exception:
                 pass
     finally:
         if conn:
@@ -709,6 +797,8 @@ def send_scheduled_broadcast(broadcast_id: int, message: str, audience: str, sen
 def check_scheduled_broadcasts():
     """Background thread that checks for due scheduled broadcasts"""
     logger.info("Starting scheduled broadcast checker")
+    consecutive_failures = 0
+    max_consecutive_failures = 10
 
     while True:
         conn = None
@@ -746,11 +836,18 @@ def check_scheduled_broadcasts():
                 except Exception as send_err:
                     logger.error(f"Error sending scheduled broadcast {broadcast_id}: {send_err}")
 
-        except Exception as e:
-            logger.error(f"Error in scheduled broadcast checker: {e}")
+            consecutive_failures = 0  # Reset on successful loop
 
-        # Check every 60 seconds
-        time.sleep(60)
+        except Exception as e:
+            consecutive_failures += 1
+            logger.error(f"Error in scheduled broadcast checker ({consecutive_failures}/{max_consecutive_failures}): {e}")
+            if consecutive_failures >= max_consecutive_failures:
+                logger.critical(f"Broadcast checker exceeded {max_consecutive_failures} consecutive failures, stopping thread")
+                return
+
+        # Backoff on repeated failures (60s normal, up to 5min on failures)
+        sleep_time = min(60 * (2 ** min(consecutive_failures, 3)), 300) if consecutive_failures > 0 else 60
+        time.sleep(sleep_time)
 
 
 def start_broadcast_checker():
@@ -833,6 +930,28 @@ async def toggle_feedback_resolved(feedback_id: int, admin: str = Depends(verify
 
 
 # =====================================================
+# CONTACT MESSAGES API ENDPOINTS
+# =====================================================
+
+@router.get("/admin/contact-messages")
+async def get_contact_messages_endpoint(category: str = None, include_resolved: bool = False, admin: str = Depends(verify_admin)):
+    """Get contact messages (feedback, bug reports, questions)"""
+    from services.support_service import get_contact_messages
+    messages = get_contact_messages(category_filter=category, include_resolved=include_resolved)
+    return JSONResponse(content={"messages": messages})
+
+
+@router.post("/admin/contact-messages/{message_id}/toggle")
+async def toggle_contact_message(message_id: int, admin: str = Depends(verify_admin)):
+    """Toggle resolved status of a contact message"""
+    from services.support_service import toggle_contact_message_resolved
+    success = toggle_contact_message_resolved(message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Contact message not found")
+    return JSONResponse(content={"success": True})
+
+
+# =====================================================
 # COST ANALYTICS API ENDPOINT
 # =====================================================
 
@@ -876,7 +995,7 @@ async def debug_users(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error in debug users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/users/incomplete")
@@ -903,7 +1022,7 @@ async def delete_incomplete_users(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error deleting incomplete users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/users/{phone_number}")
@@ -945,7 +1064,12 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
 
         for table_name, column in tables:
             try:
-                c.execute(f'DELETE FROM {table_name} WHERE {column} = %s', (phone_number,))
+                # Use identifier quoting for table/column names (hardcoded whitelist above)
+                from psycopg2 import sql
+                query = sql.SQL('DELETE FROM {} WHERE {} = %s').format(
+                    sql.Identifier(table_name), sql.Identifier(column)
+                )
+                c.execute(query, (phone_number,))
                 deleted_counts[table_name] = c.rowcount
             except Exception:
                 # Table may not exist in all environments
@@ -954,12 +1078,13 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
         conn.commit()
         return_db_connection(conn)
 
-        logger.info(f"Admin '{admin}' deleted user {phone_number}: {deleted_counts}")
+        masked_phone = f"***-***-{phone_number[-4:]}" if phone_number and len(phone_number) >= 4 else "***"
+        logger.info(f"Admin '{admin}' deleted user {masked_phone}: {deleted_counts}")
         return JSONResponse(content={
             "success": True,
-            "phone_number": phone_number,
+            "phone_number": masked_phone,
             "deleted_counts": deleted_counts,
-            "message": f"User {phone_number} and all associated data deleted"
+            "message": f"User {masked_phone} and all associated data deleted"
         })
     except HTTPException:
         return_db_connection(conn)
@@ -968,7 +1093,7 @@ async def delete_user(phone_number: str, admin: str = Depends(verify_admin)):
         conn.rollback()
         return_db_connection(conn)
         logger.error(f"Error deleting user {phone_number}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1008,7 +1133,7 @@ async def update_staging_fallback(request: Request, admin: str = Depends(verify_
         return JSONResponse(content={"success": True, "enabled": enabled, "numbers": numbers})
     except Exception as e:
         logger.error(f"Error updating staging fallback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/settings/maintenance-message")
@@ -1034,7 +1159,7 @@ async def update_maintenance_message(request: Request, admin: str = Depends(veri
         return JSONResponse(content={"success": True, "message": message})
     except Exception as e:
         logger.error(f"Error updating maintenance message: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1246,7 +1371,7 @@ async def get_user_reminders_admin(phone: str, admin: str = Depends(verify_admin
             return_db_connection(conn)
     except Exception as e:
         logger.error(f"Error getting user reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/reminder/{reminder_id}/mark-sent")
@@ -1270,7 +1395,7 @@ async def mark_reminder_as_sent(reminder_id: int, admin: str = Depends(verify_ad
         raise
     except Exception as e:
         logger.error(f"Error marking reminder as sent: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1318,7 +1443,7 @@ async def cleanup_stuck_reminders(admin: str = Depends(verify_admin)):
         }
     except Exception as e:
         logger.error(f"Error cleaning stuck reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1377,7 +1502,7 @@ async def run_full_pipeline(
         })
     except Exception as e:
         logger.error(f"Error running full pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/monitoring/run")
@@ -1400,7 +1525,7 @@ async def run_interaction_monitor(
         })
     except Exception as e:
         logger.error(f"Error running interaction monitor: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/monitoring/issues")
@@ -1476,7 +1601,7 @@ async def get_monitoring_issues(
         return JSONResponse(content={"issues": issues, "count": len(issues)})
     except Exception as e:
         logger.error(f"Error getting monitoring issues: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1518,7 +1643,7 @@ async def validate_monitoring_issue(
         raise
     except Exception as e:
         logger.error(f"Error validating monitoring issue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1555,7 +1680,7 @@ async def mark_issue_false_positive(
         raise
     except Exception as e:
         logger.error(f"Error marking issue as false positive: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1616,7 +1741,7 @@ async def get_monitoring_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting monitoring stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -1648,7 +1773,7 @@ async def run_issue_validator(
         })
     except Exception as e:
         logger.error(f"Error running issue validator: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/validator/patterns")
@@ -1661,7 +1786,7 @@ async def get_issue_patterns(admin: str = Depends(verify_admin)):
         return JSONResponse(content=patterns)
     except Exception as e:
         logger.error(f"Error getting issue patterns: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/validator/stats")
@@ -1723,7 +1848,7 @@ async def get_validator_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting validator stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -1759,7 +1884,7 @@ async def get_system_health(days: int = 7, admin: str = Depends(verify_admin)):
         return JSONResponse(content=sanitize(metrics))
     except Exception as e:
         logger.error(f"Error getting health metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/open")
@@ -1777,7 +1902,7 @@ async def get_open_issues_tracker(limit: int = 50, admin: str = Depends(verify_a
         return JSONResponse(content={"issues": issues, "count": len(issues)})
     except Exception as e:
         logger.error(f"Error getting open issues: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/tracker/resolve/{issue_id}")
@@ -1817,7 +1942,7 @@ async def resolve_issue_tracker(
         raise
     except Exception as e:
         logger.error(f"Error resolving issue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/report")
@@ -1848,7 +1973,7 @@ async def get_weekly_report(admin: str = Depends(verify_admin)):
         return JSONResponse(content=convert_dates(report))
     except Exception as e:
         logger.error(f"Error generating report: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/trends")
@@ -1877,7 +2002,7 @@ async def get_health_trends(days: int = 30, admin: str = Depends(verify_admin)):
         return JSONResponse(content=sanitize_trend({"trend": trend, "days": days}))
     except Exception as e:
         logger.error(f"Error getting trends: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/tracker/snapshot")
@@ -1896,7 +2021,7 @@ async def save_daily_snapshot(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error saving snapshot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/tracker/resolution-types")
@@ -1907,7 +2032,7 @@ async def get_resolution_types(admin: str = Depends(verify_admin)):
         return JSONResponse(content=RESOLUTION_TYPES)
     except Exception as e:
         logger.error(f"Error getting resolution types: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -1945,7 +2070,7 @@ async def get_issue_code_analysis(
         raise
     except Exception as e:
         logger.error(f"Error getting issue analysis: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/pattern/{pattern_id}")
@@ -1979,7 +2104,7 @@ async def get_pattern_code_analysis(
         raise
     except Exception as e:
         logger.error(f"Error getting pattern analysis: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/run")
@@ -2007,7 +2132,7 @@ async def run_code_analyzer(
         return JSONResponse(content=output)
     except Exception as e:
         logger.error(f"Error running code analyzer: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/analyzer/{analysis_id}/applied")
@@ -2034,7 +2159,7 @@ async def mark_analysis_applied(
         raise
     except Exception as e:
         logger.error(f"Error marking analysis as applied: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/analyzer/stats")
@@ -2089,7 +2214,7 @@ async def get_analyzer_stats(admin: str = Depends(verify_admin)):
         return JSONResponse(content=stats)
     except Exception as e:
         logger.error(f"Error getting analyzer stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_monitoring_connection(conn)
@@ -2118,7 +2243,7 @@ async def get_alert_settings(admin: str = Depends(verify_admin)):
                 from urllib.parse import urlparse
                 parsed = urlparse(webhook_url)
                 webhook_display = f"***{parsed.netloc}***"
-            except:
+            except Exception:
                 webhook_display = "***configured***"
 
         # Mask phone numbers for security
@@ -2137,7 +2262,7 @@ async def get_alert_settings(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error getting alert settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/alerts/settings")
@@ -2184,7 +2309,7 @@ async def update_alert_settings(request: Request, admin: str = Depends(verify_ad
 
     except Exception as e:
         logger.error(f"Error updating alert settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/admin/alerts/test")
@@ -2199,7 +2324,7 @@ async def send_test_alert(admin: str = Depends(verify_admin)):
         })
     except Exception as e:
         logger.error(f"Error sending test alert: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/admin/alerts/teams-webhook")
@@ -2211,7 +2336,7 @@ async def clear_teams_webhook(admin: str = Depends(verify_admin)):
         return JSONResponse(content={"success": True, "message": "Teams webhook cleared"})
     except Exception as e:
         logger.error(f"Error clearing Teams webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =====================================================
@@ -2278,7 +2403,7 @@ async def get_all_recurring_reminders(admin: str = Depends(verify_admin)):
         return JSONResponse(content={"recurring": recurring_list, "count": len(recurring_list)})
     except Exception as e:
         logger.error(f"Error getting recurring reminders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2305,7 +2430,7 @@ async def pause_recurring_admin(recurring_id: int, admin: str = Depends(verify_a
         raise
     except Exception as e:
         logger.error(f"Error pausing recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2332,7 +2457,7 @@ async def resume_recurring_admin(recurring_id: int, admin: str = Depends(verify_
         raise
     except Exception as e:
         logger.error(f"Error resuming recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2384,7 +2509,7 @@ async def delete_recurring_admin(recurring_id: int, admin: str = Depends(verify_
         raise
     except Exception as e:
         logger.error(f"Error deleting recurring reminder: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2445,9 +2570,9 @@ async def public_updates_page():
 
             entries_html += f'''
             <div class="changelog-entry">
-                <span class="entry-badge" style="background-color: {badge_color}">{badge_label}</span>
-                <span class="entry-title">{title}</span>
-                {f'<p class="entry-description">{description}</p>' if description else ''}
+                <span class="entry-badge" style="background-color: {badge_color}">{html_escape(badge_label)}</span>
+                <span class="entry-title">{html_escape(title)}</span>
+                {f'<p class="entry-description">{html_escape(description)}</p>' if description else ''}
             </div>
             '''
 
@@ -2588,7 +2713,7 @@ async def get_changelog_entries(admin: str = Depends(verify_admin)):
         ]
     except Exception as e:
         logger.error(f"Error getting changelog: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2619,7 +2744,7 @@ async def add_changelog_entry(entry: ChangelogEntry, admin: str = Depends(verify
         raise
     except Exception as e:
         logger.error(f"Error adding changelog entry: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2645,7 +2770,7 @@ async def delete_changelog_entry(entry_id: int, admin: str = Depends(verify_admi
         raise
     except Exception as e:
         logger.error(f"Error deleting changelog entry: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2775,7 +2900,7 @@ async def cs_search_customers(
         return {"customers": customers, "count": len(customers)}
     except Exception as e:
         logger.error(f"CS search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2795,7 +2920,8 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
                 phone_number, first_name, last_name, email, zip_code, timezone,
                 onboarding_complete, created_at, premium_status, premium_since,
                 subscription_status, stripe_customer_id, stripe_subscription_id,
-                last_active_at, total_messages
+                last_active_at, total_messages,
+                COALESCE(opted_out, FALSE) as opted_out, opted_out_at
             FROM users WHERE phone_number = %s
         ''', (phone_number,))
         user = c.fetchone()
@@ -2865,6 +2991,8 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
             "stripe_subscription_id": user[12],
             "last_active_at": str(user[13]) if user[13] else None,
             "total_messages": user[14] or 0,
+            "opted_out": user[15],
+            "opted_out_at": str(user[16]) if user[16] else None,
             "stats": {
                 "reminders": reminder_count,
                 "pending_reminders": pending_reminders,
@@ -2879,7 +3007,7 @@ async def cs_get_customer(phone_number: str, admin: str = Depends(verify_admin))
         raise
     except Exception as e:
         logger.error(f"CS get customer error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2913,7 +3041,7 @@ async def cs_get_customer_reminders(phone_number: str, admin: str = Depends(veri
         return {"reminders": reminders}
     except Exception as e:
         logger.error(f"CS get reminders error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2951,7 +3079,7 @@ async def cs_get_customer_lists(phone_number: str, admin: str = Depends(verify_a
         return {"lists": lists}
     except Exception as e:
         logger.error(f"CS get lists error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -2981,7 +3109,7 @@ async def cs_get_customer_memories(phone_number: str, admin: str = Depends(verif
         return {"memories": memories}
     except Exception as e:
         logger.error(f"CS get memories error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3066,7 +3194,44 @@ async def cs_update_customer_tier(
         raise
     except Exception as e:
         logger.error(f"CS update tier error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@router.post("/admin/cs/customer/{phone_number}/clear-opted-out")
+async def cs_clear_opted_out(phone_number: str, admin: str = Depends(verify_admin)):
+    """Manually clear the opted_out flag for a user"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute('SELECT opted_out FROM users WHERE phone_number = %s', (phone_number,))
+        user = c.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        c.execute('''
+            UPDATE users SET opted_out = FALSE, opted_out_at = NULL
+            WHERE phone_number = %s
+        ''', (phone_number,))
+
+        c.execute('''
+            INSERT INTO customer_notes (phone_number, note, created_by)
+            VALUES (%s, %s, %s)
+        ''', (phone_number, "Manually cleared opted_out flag", admin))
+
+        conn.commit()
+        logger.info(f"CS: {admin} cleared opted_out for ***{phone_number[-4:]}")
+
+        return {"message": "Opted-out flag cleared"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CS clear opted_out error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3099,7 +3264,7 @@ async def cs_add_customer_note(
         return {"message": "Note added"}
     except Exception as e:
         logger.error(f"CS add note error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3132,7 +3297,7 @@ async def cs_delete_reminder(
         raise
     except Exception as e:
         logger.error(f"CS delete reminder error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if conn:
             return_db_connection(conn)
@@ -3780,6 +3945,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <a href="#overview">Overview</a>
         <a href="#broadcast">Broadcast</a>
         <a href="#support">Support Tickets</a>
+        <a href="#contact-messages">Contact Messages</a>
         <a href="#feedback">Feedback</a>
         <a href="#costs">Costs</a>
         <a href="#conversations">Conversations</a>
@@ -3956,6 +4122,59 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div style="margin-top: 8px; font-size: 0.85em; color: #7f8c8d;">
                 <em>Broadcasts only send to users between 8:00 AM and 8:00 PM in their local timezone</em>
             </div>
+            <div id="previewBtnContainer" style="margin-top: 10px;">
+                <button type="button" onclick="loadRecipientsPreview()" id="previewRecipientsBtn" class="btn" style="background: #8e44ad; color: white; padding: 6px 14px; font-size: 0.85em;">
+                    Preview Recipients
+                </button>
+                <span id="previewLoading" style="display: none; color: #7f8c8d; margin-left: 8px; font-size: 0.85em;">Loading...</span>
+            </div>
+        </div>
+
+        <div id="recipientsPreviewPanel" style="display: none; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden;">
+            <div style="background: #f8f9fa; padding: 12px 15px; border-bottom: 1px solid #ddd;">
+                <strong id="previewSummaryLine"></strong>
+            </div>
+            <div style="padding: 15px;">
+                <div id="includedSection">
+                    <h4 style="margin: 0 0 8px 0; color: #27ae60; cursor: pointer;" onclick="togglePreviewSection('includedTable')">
+                        Included <span id="includedCount"></span>
+                    </h4>
+                    <div id="includedTable" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #eafaf1;">
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Phone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Name</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Tier</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Timezone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Local Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="includedTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="excludedSection" style="margin-top: 15px;">
+                    <h4 style="margin: 0 0 8px 0; color: #e74c3c; cursor: pointer;" onclick="togglePreviewSection('excludedTable')">
+                        Excluded <span id="excludedCount"></span>
+                    </h4>
+                    <div id="excludedTable" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #fdedec;">
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Phone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Name</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Reason</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Timezone</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Local Time</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="excludedTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="progress-info" id="progressInfo">
@@ -4070,8 +4289,12 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 </tr>
             </table>
 
+            <div id="twilioActualSummary" style="margin-top: 15px; padding: 12px 15px; background: #f8f9fa; border-radius: 6px; font-size: 0.9em; display: none;">
+                <!-- Populated by JS -->
+            </div>
+
             <div style="margin-top: 15px; font-size: 0.85em; color: #7f8c8d;">
-                <em>SMS: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing</em>
+                <em>SMS Estimated: $0.0079/message (inbound + outbound) | AI: GPT-4o-mini pricing | Actual SMS costs polled daily from Twilio</em>
             </div>
         </div>
     </div>
@@ -4118,7 +4341,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         </div>
         <div class="section-content">
             <p style="color: #7f8c8d; margin-bottom: 15px;">
-                Users can text "Support [message]" to create tickets. Feedback and bug reports also create tickets.
+                Users can text "Support [message]" to create tickets. Feedback and bug reports go to <a href="#contact-messages" style="color: #3498db;">Contact Messages</a>.
                 <a href="/cs" style="color: #3498db; font-weight: 600;">Open CS Portal</a> for full ticket management with filtering, assignment, and canned responses.
             </p>
 
@@ -4156,6 +4379,35 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                         <button onclick="reopenCurrentTicket()" id="reopenTicketBtn" class="btn" style="background: #f39c12; display: none;">Reopen Ticket</button>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contact Messages Section -->
+    <div id="contact-messages" class="collapsible-section section-anchor">
+        <div class="section-header" onclick="toggleSection('contact-messages')">
+            <h2>📨 Contact Messages <span id="contactMsgCount" style="font-size: 0.7em; color: #7f8c8d;"></span></h2>
+            <span class="section-toggle">▼</span>
+        </div>
+        <div class="section-content">
+            <p style="color: #7f8c8d; margin-bottom: 15px;">
+                Feedback, bug reports, and questions from SMS and web. These are lightweight messages — not support tickets.
+            </p>
+            <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center;">
+                <label>
+                    <input type="checkbox" id="showResolvedContactMsgs" onchange="loadContactMessages()"> Show resolved
+                </label>
+                <label>Category:
+                    <select id="contactMsgCategory" onchange="loadContactMessages()" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="">All</option>
+                        <option value="feedback">Feedback</option>
+                        <option value="bug">Bug</option>
+                        <option value="question">Question</option>
+                    </select>
+                </label>
+            </div>
+            <div id="contactMessagesList">
+                <p style="color: #95a5a6;">Loading...</p>
             </div>
         </div>
     </div>
@@ -4544,6 +4796,8 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 15px 0; white-space: pre-wrap;">
                 <em id="modalMessage"></em>
             </div>
+            <div id="modalExcludedWarning" style="display: none; background: #fef9e7; border: 1px solid #f39c12; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-size: 0.9em;">
+            </div>
             <p style="color: #e74c3c;"><strong>This action cannot be undone.</strong></p>
             <div class="modal-buttons">
                 <button class="btn btn-secondary" onclick="hideConfirmModal()">Cancel</button>
@@ -4925,12 +5179,171 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <td class="money"><strong>${{formatCurrency(total.cost_per_user)}}</strong></td>
                 `;
             }}
+
+            // Render Twilio actual vs estimated summary
+            renderTwilioActualSummary(period, total);
+        }}
+
+        function renderTwilioActualSummary(period, totalEstimated) {{
+            const container = document.getElementById('twilioActualSummary');
+            const twilioData = costData.twilio_actual;
+
+            if (!twilioData || Object.keys(twilioData).length === 0) {{
+                container.style.display = 'block';
+                container.innerHTML = '<span style="color: #95a5a6;">No Twilio data yet \u2014 actual costs are polled daily at 6:30 AM UTC.</span>';
+                return;
+            }}
+
+            // Map period tabs to twilio_actual keys (hour has no Twilio data)
+            const periodMap = {{ 'day': 'day', 'week': 'week', 'month': 'month' }};
+            const actualPeriod = periodMap[period];
+            if (!actualPeriod || !twilioData[actualPeriod]) {{
+                container.style.display = 'block';
+                container.innerHTML = '<span style="color: #95a5a6;">Twilio actual costs not available for this period.</span>';
+                return;
+            }}
+
+            const actual = twilioData[actualPeriod];
+            const estimatedSms = totalEstimated ? totalEstimated.sms_cost : 0;
+            const actualSms = actual.total_cost;
+            const diff = actualSms - estimatedSms;
+            const diffColor = diff <= 0 ? '#27ae60' : '#e74c3c';
+            const diffSign = diff <= 0 ? '' : '+';
+
+            container.style.display = 'block';
+            container.innerHTML = `
+                <div style="display: flex; gap: 25px; align-items: center; flex-wrap: wrap;">
+                    <span><strong>SMS Estimated:</strong> ${{formatCurrency(estimatedSms)}}</span>
+                    <span><strong>SMS Actual (Twilio):</strong> ${{formatCurrency(actualSms)}}</span>
+                    <span style="color: ${{diffColor}}; font-weight: 600;">Difference: ${{diffSign}}${{formatCurrency(Math.abs(diff))}}</span>
+                    <span style="color: #95a5a6; font-size: 0.85em;">(${{actual.days_with_data}} day${{actual.days_with_data !== 1 ? 's' : ''}} of data)</span>
+                </div>
+                <div style="margin-top: 6px; font-size: 0.85em; color: #7f8c8d;">
+                    Inbound: ${{actual.inbound_count}} msgs / ${{formatCurrency(actual.inbound_cost)}} |
+                    Outbound: ${{actual.outbound_count}} msgs / ${{formatCurrency(actual.outbound_cost)}}
+                </div>
+            `;
         }}
 
         function formatCurrency(value) {{
             if (value === 0) return '$0.00';
-            if (value < 0.01) return '<$0.01';
+            if (value < 0.01 && value > 0) return '<$0.01';
             return '$' + value.toFixed(2);
+        }}
+
+        let lastPreviewData = null;
+
+        function escapeHtml(str) {{
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }}
+
+        async function loadRecipientsPreview() {{
+            const audience = document.getElementById('audience').value;
+            if (audience === 'single') return;
+
+            const btn = document.getElementById('previewRecipientsBtn');
+            const loading = document.getElementById('previewLoading');
+            btn.disabled = true;
+            loading.style.display = 'inline';
+
+            try {{
+                const response = await fetch(`/admin/broadcast/recipients-preview?audience=${{audience}}`);
+                if (!response.ok) throw new Error('Failed to fetch preview');
+                const data = await response.json();
+                lastPreviewData = data;
+                renderRecipientsPreview(data);
+            }} catch (e) {{
+                console.error('Error loading recipients preview:', e);
+                document.getElementById('recipientsPreviewPanel').style.display = 'none';
+            }} finally {{
+                btn.disabled = false;
+                loading.style.display = 'none';
+            }}
+        }}
+
+        function renderRecipientsPreview(data) {{
+            const panel = document.getElementById('recipientsPreviewPanel');
+            panel.style.display = 'block';
+
+            const summary = data.summary;
+            const excludedTotal = summary.excluded_opted_out + summary.excluded_outside_window;
+            document.getElementById('previewSummaryLine').innerHTML =
+                `<span style="color: #27ae60;">${{summary.included}} will receive</span>` +
+                (excludedTotal > 0 ? ` &nbsp;|&nbsp; <span style="color: #e74c3c;">${{excludedTotal}} excluded</span>` : '') +
+                ` &nbsp;|&nbsp; <span style="color: #7f8c8d;">${{summary.total_onboarded}} total onboarded</span>`;
+
+            document.getElementById('includedCount').textContent = `(${{data.included.length}})`;
+            document.getElementById('excludedCount').textContent = `(${{data.excluded.length}})`;
+
+            // Render included table
+            const includedBody = document.getElementById('includedTableBody');
+            includedBody.innerHTML = '';
+            if (data.included.length === 0) {{
+                includedBody.innerHTML = '<tr><td colspan="5" style="padding: 8px; color: #95a5a6; text-align: center;">No users in window</td></tr>';
+            }} else {{
+                data.included.forEach(u => {{
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.phone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.name) || '<span style="color:#95a5a6">-</span>'}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;"><span style="background: ${{u.tier === 'premium' ? '#f39c12' : '#3498db'}}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${{u.tier}}</span></td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.85em;">${{escapeHtml(u.timezone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.local_time)}}</td>
+                    `;
+                    includedBody.appendChild(row);
+                }});
+            }}
+
+            // Render excluded table
+            const excludedBody = document.getElementById('excludedTableBody');
+            excludedBody.innerHTML = '';
+            const excludedSection = document.getElementById('excludedSection');
+            if (data.excluded.length === 0) {{
+                excludedSection.style.display = 'none';
+            }} else {{
+                excludedSection.style.display = 'block';
+                data.excluded.forEach(u => {{
+                    const row = document.createElement('tr');
+                    const reasonLabel = u.reason === 'opted_out'
+                        ? '<span style="background: #e74c3c; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Opted Out</span>'
+                        : '<span style="background: #e67e22; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Outside Window</span>';
+                    const clearBtn = u.reason === 'opted_out' && u.phone_full
+                        ? `<button onclick="clearOptedOutFromPreview('${{u.phone_full}}')" style="background: #e74c3c; color: white; border: none; padding: 3px 8px; border-radius: 3px; font-size: 0.8em; cursor: pointer;">Clear</button>`
+                        : '';
+                    row.innerHTML = `
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.phone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.name) || '<span style="color:#95a5a6">-</span>'}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{reasonLabel}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.85em;">${{escapeHtml(u.timezone)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.local_time)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{clearBtn}}</td>
+                    `;
+                    excludedBody.appendChild(row);
+                }});
+            }}
+        }}
+
+        function togglePreviewSection(sectionId) {{
+            const section = document.getElementById(sectionId);
+            section.style.display = section.style.display === 'none' ? 'block' : 'none';
+        }}
+
+        async function clearOptedOutFromPreview(phone) {{
+            if (!confirm('Clear the opted-out flag for this user? They will be included in future broadcasts.')) return;
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(phone)}}/clear-opted-out`, {{
+                    method: 'POST'
+                }});
+                if (!response.ok) throw new Error('Failed to clear flag');
+                // Refresh the preview and stats
+                await loadStats();
+                await loadRecipientsPreview();
+            }} catch (e) {{
+                alert('Error clearing opted-out flag: ' + e.message);
+            }}
         }}
 
         function updatePreview() {{
@@ -4940,6 +5353,11 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
             // Show/hide single phone input
             document.getElementById('singlePhoneGroup').style.display = isSingle ? 'block' : 'none';
+
+            // Show/hide preview recipients button; hide panel on audience change
+            document.getElementById('previewBtnContainer').style.display = isSingle ? 'none' : 'block';
+            document.getElementById('recipientsPreviewPanel').style.display = 'none';
+            lastPreviewData = null;
 
             // Update character count
             document.getElementById('charCount').textContent = message.length;
@@ -5057,6 +5475,24 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 modalSubtitle.innerHTML = 'You are about to send the following message to <strong>' + inWindowCount + '</strong> users:';
                 confirmBtn.textContent = 'Send Now';
                 confirmBtn.style.background = '#e74c3c';
+            }}
+
+            // Show excluded warning if preview data available
+            const excludedWarning = document.getElementById('modalExcludedWarning');
+            if (!isSingle && lastPreviewData && lastPreviewData.summary) {{
+                const s = lastPreviewData.summary;
+                const excludedTotal = s.excluded_opted_out + s.excluded_outside_window;
+                if (excludedTotal > 0) {{
+                    let parts = [];
+                    if (s.excluded_opted_out > 0) parts.push(s.excluded_opted_out + ' opted out');
+                    if (s.excluded_outside_window > 0) parts.push(s.excluded_outside_window + ' outside time window');
+                    excludedWarning.innerHTML = `⚠️ <strong>${{excludedTotal}} user${{excludedTotal !== 1 ? 's' : ''}} excluded:</strong> ${{parts.join(', ')}}`;
+                    excludedWarning.style.display = 'block';
+                }} else {{
+                    excludedWarning.style.display = 'none';
+                }}
+            }} else {{
+                excludedWarning.style.display = 'none';
             }}
 
             document.getElementById('confirmModal').classList.add('active');
@@ -6030,6 +6466,67 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
         }}
 
+        // Contact Messages functions
+        async function loadContactMessages() {{
+            try {{
+                const includeResolved = document.getElementById('showResolvedContactMsgs').checked;
+                const category = document.getElementById('contactMsgCategory').value;
+                let url = `/admin/contact-messages?include_resolved=${{includeResolved}}`;
+                if (category) url += `&category=${{category}}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+                const messages = data.messages || [];
+
+                const container = document.getElementById('contactMessagesList');
+                const unresolvedCount = messages.filter(m => !m.resolved).length;
+                document.getElementById('contactMsgCount').textContent = unresolvedCount > 0 ? `(${{unresolvedCount}} unresolved)` : '';
+
+                if (messages.length === 0) {{
+                    container.innerHTML = '<p style="color: #95a5a6;">No contact messages.</p>';
+                    return;
+                }}
+
+                const catColors = {{ feedback: '#f39c12', bug: '#e74c3c', question: '#3498db' }};
+                const srcColors = {{ sms: '#9b59b6', web: '#2ecc71' }};
+
+                container.innerHTML = messages.map(m => {{
+                    const catColor = catColors[m.category] || '#95a5a6';
+                    const srcColor = srcColors[m.source] || '#95a5a6';
+                    const date = new Date(m.created_at).toLocaleString();
+                    const resolvedStyle = m.resolved ? 'opacity: 0.6;' : '';
+                    return `
+                        <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid ${{catColor}}; ${{resolvedStyle}}">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <strong>${{m.user_name || 'Unknown'}}</strong> (...${{m.phone_number.slice(-4)}})
+                                    <span style="background: ${{catColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">${{m.category.toUpperCase()}}</span>
+                                    <span style="background: ${{srcColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 4px;">${{m.source.toUpperCase()}}</span>
+                                </div>
+                                <button onclick="toggleContactMsg(${{m.id}})" class="btn" style="background: ${{m.resolved ? '#f39c12' : '#27ae60'}}; font-size: 0.85em; padding: 5px 12px;">
+                                    ${{m.resolved ? 'Unresolve' : 'Resolve'}}
+                                </button>
+                            </div>
+                            <div style="color: #333; margin-top: 8px;">${{m.message}}</div>
+                            <div style="color: #95a5a6; font-size: 0.8em; margin-top: 5px;">${{date}}${{m.resolved ? ' — Resolved' : ''}}</div>
+                        </div>
+                    `;
+                }}).join('');
+            }} catch (e) {{
+                console.error('Error loading contact messages:', e);
+                document.getElementById('contactMessagesList').innerHTML = '<p style="color: #e74c3c;">Error loading contact messages</p>';
+            }}
+        }}
+
+        async function toggleContactMsg(id) {{
+            try {{
+                const response = await fetch(`/admin/contact-messages/${{id}}/toggle`, {{ method: 'POST' }});
+                if (response.ok) loadContactMessages();
+            }} catch (e) {{
+                alert('Error updating contact message');
+            }}
+        }}
+
         // Support ticket functions
         let currentTicketId = null;
         let currentTicketStatus = null;
@@ -6239,6 +6736,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         loadFlaggedConversations();
         loadChangelog();
         loadSupportTickets();
+        loadContactMessages();
         loadRecurring();
 
         // Handle URL hash for deep linking to support tickets
@@ -6496,6 +6994,13 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     <div><strong>Last Active:</strong> ${{data.last_active_at ? new Date(data.last_active_at).toLocaleDateString() : '-'}}</div>
                     <div><strong>Tier:</strong> <span style="color: ${{data.tier === 'premium' ? '#9b59b6' : '#3498db'}}; font-weight: 500;">${{data.tier}}</span></div>
                     <div><strong>Subscription Status:</strong> ${{data.subscription_status || '-'}}</div>
+                    ${{data.opted_out ? `
+                        <div style="margin-top: 8px; padding: 8px 12px; background: #fdedec; border: 1px solid #e74c3c; border-radius: 4px;">
+                            <span style="color: #e74c3c; font-weight: bold;">Opted Out</span>
+                            <span style="color: #7f8c8d; font-size: 0.85em; margin-left: 6px;">${{data.opted_out_at ? 'since ' + new Date(data.opted_out_at).toLocaleDateString() : ''}}</span>
+                            <button onclick="clearOptedOut()" style="margin-left: 10px; background: #e74c3c; color: white; border: none; padding: 4px 10px; border-radius: 3px; font-size: 0.8em; cursor: pointer;">Clear Flag</button>
+                        </div>
+                    ` : ''}}
                 `;
 
                 // Stats
@@ -6653,6 +7158,22 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }} else {{
                 datePicker.style.display = 'none';
                 datePicker.value = '';
+            }}
+        }}
+
+        async function clearOptedOut() {{
+            if (!csCurrentPhone) return;
+            if (!confirm('Clear the opted-out flag for this user? They will be included in future broadcasts.')) return;
+
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(csCurrentPhone)}}/clear-opted-out`, {{
+                    method: 'POST'
+                }});
+                if (!response.ok) throw new Error('Failed to clear flag');
+                alert('Opted-out flag cleared successfully.');
+                csLoadCustomer(csCurrentPhone);
+            }} catch (e) {{
+                alert('Error clearing opted-out flag: ' + e.message);
             }}
         }}
 

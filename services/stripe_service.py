@@ -52,6 +52,12 @@ def create_checkout_session(phone_number: str, plan: str, billing_cycle: str) ->
             customer_id = customer.id
             save_stripe_customer_id(phone_number, customer_id)
 
+        # Check for existing active subscription to prevent double-billing
+        existing_subs = stripe.Subscription.list(customer=customer_id, status='active', limit=1)
+        if existing_subs.data:
+            logger.warning(f"User {phone_number[-4:]} already has active subscription {existing_subs.data[0].id}")
+            return {'error': 'You already have an active subscription. Text ACCOUNT to manage it.'}
+
         # Create checkout session
         session = stripe.checkout.Session.create(
             customer=customer_id,
@@ -238,6 +244,14 @@ def handle_subscription_cancelled(subscription):
 
     if not phone_number:
         logger.error("Subscription cancelled but no phone number found")
+        return
+
+    # If user is deleting their account, skip downgrade messaging —
+    # the delete flow handles its own confirmation message.
+    from models.user import get_user
+    user = get_user(phone_number)
+    if user and (user.get('pending_delete_account') or user.get('opted_out')):
+        logger.info(f"Subscription cancelled for {phone_number[-4:]} (account deletion in progress, skipping cancellation notice)")
         return
 
     # Downgrade to free tier

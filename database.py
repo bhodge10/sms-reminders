@@ -40,9 +40,13 @@ def get_db_connection():
 
 
 def return_db_connection(conn):
-    """Return a connection to the pool"""
+    """Return a connection to the pool, rolling back any aborted transaction first"""
     global _connection_pool
     if _connection_pool and conn:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         _connection_pool.putconn(conn)
 
 
@@ -96,9 +100,13 @@ def get_monitoring_connection():
 
 
 def return_monitoring_connection(conn):
-    """Return a monitoring connection to the pool"""
+    """Return a monitoring connection to the pool, rolling back any aborted transaction first"""
     global _monitoring_pool
     if _monitoring_pool and conn:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         _monitoring_pool.putconn(conn)
 
 
@@ -339,6 +347,19 @@ def init_db():
             )
         ''')
 
+        # Lightweight contact messages (feedback, bug reports, questions) - not full tickets
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS contact_messages (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                message TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'sms',
+                resolved BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Customer service notes
         c.execute('''
             CREATE TABLE IF NOT EXISTS customer_notes (
@@ -524,6 +545,52 @@ def init_db():
             # Broadcast system improvements
             "ALTER TABLE scheduled_broadcasts ADD COLUMN IF NOT EXISTS target_phone TEXT",
             "ALTER TABLE broadcast_logs ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'immediate'",
+            # Lifecycle nudges (roundtable Phase 4)
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS day_3_nudge_sent BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS post_trial_reengagement_sent BOOLEAN DEFAULT FALSE",
+            # 30-day win-back (roundtable 2, Phase 3)
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS winback_30d_sent BOOLEAN DEFAULT FALSE",
+            # 14-day post-trial touchpoint (roundtable 3, Phase 3)
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS post_trial_14d_sent BOOLEAN DEFAULT FALSE",
+            # Backfill NULLs to FALSE — ALTER TABLE DEFAULT doesn't backfill existing rows
+            "UPDATE users SET trial_warning_7d_sent = FALSE WHERE trial_warning_7d_sent IS NULL",
+            "UPDATE users SET trial_warning_1d_sent = FALSE WHERE trial_warning_1d_sent IS NULL",
+            "UPDATE users SET trial_warning_0d_sent = FALSE WHERE trial_warning_0d_sent IS NULL",
+            "UPDATE users SET mid_trial_reminder_sent = FALSE WHERE mid_trial_reminder_sent IS NULL",
+            "UPDATE users SET day_3_nudge_sent = FALSE WHERE day_3_nudge_sent IS NULL",
+            "UPDATE users SET post_trial_reengagement_sent = FALSE WHERE post_trial_reengagement_sent IS NULL",
+            "UPDATE users SET post_trial_14d_sent = FALSE WHERE post_trial_14d_sent IS NULL",
+            "UPDATE users SET winback_30d_sent = FALSE WHERE winback_30d_sent IS NULL",
+            # Smart Nudges: proactive AI intelligence layer
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudges_enabled BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudge_time TIME DEFAULT '09:00'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS smart_nudge_last_sent DATE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_nudge_response TEXT",
+            # Smart nudges history table
+            """CREATE TABLE IF NOT EXISTS smart_nudges (
+                id SERIAL PRIMARY KEY,
+                phone_number TEXT NOT NULL,
+                nudge_type TEXT NOT NULL,
+                nudge_text TEXT NOT NULL,
+                ai_raw_response TEXT,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_response TEXT,
+                user_responded_at TIMESTAMP,
+                action_taken TEXT,
+                created_reminder_id INTEGER REFERENCES reminders(id),
+                metadata TEXT
+            )""",
+            # Twilio actual cost tracking (polled daily from Usage Records API)
+            """CREATE TABLE IF NOT EXISTS twilio_costs (
+                id SERIAL PRIMARY KEY,
+                cost_date DATE NOT NULL UNIQUE,
+                inbound_count INTEGER DEFAULT 0,
+                inbound_cost NUMERIC(10,4) DEFAULT 0,
+                outbound_count INTEGER DEFAULT 0,
+                outbound_cost NUMERIC(10,4) DEFAULT 0,
+                total_cost NUMERIC(10,4) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
@@ -547,19 +614,32 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_users_daily_summary ON users(daily_summary_enabled) WHERE daily_summary_enabled = TRUE",
             # Onboarding recovery: index for finding abandoned signups
             "CREATE INDEX IF NOT EXISTS idx_onboarding_progress_abandoned ON onboarding_progress(followup_24h_sent, last_activity_at) WHERE cancelled = FALSE",
+            # Smart nudges: index for efficient querying of users who need nudge
+            "CREATE INDEX IF NOT EXISTS idx_users_smart_nudges ON users(smart_nudges_enabled) WHERE smart_nudges_enabled = TRUE",
+            "CREATE INDEX IF NOT EXISTS idx_smart_nudges_phone ON smart_nudges(phone_number, sent_at)",
+            # Twilio costs: index for date-range queries
+            "CREATE INDEX IF NOT EXISTS idx_twilio_costs_date ON twilio_costs(cost_date)",
         ]
 
         for migration in migrations:
             try:
                 c.execute(migration)
-            except Exception:
-                pass  # Column likely already exists
+            except Exception as e:
+                err_msg = str(e).lower()
+                if 'already exists' in err_msg or 'duplicate' in err_msg:
+                    pass  # Expected — column/table already exists
+                else:
+                    logger.error(f"Unexpected migration error: {migration[:80]}... — {e}")
 
         for index_migration in index_migrations:
             try:
                 c.execute(index_migration)
-            except Exception:
-                pass  # Index likely already exists
+            except Exception as e:
+                err_msg = str(e).lower()
+                if 'already exists' in err_msg or 'duplicate' in err_msg:
+                    pass  # Expected — index already exists
+                else:
+                    logger.error(f"Unexpected index migration error: {index_migration[:80]}... — {e}")
 
         conn.commit()
         return_db_connection(conn)

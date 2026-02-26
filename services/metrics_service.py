@@ -379,7 +379,7 @@ def get_cost_analytics():
 
             # Get SMS costs by plan (count messages from logs table)
             # Each log entry = 1 inbound + 1 outbound message
-            c.execute(f'''
+            c.execute('''
                 SELECT
                     CASE
                         WHEN u.trial_end_date > NOW() AND u.premium_status IN ('premium', 'family')
@@ -389,13 +389,13 @@ def get_cost_analytics():
                     COUNT(*) as message_count
                 FROM logs l
                 JOIN users u ON l.phone_number = u.phone_number
-                WHERE l.created_at >= NOW() - INTERVAL '{interval}'
+                WHERE l.created_at >= NOW() - %s::interval
                 GROUP BY 1
-            ''')
+            ''', (interval,))
             sms_by_plan = {row[0]: row[1] for row in c.fetchall()}
 
             # Get AI costs by plan (from api_usage table)
-            c.execute(f'''
+            c.execute('''
                 SELECT
                     CASE
                         WHEN u.trial_end_date > NOW() AND u.premium_status IN ('premium', 'family')
@@ -406,9 +406,9 @@ def get_cost_analytics():
                     SUM(a.completion_tokens) as completion_tokens
                 FROM api_usage a
                 JOIN users u ON a.phone_number = u.phone_number
-                WHERE a.created_at >= NOW() - INTERVAL '{interval}'
+                WHERE a.created_at >= NOW() - %s::interval
                 GROUP BY 1
-            ''')
+            ''', (interval,))
             ai_by_plan = {row[0]: {'prompt': row[1] or 0, 'completion': row[2] or 0} for row in c.fetchall()}
 
             # Calculate costs for each plan tier (including trial)
@@ -452,10 +452,62 @@ def get_cost_analytics():
 
             results[period_name] = period_data
 
+        # Add actual Twilio costs alongside estimates
+        results['twilio_actual'] = get_twilio_actual_costs()
+
         return results
 
     except Exception as e:
         logger.error(f"Error getting cost analytics: {e}")
+        return {}
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def get_twilio_actual_costs():
+    """Get actual Twilio costs from the twilio_costs table.
+
+    Returns summary for today, last 7 days, and last 30 days.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        periods = {
+            'day': '1 day',
+            'week': '7 days',
+            'month': '30 days',
+        }
+
+        results = {}
+        for period_name, interval in periods.items():
+            c.execute('''
+                SELECT
+                    COALESCE(SUM(inbound_count), 0),
+                    COALESCE(SUM(inbound_cost), 0),
+                    COALESCE(SUM(outbound_count), 0),
+                    COALESCE(SUM(outbound_cost), 0),
+                    COALESCE(SUM(total_cost), 0),
+                    COUNT(*)
+                FROM twilio_costs
+                WHERE cost_date >= CURRENT_DATE - %s::interval
+            ''', (interval,))
+            row = c.fetchone()
+            results[period_name] = {
+                'inbound_count': row[0],
+                'inbound_cost': float(row[1]),
+                'outbound_count': row[2],
+                'outbound_cost': float(row[3]),
+                'total_cost': float(row[4]),
+                'days_with_data': row[5],
+            }
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error getting Twilio actual costs: {e}")
         return {}
     finally:
         if conn:

@@ -43,6 +43,14 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+# Configure Celery for synchronous execution in tests
+# This ensures .delay() calls run inline instead of dispatching to Redis
+from celery_app import celery_app
+celery_app.conf.update(
+    task_always_eager=True,
+    task_eager_propagates=True,
+)
+
 
 class SMSCapture:
     """Captures outbound SMS messages instead of sending them."""
@@ -400,6 +408,7 @@ def onboarded_user(test_phone):
         c.execute("DELETE FROM reminders WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM recurring_reminders WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM memories WHERE phone_number = %s", (test_phone,))
+        c.execute("DELETE FROM smart_nudges WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM support_tickets WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM logs WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM users WHERE phone_number = %s", (test_phone,))
@@ -445,6 +454,7 @@ def onboarded_user(test_phone):
         c.execute("DELETE FROM reminders WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM recurring_reminders WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM memories WHERE phone_number = %s", (test_phone,))
+        c.execute("DELETE FROM smart_nudges WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM support_tickets WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM logs WHERE phone_number = %s", (test_phone,))
         c.execute("DELETE FROM users WHERE phone_number = %s", (test_phone,))

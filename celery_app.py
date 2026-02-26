@@ -18,7 +18,7 @@ celery_app = Celery(
     "sms_reminders",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["tasks.reminder_tasks", "tasks.monitoring_tasks"],
+    include=["tasks.reminder_tasks", "tasks.monitoring_tasks", "tasks.twilio_tasks"],
 )
 
 # SSL configuration for Upstash (uses rediss:// protocol)

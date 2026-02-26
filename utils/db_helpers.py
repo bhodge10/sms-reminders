@@ -107,7 +107,8 @@ USER_COLUMNS = """
     onboarding_complete, onboarding_step, created_at, pending_delete,
     pending_reminder_text, pending_reminder_time, referral_source,
     premium_status, premium_since, last_active_at, signup_source, total_messages,
-    five_minute_nudge_scheduled_at, five_minute_nudge_sent, post_onboarding_interactions
+    five_minute_nudge_scheduled_at, five_minute_nudge_sent, post_onboarding_interactions,
+    opted_out
 """.strip()
 
 # Column indices for users table (for self-documenting code)
@@ -134,3 +135,4 @@ class UserColumn:
     FIVE_MINUTE_NUDGE_SCHEDULED_AT = 18
     FIVE_MINUTE_NUDGE_SENT = 19
     POST_ONBOARDING_INTERACTIONS = 20
+    OPTED_OUT = 21

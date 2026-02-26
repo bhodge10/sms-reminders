@@ -2,7 +2,10 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
-For detailed roadmaps, see:
+For detailed docs, see:
+- `docs/changelog.md` - Feature history and bug fix details
+- `docs/security-audits.md` - Round 4, 5, 6 audit findings and fixes
+- `docs/monitoring.md` - Multi-agent monitoring system
 - `docs/ux-roadmap.md` - SMS app UX improvement plan
 - `docs/website-roadmap.md` - Website (remyndrs.com) improvement plan
 
@@ -83,7 +86,7 @@ SMS -> Twilio webhook (/sms) -> main.py validates -> ai_service.py processes wit
 | `utils/db_helpers.py` | Encryption-aware database query helpers |
 
 ### Database Tables
-`users`, `reminders`, `recurring_reminders`, `memories`, `lists`, `list_items`, `interactions`, `support_tickets`, `broadcast_messages`, `conversation_flags`
+`users`, `reminders`, `recurring_reminders`, `memories`, `lists`, `list_items`, `interactions`, `support_tickets`, `contact_messages`, `broadcast_messages`, `conversation_flags`, `smart_nudges`, `monitoring_issues`, `monitoring_runs`, `issue_patterns`, `issue_pattern_links`, `validation_runs`, `issue_resolutions`, `pattern_resolutions`, `health_snapshots`, `fix_proposals`, `fix_proposal_runs`
 
 ## Deployment
 
@@ -125,7 +128,6 @@ Tests **never hit real Twilio or OpenAI APIs**:
 ai_mock.set_response("remind me every monday at 10am about team meeting", response)
 ai_mock.set_response("remind me every monday at 10:am about team meeting", response)
 ```
-The mock uses exact-match on the lowercased message. If only the original form is registered, the normalized message won't match and will fall through to the default `unknown` action.
 
 ## Key Patterns
 
@@ -133,59 +135,38 @@ The mock uses exact-match on the lowercased message. If only the original form i
 All timestamps stored in UTC, converted to user timezone on display. Timezone determined during onboarding from ZIP code.
 
 ### Reminder Atomicity
-Uses `SELECT FOR UPDATE SKIP LOCKED` for distributed reminder claiming. Stale tasks released every 5 minutes.
+Uses `SELECT FOR UPDATE SKIP LOCKED` for distributed reminder claiming. Stale tasks released every 15 minutes.
 
 ### Subscription Tiers
 - **Free:** 2 reminders/day, 5 lists, 10 items/list, 5 memories
-- **Premium:** Unlimited reminders, 20 lists, 30 items/list, recurring reminders
+- **Premium ($8.99/mo, $89.99/yr):** Unlimited reminders, 20 lists, 30 items/list, recurring reminders
 - **Family:** Premium features for 4-10 members
 
-### Progressive Education for Tier Limits (Feb 2026)
-The Education Pyramid helps free tier users understand limits without frustration:
-
-**Level 1 (0-70%):** Silent - no counters, zero friction
-**Level 2 (70-90%):** Gentle nudge - shows "(7 of 10 items)" for free tier only
-**Level 3 (90-100%):** Clear warning - adds "Almost full!" or "Last one!"
-**Level 4 (Over limit):** Blocked with WHY-WHAT-HOW structure
-
-**Implementation:**
-- **Progressive counters:** `add_list_item_counter_to_message()`, `add_memory_counter_to_message()`, `add_list_counter_to_message()` in `services/tier_service.py`
-- **Level 4 formatters:** `format_list_item_limit_message()`, `format_memory_limit_message()`, `format_list_limit_message()` in `services/tier_service.py`
-- **Handlers updated:** `routes/handlers/lists.py` (3 functions), `routes/handlers/pending_states.py` (1 function), `main.py` (4 locations)
-- **Enhanced STATUS:** Free users see tier comparison showing Premium benefits
-
-**Key rules:**
-- Only FREE tier users see counters (premium/trial never see them)
-- Percentage-based thresholds (70%, 90%)
-- All limit messages follow WHY (tier limit) + WHAT (attempted action) + HOW (remove items OR upgrade)
-- Trial hint for expired trial users: "Still on trial? Text STATUS"
-
-**Testing:** `tests/test_tier_service_progressive.py` (13 unit tests), full integration suite passes. See `PROGRESSIVE_EDUCATION_IMPLEMENTATION.md` for complete details.
+### Progressive Education for Tier Limits
+Education Pyramid (Levels 1-4) for free tier users. Implementation in `services/tier_service.py`. See `docs/changelog.md` for details.
 
 ### Low-Confidence Reminder Confirmation
 When AI confidence is below threshold, reminders enter pending confirmation stored in `pending_reminder_confirmation` on the user record.
-- **Pending storage:** `routes/handlers/reminders.py` stores pending JSON
-- **Confirmation handling:** `main.py` (search `pending_confirmation`) processes YES/NO and calls `save_reminder_with_local_time()`
-- `save_reminder_with_local_time()` requires 5 args: `(phone_number, reminder_text, reminder_date_utc, local_time, timezone)` where `local_time` is HH:MM and `reminder_date` must be UTC
+- `save_reminder_with_local_time()` requires 5 args: `(phone_number, reminder_text, reminder_date_utc, local_time, timezone)`
+- Also used for `needs_recurrence_day` clarification (weekly/monthly reminders missing a day)
 
 ### AM/PM and Time-of-Day Recognition
-The system recognizes AM/PM in three forms:
-1. **Explicit:** `am`, `pm`, `a.m.`, `p.m.`
-2. **Natural language:** `morning` (→ AM), `afternoon`/`evening`/`night` (→ PM)
-
-This affects three code locations in `main.py`:
-- `has_am_pm` check (~line 760): Determines if the message already specifies AM/PM
-- `clarify_time` handler (~line 931): Maps time-of-day words to AM/PM when processing ambiguous times
-- `is_valid_response` check (~line 2744): Recognizes time-of-day words as valid AM/PM clarification responses
+Recognizes AM/PM in three forms: explicit (`am`/`pm`), natural language (`morning`/`afternoon`/`evening`/`night`). Affects `has_am_pm` check, `clarify_time` handler, and `is_valid_response` check in `main.py`.
 
 ### Keyword Handlers vs AI Processing
-`main.py` has keyword-based handlers (exact string matches and regex patterns) that run **before** AI processing. Messages not caught by keywords fall through to OpenAI. When adding new user-facing commands:
-- Add keyword matches for common phrasings (e.g., `SUMMARY OFF`, `DISABLE SUMMARY`, etc.)
-- Consider natural language variations users might send
-- Add safeguards in AI action handlers for misclassified intents (e.g., `update_reminder` handler redirects "daily summary" terms to the settings handler)
+`main.py` has keyword-based handlers that run **before** AI processing. When adding new commands:
+- Add keyword matches for common phrasings
+- Consider natural language variations
+- Add safeguards in AI action handlers for misclassified intents
 
 ### Field Encryption
 Optional AES-256-GCM encryption for PII (names, emails). Enabled via `ENCRYPTION_KEY` and `HASH_KEY` env vars.
+
+### Smart Nudges
+Proactive AI intelligence layer — sends ONE contextual insight per day. 8 nudge types, tier-gated. OFF by default. See `docs/changelog.md` for full implementation details.
+
+### Trial Lifecycle
+7 automated messages from Day 3 to Day 44 post-signup. All timezone-aware (9-10 AM local). Celery tasks staggered hourly at :00/:05/:10/:15/:20/:25. See `docs/changelog.md` "Trial Lifecycle Timeline" for full schedule.
 
 ## Environment Variables
 
@@ -195,46 +176,4 @@ Optional AES-256-GCM encryption for PII (names, emails). Enabled via `ENCRYPTION
 
 ## Rate Limiting
 
-15 messages per 60-second window per user (configurable in `config.py`).
-
-## Multi-Agent Monitoring System
-
-Dashboard at `/admin/monitoring`. Four agents run on Celery schedules:
-
-1. **Agent 1 - Interaction Monitor** (`agents/interaction_monitor.py`) - Detects anomalies: user confusion, parsing failures, error responses, context loss, flow violations
-2. **Agent 2 - Issue Validator** (`agents/issue_validator.py`) - Validates issues, filters false positives, optional AI analysis
-3. **Agent 3 - Resolution Tracker** (`agents/resolution_tracker.py`) - Health score (0-100), resolution tracking, weekly reports
-4. **Agent 4 - Fix Planner** (`agents/fix_planner.py`) - Identifies affected files, generates Claude Code prompts for fixes
-
-**Celery schedule:** Hourly critical check, every 4h Agent 1, every 6h Agent 2, daily 6AM UTC full pipeline, weekly Monday report.
-
-**Manual triggers:** Dashboard button, `GET /admin/pipeline/run?hours=24`, `python -m agents.fix_planner --issue 123`
-
-**Issue types:** `user_confusion`, `error_response`, `parsing_failure`, `timezone_issue`, `failed_action`, `action_not_found`, `confidence_rejection`, `repeated_attempts`, `delivery_failure`, `context_loss`, `flow_violation`
-
-**DB tables:** `monitoring_issues`, `monitoring_runs`, `issue_patterns`, `issue_pattern_links`, `validation_runs`, `issue_resolutions`, `pattern_resolutions`, `health_snapshots`, `fix_proposals`, `fix_proposal_runs`
-
-## Recent Improvements & Bug Fixes
-
-### Progressive Education for Tier Limits (Feb 2026)
-Complete overhaul of tier limit messaging to improve free-to-premium conversion. Replaced confusing messages like "Added 0 items... (7 items skipped - list full)" with clear WHY-WHAT-HOW explanations. Implemented Education Pyramid (Levels 1-4) with progressive counters, warnings, and educational blocking. Enhanced STATUS command to show tier comparison. All functionality tested with 13 new unit tests. See `PROGRESSIVE_EDUCATION_IMPLEMENTATION.md` for details.
-
-### Daily Summary Interactive Flow Removed (Feb 2026)
-The `daily_summary_setup` interactive flow trapped users in an inescapable loop — commands like "Upgrade", "Premium", and natural language got caught with "I didn't understand that time..." responses. Replaced with a one-shot tip shown after the user's first reminder: "Text SUMMARY ON to enable it!" The existing keyword handlers (`SUMMARY ON`, `SUMMARY OFF`, `SUMMARY TIME 7AM`) already cover full functionality. Deleted ~380 lines from `services/first_action_service.py` (interactive handler, time validation, welcome builder, delayed SMS). Daily summary tip only triggers on reminder actions, not on memory/list actions.
-
-### Context Loss Fix (Feb 2026)
-List selection by number (e.g., "1") was intercepted by daily summary handler asking "1 AM or 1 PM?". Fixed by removing the interactive daily summary flow entirely (see above). New monitoring detectors (`context_loss`, `flow_violation`) prevent similar issues.
-
-### Broadcast System Improvements (Feb 2026)
-Three fixes to the admin broadcast system (`admin_dashboard.py`):
-
-1. **Single Number Test Mode:** New "Single Number (Test)" audience option sends to one phone number instead of all users. Bypasses time window check. Works for both immediate and scheduled broadcasts. Phone input validates US numbers and normalizes to E.164.
-
-2. **Scheduled Broadcast Reliability:** The daemon thread (`check_scheduled_broadcasts`) had two issues: (a) a single DB exception could crash the thread silently, and (b) completed scheduled broadcasts only updated `scheduled_broadcasts` table but never inserted into `broadcast_logs`, making them invisible in Broadcast History. Fixed with inner try/except around DB connections and auto-insertion into `broadcast_logs` with `source='scheduled'` on completion.
-
-3. **Message Viewer:** Broadcast History messages (previously truncated to 100 chars with no expansion) are now clickable to open a modal showing the full text with a Copy button. History also shows "Immediate" vs "Scheduled" source indicator.
-
-**DB changes:** Added `target_phone TEXT` to `scheduled_broadcasts`, `source TEXT DEFAULT 'immediate'` to `broadcast_logs` (with ALTER TABLE migrations).
-
-### Desktop Signup Flow (Feb 2026)
-Added `POST /api/signup` endpoint for desktop visitors. Phone validation, E.164 formatting, sends welcome SMS. Frontend form on remyndrs.com with responsive design. Uses CORSMiddleware.
+15 messages per 60-second window per user (configurable in `config.py`). IP-based rate limiting (5 req/5 min) on public endpoints (`/api/signup`, `/api/contact`). Brute force protection (5 failures/5 min lockout) on all admin auth endpoints.

@@ -1073,11 +1073,11 @@ def update_recurring_reminders_timezone(phone_number: str, new_timezone: str) ->
             return_db_connection(conn)
 
 
-def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, datetime]]:
+def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, datetime, datetime]]:
     """Get the most recently created reminder for a user (for undo functionality).
 
     Returns:
-        tuple: (reminder_id, reminder_text, reminder_date) or None if no reminders
+        tuple: (reminder_id, reminder_text, reminder_date, created_at) or None if no reminders
     """
     conn = None
     try:
@@ -1088,7 +1088,7 @@ def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, date
             from utils.encryption import hash_phone
             phone_hash = hash_phone(phone_number)
             c.execute(
-                '''SELECT id, reminder_text, reminder_date
+                '''SELECT id, reminder_text, reminder_date, created_at
                    FROM reminders
                    WHERE (phone_hash = %s OR phone_number = %s) AND sent = FALSE
                    ORDER BY created_at DESC
@@ -1097,7 +1097,7 @@ def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, date
             )
         else:
             c.execute(
-                '''SELECT id, reminder_text, reminder_date
+                '''SELECT id, reminder_text, reminder_date, created_at
                    FROM reminders
                    WHERE phone_number = %s AND sent = FALSE
                    ORDER BY created_at DESC
@@ -1107,7 +1107,7 @@ def get_most_recent_reminder(phone_number: str) -> Optional[tuple[int, str, date
 
         result = c.fetchone()
         if result:
-            return (result[0], result[1], result[2])
+            return (result[0], result[1], result[2], result[3])
         return None
     except Exception as e:
         logger.error(f"Error getting most recent reminder: {e}")

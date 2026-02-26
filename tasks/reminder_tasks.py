@@ -3,8 +3,11 @@ Celery Tasks for SMS Reminder Processing
 Implements atomic reminder claiming with SELECT FOR UPDATE SKIP LOCKED.
 """
 
+import os
+import urllib.request
 from celery import shared_task
 from celery.utils.log import get_task_logger
+from psycopg2 import sql
 
 from celery_app import celery_app
 from models.reminder import (
@@ -29,6 +32,8 @@ logger = get_task_logger(__name__)
     max_retries=3,
     default_retry_delay=60,
     acks_late=True,
+    time_limit=120,
+    soft_time_limit=100,
 )
 def check_and_send_reminders(self):
     """
@@ -75,6 +80,8 @@ def check_and_send_reminders(self):
     acks_late=True,
     retry_backoff=True,
     retry_backoff_max=300,
+    time_limit=300,
+    soft_time_limit=270,
 )
 def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_text: str):
     """
@@ -128,8 +135,16 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
         try:
             logger.info(f"Sending reminder {reminder_id} to {phone_number}")
 
-            # Format message with snooze option
-            message = f"Reminder: {reminder_text}\n\n(Reply SNOOZE to snooze)"
+            # Format message with friendly opener and snooze option
+            import random
+            openers = [
+                "Hey, just a heads up",
+                "Quick reminder",
+                "Don't forget",
+                "Friendly reminder",
+            ]
+            opener = random.choice(openers)
+            message = f"{opener} — {reminder_text}\n\n(Reply SNOOZE to snooze 15 min)"
 
             # Send SMS via Twilio
             send_sms(phone_number, message)
@@ -141,42 +156,34 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
             track_reminder_delivery(reminder_id, "failed", str(exc))
             raise self.retry(exc=exc)
 
-        # SMS sent successfully - mark as sent
-        # Release the FOR UPDATE lock first, then use a fresh connection to update
-        # This avoids any connection state issues with the long-held transaction
+        # SMS sent successfully - mark as sent in the SAME transaction
+        # This keeps the FOR UPDATE lock held until both SMS send and flag update
+        # are committed atomically, preventing duplicate sends on mark failure.
         try:
-            conn.commit()  # Release the FOR UPDATE lock
-            logger.info(f"Released lock for reminder {reminder_id}, now marking as sent")
-        except Exception as e:
-            logger.error(f"Failed to release lock for reminder {reminder_id}: {e}")
-
-        # Use a completely fresh connection to mark as sent
-        # This ensures no transaction state issues
-        from database import get_db_connection as get_fresh_conn, return_db_connection as return_fresh_conn
-        mark_conn = None
-        try:
-            mark_conn = get_fresh_conn()
-            mark_cursor = mark_conn.cursor()
-            mark_cursor.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
-            mark_conn.commit()
-
-            # Verify the update actually persisted
-            mark_cursor.execute('SELECT sent FROM reminders WHERE id = %s', (reminder_id,))
-            verify_result = mark_cursor.fetchone()
-            if verify_result and verify_result[0]:
-                logger.info(f"[VERIFIED] Reminder {reminder_id} marked as sent (sent={verify_result[0]})")
-            else:
-                logger.error(f"[VERIFY FAILED] Reminder {reminder_id} sent flag is still {verify_result}")
-                # Try one more time with explicit transaction
-                mark_cursor.execute('BEGIN')
-                mark_cursor.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
-                mark_cursor.execute('COMMIT')
-                logger.info(f"Retried with explicit BEGIN/COMMIT for reminder {reminder_id}")
+            c.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
+            conn.commit()  # Atomic: releases lock AND marks sent in one commit
+            logger.info(f"[VERIFIED] Reminder {reminder_id} marked as sent and lock released")
         except Exception as e:
             logger.exception(f"Failed to mark reminder {reminder_id} as sent: {e}")
-        finally:
-            if mark_conn:
-                return_fresh_conn(mark_conn)
+            # SMS was already sent — do NOT retry the task (would duplicate SMS).
+            # Try to commit on a fresh connection as a last resort.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            from database import get_db_connection as get_fresh_conn, return_db_connection as return_fresh_conn
+            mark_conn = None
+            try:
+                mark_conn = get_fresh_conn()
+                mark_cursor = mark_conn.cursor()
+                mark_cursor.execute('UPDATE reminders SET sent = TRUE WHERE id = %s', (reminder_id,))
+                mark_conn.commit()
+                logger.info(f"[FALLBACK] Marked reminder {reminder_id} as sent via fresh connection")
+            except Exception as fallback_err:
+                logger.critical(f"[CRITICAL] Reminder {reminder_id} SMS sent but could not mark as sent: {fallback_err}")
+            finally:
+                if mark_conn:
+                    return_fresh_conn(mark_conn)
 
     except Exception as outer_exc:
         # Catch-all for any unexpected errors
@@ -184,7 +191,7 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
         if conn:
             try:
                 conn.rollback()
-            except:
+            except Exception:
                 pass
         raise self.retry(exc=outer_exc)
     finally:
@@ -210,7 +217,7 @@ def send_single_reminder(self, reminder_id: int, phone_number: str, reminder_tex
     }
 
 
-@celery_app.task
+@celery_app.task(time_limit=60, soft_time_limit=50)
 def release_stale_claims_task():
     """
     Release reminders that were claimed but not processed.
@@ -219,7 +226,7 @@ def release_stale_claims_task():
     but before sending. Runs every 5 minutes via Beat.
     """
     try:
-        count = release_stale_claims(timeout_minutes=5)
+        count = release_stale_claims(timeout_minutes=15)
         if count > 0:
             logger.warning(f"Released {count} stale reminder claims")
         return {"released": count}
@@ -228,7 +235,7 @@ def release_stale_claims_task():
         raise
 
 
-@celery_app.task
+@celery_app.task(time_limit=600, soft_time_limit=540)
 def analyze_conversations_task():
     """
     Analyze recent conversations for quality issues.
@@ -363,7 +370,7 @@ def generate_first_occurrence(recurring_id):
         return None
 
 
-@celery_app.task
+@celery_app.task(time_limit=300, soft_time_limit=270)
 def generate_recurring_reminders():
     """
     Generate concrete reminders from recurring patterns.
@@ -461,6 +468,8 @@ def generate_recurring_reminders():
     bind=True,
     max_retries=2,
     default_retry_delay=60,
+    time_limit=120,
+    soft_time_limit=100,
 )
 def send_daily_summaries(self):
     """
@@ -494,6 +503,11 @@ def send_daily_summaries(self):
                 timezone_str = user['timezone']
                 first_name = user.get('first_name', '')
 
+                # Skip users with smart nudges enabled — nudge task handles their morning message
+                if user.get('smart_nudges_enabled', False):
+                    logger.debug(f"Skipping daily summary for {phone_number[-4:]}: smart nudges enabled")
+                    continue
+
                 # Get user's local date
                 user_tz = pytz.timezone(timezone_str)
                 user_now = utc_now.astimezone(user_tz)
@@ -507,8 +521,11 @@ def send_daily_summaries(self):
                 # Get today's reminders
                 reminders = get_reminders_for_date(phone_number, user_today, timezone_str)
 
-                # Format and send summary
+                # Format and send summary (truncate if too long for SMS)
                 message = format_daily_summary(reminders, first_name, user_today, user_tz)
+                if len(message) > 1500:
+                    # Truncate to fit SMS limit with a note
+                    message = message[:1450] + "\n\n...and more. Text MY REMINDERS for full list."
                 send_sms(phone_number, message)
 
                 sent_count += 1
@@ -582,10 +599,55 @@ def format_daily_summary(reminders, first_name, date, user_tz):
     return "\n".join(lines)
 
 
+def format_compact_summary(reminders, date, user_tz):
+    """Format a compact reminder summary for combined nudge messages.
+
+    Shorter than format_daily_summary — no greeting, no footer.
+    Used by send_smart_nudges to prepend reminders before the AI nudge.
+
+    Args:
+        reminders: List of (id, reminder_text, reminder_date_utc) tuples
+        date: User's local date
+        user_tz: User's pytz timezone object
+
+    Returns:
+        Formatted compact summary string, or empty string if no reminders
+    """
+    import pytz
+    from datetime import datetime
+
+    if not reminders:
+        return ""
+
+    date_str = date.strftime('%A, %B %d')
+    lines = [f"Today's reminders ({date_str}):"]
+
+    for i, (reminder_id, text, reminder_date_utc) in enumerate(reminders, 1):
+        try:
+            if isinstance(reminder_date_utc, datetime):
+                utc_dt = reminder_date_utc
+                if utc_dt.tzinfo is None:
+                    utc_dt = pytz.UTC.localize(utc_dt)
+            else:
+                utc_dt = datetime.strptime(str(reminder_date_utc), '%Y-%m-%d %H:%M:%S')
+                utc_dt = pytz.UTC.localize(utc_dt)
+
+            local_dt = utc_dt.astimezone(user_tz)
+            time_str = local_dt.strftime('%I:%M %p').lstrip('0')
+        except (ValueError, TypeError, AttributeError):
+            time_str = "TBD"
+
+        lines.append(f"{i}. {time_str} - {text}")
+
+    return "\n".join(lines)
+
+
 @celery_app.task(
     bind=True,
     max_retries=2,
     default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
 )
 def send_abandoned_onboarding_followups(self):
     """
@@ -642,6 +704,8 @@ def send_abandoned_onboarding_followups(self):
     bind=True,
     max_retries=2,
     default_retry_delay=30,
+    time_limit=60,
+    soft_time_limit=50,
 )
 def send_delayed_sms(self, to_number: str, message: str, media_url: str = None):
     """
@@ -661,6 +725,8 @@ def send_delayed_sms(self, to_number: str, message: str, media_url: str = None):
     bind=True,
     max_retries=2,
     default_retry_delay=60,
+    time_limit=120,
+    soft_time_limit=100,
 )
 def send_engagement_nudge(self, phone_number: str):
     """
@@ -744,6 +810,8 @@ def send_engagement_nudge(self, phone_number: str):
     bind=True,
     max_retries=2,
     default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
 )
 def check_trial_expirations(self):
     """
@@ -759,8 +827,9 @@ def check_trial_expirations(self):
     import pytz
     from datetime import datetime
     from database import get_db_connection, return_db_connection
-    from models.user import create_or_update_user
-    from config import PREMIUM_MONTHLY_PRICE
+    from models.list_model import get_list_count
+    from services.tier_service import get_memory_count
+    from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
 
     logger.info("Starting trial expiration check")
 
@@ -774,12 +843,16 @@ def check_trial_expirations(self):
         now_utc = datetime.utcnow()
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date,
-                   trial_warning_7d_sent, trial_warning_1d_sent, trial_warning_0d_sent
+            SELECT phone_number, first_name, trial_end_date, timezone,
+                   COALESCE(trial_warning_7d_sent, FALSE),
+                   COALESCE(trial_warning_1d_sent, FALSE),
+                   COALESCE(trial_warning_0d_sent, FALSE)
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date > %s - INTERVAL '8 days'
               AND onboarding_complete = TRUE
+              AND (opted_out IS NULL OR opted_out = FALSE)
+              AND (stripe_subscription_id IS NULL OR subscription_status != 'active')
         """, (now_utc,))
 
         users = c.fetchall()
@@ -793,7 +866,16 @@ def check_trial_expirations(self):
         warnings_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date, warning_7d_sent, warning_1d_sent, warning_0d_sent = user
+            phone_number, first_name, trial_end_date, timezone_str, warning_7d_sent, warning_1d_sent, warning_0d_sent = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate days remaining
             time_remaining = trial_end_date - now_utc
@@ -803,45 +885,113 @@ def check_trial_expirations(self):
             warning_to_send = None
             update_field = None
 
-            if days_remaining == 7 and not warning_7d_sent:
-                # 7 days remaining warning
-                warning_to_send = f"""You have 7 days left in your Premium trial! ⏰
+            if 6 <= days_remaining <= 7 and not warning_7d_sent:
+                # 7 days remaining warning — personalized with usage stats
+                # (Also serves as mid-trial value reminder to avoid double-message)
+                from services.tier_service import get_recurring_reminder_count
+
+                c.execute("SELECT COUNT(*) FROM reminders WHERE phone_number = %s", (phone_number,))
+                reminder_count = (c.fetchone() or (0,))[0]
+                list_count = get_list_count(phone_number)
+                memory_count = get_memory_count(phone_number)
+                recurring_count = get_recurring_reminder_count(phone_number)
+
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                accomplishments = []
+                if reminder_count > 0:
+                    accomplishments.append(f"  ✓ {reminder_count} reminder{'s' if reminder_count != 1 else ''} created")
+                if list_count > 0:
+                    accomplishments.append(f"  ✓ {list_count} list{'s' if list_count != 1 else ''} organized")
+                if memory_count > 0:
+                    accomplishments.append(f"  ✓ {memory_count} memor{'ies' if memory_count != 1 else 'y'} saved")
+                if recurring_count > 0:
+                    accomplishments.append(f"  ✓ {recurring_count} recurring reminder{'s' if recurring_count != 1 else ''}")
+
+                stats_block = ""
+                if accomplishments:
+                    stats_block = "\n\nSo far you've:\n" + "\n".join(accomplishments)
+
+                warning_to_send = f"""{greeting} You have 7 days left in your Premium trial! ⏰{stats_block}
 
 After your trial, you'll move to the free plan (2 reminders/day).
 
-Want to keep unlimited reminders? Text UPGRADE to continue Premium for {PREMIUM_MONTHLY_PRICE}/month."""
+Text UPGRADE to keep unlimited reminders — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo)."""
                 update_field = 'trial_warning_7d_sent'
+                # mid_trial_reminder_sent will also be marked after SMS succeeds (below)
 
-            elif days_remaining == 1 and not warning_1d_sent:
-                # 1 day remaining warning
-                warning_to_send = f"""Tomorrow is your last day of Premium trial! ⏰
+            elif 0 < days_remaining <= 1 and not warning_1d_sent:
+                # 1 day remaining warning — include usage stats
+                c.execute("SELECT COUNT(*) FROM reminders WHERE phone_number = %s", (phone_number,))
+                reminder_count = (c.fetchone() or (0,))[0]
+                list_count = get_list_count(phone_number)
+                memory_count = get_memory_count(phone_number)
+
+                stats_parts = []
+                if reminder_count > 0:
+                    stats_parts.append(f"{reminder_count} reminder{'s' if reminder_count != 1 else ''}")
+                if list_count > 0:
+                    stats_parts.append(f"{list_count} list{'s' if list_count != 1 else ''}")
+                if memory_count > 0:
+                    stats_parts.append(f"{memory_count} memor{'ies' if memory_count != 1 else 'y'}")
+
+                stats_line = ""
+                if stats_parts:
+                    stats_line = f" You've created {', '.join(stats_parts)} so far."
+
+                warning_to_send = f"""Tomorrow is your last day of Premium trial! ⏰{stats_line}
 
 After that, you'll be on the free plan (2 reminders/day).
 
-Text UPGRADE now to keep unlimited reminders for {PREMIUM_MONTHLY_PRICE}/month."""
+Text UPGRADE now — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo)."""
                 update_field = 'trial_warning_1d_sent'
 
             elif days_remaining <= 0 and not warning_0d_sent:
-                # Trial expired - downgrade message
-                warning_to_send = f"""Your Premium trial has ended. You're now on the free plan (2 reminders/day).
+                # Trial expired - downgrade to free (committed atomically with flag after SMS succeeds)
+                warning_to_send = f"""Your Premium trial has ended. You're now on the free plan:
+• 2 reminders/day
+• 5 lists, 5 memories
+• Existing recurring reminders keep working, but you can't create new ones
 
 All your data is safe!
 
-Want unlimited reminders again? Text UPGRADE anytime for {PREMIUM_MONTHLY_PRICE}/month."""
+Want unlimited access back? Text UPGRADE — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo)."""
                 update_field = 'trial_warning_0d_sent'
 
-            # Send warning if needed
+            # Send warning if needed — SMS + flag update are atomic
+            # (flag only committed if SMS succeeds, preventing silent skips)
+            VALID_TRIAL_FIELDS = {'trial_warning_7d_sent', 'trial_warning_1d_sent', 'trial_warning_0d_sent'}
             if warning_to_send and update_field:
+                if update_field not in VALID_TRIAL_FIELDS:
+                    logger.error(f"Invalid trial update_field: {update_field}")
+                    conn.rollback()
+                    continue
                 try:
                     send_sms(phone_number, warning_to_send)
 
-                    # Mark warning as sent
-                    create_or_update_user(phone_number, **{update_field: True})
+                    # Mark warning as sent using existing connection (not create_or_update_user
+                    # which opens a new connection and silently swallows errors)
+                    c.execute(sql.SQL("UPDATE users SET {} = TRUE WHERE phone_number = %s").format(sql.Identifier(update_field)), (phone_number,))
+
+                    # Day 7: also mark mid-trial reminder to prevent duplicate from that task
+                    if update_field == 'trial_warning_7d_sent':
+                        c.execute("UPDATE users SET mid_trial_reminder_sent = TRUE WHERE phone_number = %s", (phone_number,))
+
+                    # Day 0: downgrade to free tier now that SMS has been sent
+                    if update_field == 'trial_warning_0d_sent':
+                        c.execute("UPDATE users SET premium_status = 'free' WHERE phone_number = %s", (phone_number,))
+
+                    conn.commit()  # Atomic: flag + any state changes only if SMS succeeded
 
                     warnings_sent += 1
                     logger.info(f"Sent trial warning (day {days_remaining}) to ...{phone_number[-4:]}")
 
                 except Exception as sms_error:
+                    # Rollback any pending DB changes since SMS failed
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     logger.error(f"Failed to send trial warning to ...{phone_number[-4:]}: {sms_error}")
                     continue
 
@@ -861,6 +1011,8 @@ Want unlimited reminders again? Text UPGRADE anytime for {PREMIUM_MONTHLY_PRICE}
     bind=True,
     max_retries=2,
     default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
 )
 def send_mid_trial_value_reminders(self):
     """
@@ -873,7 +1025,6 @@ def send_mid_trial_value_reminders(self):
     import pytz
     from datetime import datetime
     from database import get_db_connection, return_db_connection
-    from models.user import create_or_update_user
     from models.list_model import get_list_count
     from services.tier_service import get_memory_count
 
@@ -885,16 +1036,19 @@ def send_mid_trial_value_reminders(self):
         c = conn.cursor()
 
         # Get users on Day 7 of trial (7 days remaining) who haven't received this reminder
+        # Also skip users who already got the 7d trial warning (to avoid double-message)
         now_utc = datetime.utcnow()
 
         c.execute("""
-            SELECT phone_number, first_name, trial_end_date
+            SELECT phone_number, first_name, trial_end_date, timezone
             FROM users
             WHERE trial_end_date IS NOT NULL
               AND trial_end_date > %s
               AND trial_end_date <= %s + INTERVAL '8 days'
               AND onboarding_complete = TRUE
               AND (mid_trial_reminder_sent IS NULL OR mid_trial_reminder_sent = FALSE)
+              AND (trial_warning_7d_sent IS NULL OR trial_warning_7d_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
         """, (now_utc, now_utc))
 
         users = c.fetchall()
@@ -908,14 +1062,23 @@ def send_mid_trial_value_reminders(self):
         reminders_sent = 0
 
         for user in users:
-            phone_number, first_name, trial_end_date = user
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
 
             # Calculate exact days remaining
             time_remaining = trial_end_date - now_utc
             days_remaining = time_remaining.days
 
-            # Only send on Day 7 (7 days remaining)
-            if days_remaining != 7:
+            # Only send on Day 7 (6-7 days remaining, range for signup time-of-day tolerance)
+            if not (6 <= days_remaining <= 7):
                 continue
 
             try:
@@ -964,16 +1127,19 @@ def send_mid_trial_value_reminders(self):
 
                 message = "\n".join(message_lines)
 
-                # Send the reminder
+                # Send the reminder, then mark flag atomically with existing connection
                 send_sms(phone_number, message)
-
-                # Mark as sent
-                create_or_update_user(phone_number, mid_trial_reminder_sent=True)
+                c.execute("UPDATE users SET mid_trial_reminder_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
 
                 reminders_sent += 1
                 logger.info(f"Sent mid-trial value reminder to ...{phone_number[-4:]}")
 
             except Exception as reminder_error:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 logger.error(f"Failed to send mid-trial reminder to ...{phone_number[-4:]}: {reminder_error}")
                 continue
 
@@ -987,3 +1153,591 @@ def send_mid_trial_value_reminders(self):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+# =====================================================
+# SMART NUDGES
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def send_smart_nudges(self):
+    """
+    Periodic task to send smart nudges to eligible users.
+    Runs every minute via Celery Beat (mirrors daily summary pattern).
+
+    For each minute, checks which users have their nudge time set to
+    that minute (in their local timezone) and generates/sends their nudge.
+
+    When a user also has daily summaries enabled, this task takes over their
+    morning message: it prepends today's reminders (compact format) above
+    the AI nudge, then marks daily_summary_last_sent so the summary task
+    doesn't double-send.
+    """
+    import pytz
+    from datetime import datetime
+    from models.user import (
+        get_users_due_for_smart_nudge, claim_user_for_smart_nudge,
+        get_daily_summary_settings, mark_daily_summary_sent,
+    )
+    from models.reminder import get_reminders_for_date
+    from services.nudge_service import generate_nudge, send_nudge_to_user, is_nudge_eligible
+    from config import COMBINED_NUDGE_MAX_CHARS
+
+    try:
+        utc_now = datetime.now(pytz.UTC)
+
+        # Get users whose local time matches their nudge time preference
+        due_users = get_users_due_for_smart_nudge()
+
+        if not due_users:
+            logger.debug("No users due for smart nudge")
+            return {"sent": 0}
+
+        logger.info(f"Checking smart nudges for {len(due_users)} candidates")
+
+        sent_count = 0
+        for user in due_users:
+            try:
+                phone_number = user['phone_number']
+                timezone_str = user['timezone']
+                first_name = user.get('first_name', '')
+                premium_status = user.get('premium_status', 'free')
+
+                # Get user's local date and day
+                user_tz = pytz.timezone(timezone_str)
+                user_now = utc_now.astimezone(user_tz)
+                user_today = user_now.date()
+                current_day = user_now.strftime('%A')
+
+                # Check tier eligibility
+                if not is_nudge_eligible(premium_status, current_day):
+                    logger.debug(f"Skipping nudge for {phone_number[-4:]}: not eligible (tier={premium_status}, day={current_day})")
+                    continue
+
+                # Atomically claim this user to prevent duplicates
+                if not claim_user_for_smart_nudge(phone_number, user_today):
+                    continue
+
+                # Fetch today's reminders for combined message
+                reminders = get_reminders_for_date(phone_number, user_today, timezone_str)
+                compact_summary = format_compact_summary(reminders, user_today, user_tz)
+
+                # Generate nudge using AI
+                nudge_data = generate_nudge(phone_number, timezone_str, first_name, premium_status)
+
+                # Build combined message
+                if nudge_data and compact_summary:
+                    # Both reminders and nudge — combine them
+                    combined = compact_summary + "\n\n" + nudge_data['nudge_text']
+                    if len(combined) > COMBINED_NUDGE_MAX_CHARS:
+                        combined = combined[:COMBINED_NUDGE_MAX_CHARS - 3] + "..."
+                    nudge_data['nudge_text'] = combined
+                    if send_nudge_to_user(phone_number, nudge_data):
+                        sent_count += 1
+                        mark_daily_summary_sent(phone_number)
+                        logger.info(f"Sent combined nudge+summary to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+                elif nudge_data and not compact_summary:
+                    # Nudge only, no reminders today
+                    if send_nudge_to_user(phone_number, nudge_data):
+                        sent_count += 1
+                        logger.info(f"Sent smart nudge to {phone_number[-4:]}: {nudge_data['nudge_type']}")
+                elif not nudge_data and compact_summary:
+                    # No nudge but reminders exist — send compact summary as fallback
+                    from services.sms_service import send_sms as send_sms_direct
+                    send_sms_direct(phone_number, compact_summary)
+                    mark_daily_summary_sent(phone_number)
+                    sent_count += 1
+                    logger.info(f"Sent compact summary (no nudge) to {phone_number[-4:]}")
+                else:
+                    # No nudge and no reminders — nothing to send
+                    logger.info(f"No nudge or reminders for {phone_number[-4:]}")
+
+            except Exception as e:
+                logger.error(f"Error sending smart nudge to {user['phone_number'][-4:]}: {e}")
+                continue
+
+        return {"sent": sent_count}
+
+    except Exception as exc:
+        logger.exception("Error in send_smart_nudges")
+        raise self.retry(exc=exc)
+
+
+# =====================================================
+# DAY 3 ENGAGEMENT NUDGE
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
+)
+def send_day_3_engagement_nudges(self):
+    """
+    Send engagement nudge on Day 3 of trial to encourage feature discovery.
+    Targets users who signed up ~3 days ago and haven't been very active.
+
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
+    Only sends once per user (tracks with day_3_nudge_sent flag).
+    """
+    import pytz
+    from datetime import datetime, timedelta
+    from database import get_db_connection, return_db_connection
+
+    logger.info("Starting Day 3 engagement nudge check")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now_utc = datetime.utcnow()
+
+        # Find users on Day 3 of trial (11 days remaining = 3 days since signup for 14-day trial)
+        # trial_end_date - 11 days = Day 3 of trial
+        c.execute("""
+            SELECT phone_number, first_name, trial_end_date, timezone
+            FROM users
+            WHERE trial_end_date IS NOT NULL
+              AND trial_end_date > %s
+              AND onboarding_complete = TRUE
+              AND (day_3_nudge_sent IS NULL OR day_3_nudge_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
+        """, (now_utc,))
+
+        users = c.fetchall()
+
+        if not users:
+            logger.info("No users due for Day 3 nudge")
+            return {"nudges_sent": 0}
+
+        nudges_sent = 0
+
+        for user in users:
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
+
+            # Calculate days since signup (trial is FREE_TRIAL_DAYS, so days_in = total - remaining)
+            from config import FREE_TRIAL_DAYS
+            time_remaining = trial_end_date - now_utc
+            days_remaining = time_remaining.days
+            days_in_trial = FREE_TRIAL_DAYS - days_remaining
+
+            # Only send on Day 3 (range check to handle signup time-of-day)
+            if not (2 <= days_in_trial <= 3):
+                continue
+
+            try:
+                greeting = f"Hey {first_name}!" if first_name else "Hey there!"
+
+                message = f"""{greeting} You've been on Remyndrs for 3 days now.
+
+Have you tried these yet?
+• Save a memory: "Remember my WiFi is ABC123"
+• Create a list: "Start a grocery list"
+• Set a recurring reminder: "Remind me every Monday at 9am to submit my timesheet"
+
+Just text me naturally — I'll figure out what you need!"""
+
+                send_sms(phone_number, message)
+                c.execute("UPDATE users SET day_3_nudge_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
+
+                nudges_sent += 1
+                logger.info(f"Sent Day 3 nudge to ...{phone_number[-4:]}")
+
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to send Day 3 nudge to ...{phone_number[-4:]}: {e}")
+                continue
+
+        logger.info(f"Day 3 engagement nudges complete: {nudges_sent} sent")
+        return {"nudges_sent": nudges_sent}
+
+    except Exception as exc:
+        logger.exception("Error in send_day_3_engagement_nudges")
+        raise self.retry(exc=exc)
+
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# POST-TRIAL RE-ENGAGEMENT
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
+)
+def send_post_trial_reengagement(self):
+    """
+    Send re-engagement message 3 days after trial expires.
+    Targets users who were downgraded to free but haven't upgraded.
+
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
+    Only sends once per user (tracks with post_trial_reengagement_sent flag).
+    """
+    import pytz
+    from datetime import datetime, timedelta
+    from database import get_db_connection, return_db_connection
+    from config import PREMIUM_MONTHLY_PRICE
+
+    logger.info("Starting post-trial re-engagement check")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now_utc = datetime.utcnow()
+
+        # Find users whose trial ended 3 days ago and haven't upgraded
+        c.execute("""
+            SELECT phone_number, first_name, trial_end_date, timezone
+            FROM users
+            WHERE trial_end_date IS NOT NULL
+              AND trial_end_date < %s
+              AND onboarding_complete = TRUE
+              AND premium_status = 'free'
+              AND (post_trial_reengagement_sent IS NULL OR post_trial_reengagement_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
+              AND (stripe_subscription_id IS NULL OR subscription_status != 'active')
+        """, (now_utc,))
+
+        users = c.fetchall()
+
+        if not users:
+            logger.info("No users due for post-trial re-engagement")
+            return {"messages_sent": 0}
+
+        messages_sent = 0
+
+        for user in users:
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
+
+            # Calculate days since trial ended
+            days_since_expiry = (now_utc - trial_end_date).days
+
+            # Only send on Day 3 after expiration (range check to handle signup time-of-day)
+            if not (2 <= days_since_expiry <= 3):
+                continue
+
+            try:
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                message = f"""{greeting} Your Remyndrs data is still here and safe.
+
+You're on the free plan (2 reminders/day). Want unlimited reminders, lists & memories back?
+
+Text UPGRADE for Premium at {PREMIUM_MONTHLY_PRICE}/month — pick up right where you left off."""
+
+                send_sms(phone_number, message)
+                c.execute("UPDATE users SET post_trial_reengagement_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
+
+                messages_sent += 1
+                logger.info(f"Sent post-trial re-engagement to ...{phone_number[-4:]}")
+
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to send post-trial re-engagement to ...{phone_number[-4:]}: {e}")
+                continue
+
+        logger.info(f"Post-trial re-engagement complete: {messages_sent} sent")
+        return {"messages_sent": messages_sent}
+
+    except Exception as exc:
+        logger.exception("Error in send_post_trial_reengagement")
+        raise self.retry(exc=exc)
+
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# 14-DAY POST-TRIAL TOUCHPOINT
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
+)
+def send_14d_post_trial_touchpoint(self):
+    """
+    Send a touchpoint 14 days after trial expires highlighting what free users are missing.
+    Focuses on features they actually used during trial to create urgency.
+
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
+    Only sends once per user (tracks with post_trial_14d_sent flag).
+    """
+    import pytz
+    from datetime import datetime, timedelta
+    from database import get_db_connection, return_db_connection
+    from models.list_model import get_list_count
+    from services.tier_service import get_memory_count, get_recurring_reminder_count
+    from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
+
+    logger.info("Starting 14-day post-trial touchpoint check")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now_utc = datetime.utcnow()
+
+        c.execute("""
+            SELECT phone_number, first_name, trial_end_date, timezone
+            FROM users
+            WHERE trial_end_date IS NOT NULL
+              AND trial_end_date < %s
+              AND onboarding_complete = TRUE
+              AND premium_status = 'free'
+              AND (post_trial_14d_sent IS NULL OR post_trial_14d_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
+              AND (stripe_subscription_id IS NULL OR subscription_status != 'active')
+        """, (now_utc,))
+
+        users = c.fetchall()
+
+        if not users:
+            logger.info("No users due for 14-day post-trial touchpoint")
+            return {"messages_sent": 0}
+
+        messages_sent = 0
+
+        for user in users:
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
+
+            days_since_expiry = (now_utc - trial_end_date).days
+
+            # Range check to handle signup time-of-day
+            if not (13 <= days_since_expiry <= 14):
+                continue
+
+            try:
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                # Check what features they used during trial
+                recurring_count = get_recurring_reminder_count(phone_number)
+                list_count = get_list_count(phone_number)
+                memory_count = get_memory_count(phone_number)
+
+                # Build a message highlighting what they're missing
+                missing_parts = []
+                if recurring_count > 0:
+                    missing_parts.append(f"Your {recurring_count} recurring reminder{'s are' if recurring_count != 1 else ' is'} paused on the free plan")
+                if list_count > 5:
+                    missing_parts.append(f"You have {list_count} lists but free only allows 5")
+                if memory_count and memory_count > 5:
+                    missing_parts.append(f"You have {memory_count} memories but free only allows 5")
+
+                if missing_parts:
+                    missing_line = "\n\n" + missing_parts[0] + "."
+                else:
+                    missing_line = "\n\nOn the free plan, you're limited to 2 reminders/day."
+
+                message = f"""{greeting} It's been 2 weeks since your trial ended.{missing_line}
+
+Text UPGRADE to get unlimited access back — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr."""
+
+                send_sms(phone_number, message)
+                c.execute("UPDATE users SET post_trial_14d_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
+
+                messages_sent += 1
+                logger.info(f"Sent 14-day post-trial touchpoint to ...{phone_number[-4:]}")
+
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to send 14-day touchpoint to ...{phone_number[-4:]}: {e}")
+                continue
+
+        logger.info(f"14-day post-trial touchpoint complete: {messages_sent} sent")
+        return {"messages_sent": messages_sent}
+
+    except Exception as exc:
+        logger.exception("Error in send_14d_post_trial_touchpoint")
+        raise self.retry(exc=exc)
+
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+# =====================================================
+# 30-DAY WIN-BACK MESSAGE
+# =====================================================
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    time_limit=300,
+    soft_time_limit=270,
+)
+def send_30d_winback(self):
+    """
+    Send win-back message 30 days after trial expires.
+    Targets users who were downgraded to free and never upgraded.
+
+    Runs hourly via Celery Beat. Timezone-aware: only sends at 9-10 AM local.
+    Only sends once per user (tracks with winback_30d_sent flag).
+    """
+    import pytz
+    from datetime import datetime, timedelta
+    from database import get_db_connection, return_db_connection
+    from config import PREMIUM_MONTHLY_PRICE, PREMIUM_ANNUAL_PRICE
+
+    logger.info("Starting 30-day win-back check")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        now_utc = datetime.utcnow()
+        target_date = now_utc - timedelta(days=30)
+        # Window: trial ended between 30 and 31 days ago
+        window_start = target_date - timedelta(days=1)
+
+        c.execute("""
+            SELECT phone_number, first_name, trial_end_date, timezone
+            FROM users
+            WHERE trial_end_date IS NOT NULL
+              AND trial_end_date >= %s
+              AND trial_end_date < %s
+              AND onboarding_complete = TRUE
+              AND premium_status = 'free'
+              AND (winback_30d_sent IS NULL OR winback_30d_sent = FALSE)
+              AND (opted_out IS NULL OR opted_out = FALSE)
+              AND (stripe_subscription_id IS NULL OR subscription_status != 'active')
+        """, (window_start, target_date))
+
+        users = c.fetchall()
+
+        if not users:
+            logger.info("No users due for 30-day win-back")
+            return {"messages_sent": 0}
+
+        messages_sent = 0
+
+        for user in users:
+            phone_number, first_name, trial_end_date, timezone_str = user
+
+            # Only send when it's 9-10 AM in user's local timezone
+            try:
+                user_tz = pytz.timezone(timezone_str or 'America/New_York')
+            except pytz.exceptions.UnknownTimeZoneError:
+                user_tz = pytz.timezone('America/New_York')
+            user_local_hour = datetime.now(pytz.utc).astimezone(user_tz).hour
+            if not (9 <= user_local_hour < 10):
+                continue
+
+            try:
+                greeting = f"Hi {first_name}!" if first_name else "Hi there!"
+
+                message = f"""{greeting} It's been a month since your Remyndrs trial ended.
+
+Your reminders, lists & memories are still here waiting for you.
+
+Text UPGRADE to unlock unlimited access — {PREMIUM_MONTHLY_PRICE}/mo or {PREMIUM_ANNUAL_PRICE}/yr ($7.50/mo).
+
+Or just text me anything to keep using the free plan!"""
+
+                send_sms(phone_number, message)
+                c.execute("UPDATE users SET winback_30d_sent = TRUE WHERE phone_number = %s", (phone_number,))
+                conn.commit()
+
+                messages_sent += 1
+                logger.info(f"Sent 30-day win-back to ...{phone_number[-4:]}")
+
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to send 30-day win-back to ...{phone_number[-4:]}: {e}")
+                continue
+
+        logger.info(f"30-day win-back complete: {messages_sent} sent")
+        return {"messages_sent": messages_sent}
+
+    except Exception as exc:
+        logger.exception("Error in send_30d_winback")
+        raise self.retry(exc=exc)
+
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+@celery_app.task(time_limit=15, soft_time_limit=10)
+def keep_web_service_warm():
+    """
+    Ping the web service health check endpoint to keep DB connections warm
+    and prevent idle timeouts. Runs every 5 minutes via Celery Beat.
+    """
+    api_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not api_url:
+        return {"skipped": True, "reason": "RENDER_EXTERNAL_URL not set"}
+
+    try:
+        req = urllib.request.Request(f"{api_url}/", method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+        logger.info(f"Keep-warm ping: {api_url}/ -> {status}")
+        return {"status": status}
+    except Exception as e:
+        logger.warning(f"Keep-warm ping failed: {e}")
+        return {"error": str(e)}

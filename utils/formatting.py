@@ -7,14 +7,57 @@ def get_help_text():
     """Return help guide for users"""
     return """REMYNDRS HELP
 
-Reminders, lists & memories - just text naturally!
+Just text naturally! Here's what I can do:
 
-Examples:
+Set reminders:
 • "Remind me at 3pm to call mom"
+• "Remind me every Monday at 9am to submit timesheet"
+
+Lists & memories:
 • "Add milk to my grocery list"
 • "Remember my WiFi is ABC123"
 
+Manage your stuff:
+• MY REMINDERS — see upcoming reminders
+• MEMORIES — see saved memories
+• MY LISTS — see your lists
+• SNOOZE — snooze a reminder (15 min default)
+• UNDO — undo your last action
+
+Account:
+• STATUS — your plan & usage
+• UPGRADE — go Premium
+• SUMMARY ON/OFF — daily summary
+
+Text MORE COMMANDS for the full list.
 Full guide: remyndrs.com/commands"""
+
+
+def get_extended_help_text():
+    """Return extended command list for power users"""
+    return """MORE COMMANDS
+
+Recurring reminders:
+• MY RECURRING — see recurring reminders
+• PAUSE RECURRING — pause a recurring reminder
+• RESUME RECURRING — resume a paused one
+• DELETE RECURRING — delete a recurring reminder
+
+Past reminders:
+• SHOW COMPLETED — see sent reminders
+
+Data & account:
+• EXPORT — download all your data
+• TIMEZONE — update your timezone
+• DELETE ALL REMINDERS
+• DELETE ALL LISTS
+• DELETE ALL MEMORIES
+• DELETE ACCOUNT — permanently delete everything
+
+Support:
+• SUPPORT — open a support ticket
+• FEEDBACK — send feedback
+• BUG — report a bug"""
 
 def get_onboarding_prompt(step):
     """Get the appropriate prompt for the current onboarding step"""
