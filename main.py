@@ -2193,7 +2193,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             reply_msg = "\n".join(lines)
 
             # Store options for number selection
-            create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options))
+            create_or_update_user(phone_number, pending_reminder_delete=json.dumps(delete_options), last_active_list="__REMINDERS__")
 
             resp = MessagingResponse()
             resp.message(staging_prefix(reply_msg))
@@ -2345,11 +2345,39 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     resp.message(f"Please enter a number between 1 and {len(recurring_list)}. Text 'MY RECURRING' to see the list.")
                     return Response(content=str(resp), media_type="application/xml")
 
+            if last_active == "__REMINDERS__":
+                # Delete from reminders list - ask for confirmation first
+                reminders = get_user_reminders(phone_number)
+                pending_reminders = [r for r in reminders if not r[4]]  # unsent only
+                if pending_reminders and 1 <= item_num <= len(pending_reminders):
+                    r = pending_reminders[item_num - 1]
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'reminder',
+                        'id': r[0],
+                        'text': r[2],
+                        'recurring_id': r[3]
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data, last_active_list=None)
+                    display_prefix = "[R] " if r[3] else ""
+                    resp = MessagingResponse()
+                    resp.message(f"Delete reminder: {display_prefix}{r[2]}?\n\nReply YES to confirm or CANCEL to keep it.")
+                    log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_reminder_confirm", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    count = len(pending_reminders) if pending_reminders else 0
+                    resp = MessagingResponse()
+                    if count == 0:
+                        resp.message("You don't have any pending reminders. Text 'SHOW REMINDERS' to see your reminders.")
+                    else:
+                        resp.message(f"Please enter a number between 1 and {count}. Text 'SHOW REMINDERS' to see the list.")
+                    return Response(content=str(resp), media_type="application/xml")
+
             delete_options = []
 
             # UX PRIORITY: If user is viewing a specific list, ONLY delete from that list
             # Don't show options from reminders/memories - that's confusing
-            if last_active and last_active not in ("__RECURRING__", "__LISTS__"):
+            if last_active and last_active not in ("__RECURRING__", "__REMINDERS__", "__LISTS__"):
                 # User is viewing a specific list - delete directly from it
                 list_info = get_list_by_name(phone_number, last_active)
                 if list_info:
@@ -3281,6 +3309,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     lines.append(f"   {date_str}")
                 lines.append("")
 
+            create_or_update_user(phone_number, last_active_list="__REMINDERS__")
             resp = MessagingResponse()
             resp.message("\n".join(lines).strip())
             log_interaction(phone_number, incoming_msg, f"Listed {len(completed[-10:])} completed reminders", "show_completed", True)
@@ -4087,6 +4116,7 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             reminders = get_user_reminders(phone_number)
             user_tz = get_user_timezone(phone_number)
             reply_text = format_reminders_list(reminders, user_tz)
+            create_or_update_user(phone_number, last_active_list="__REMINDERS__")
             log_interaction(phone_number, incoming_msg, reply_text, "list_reminders", True)
 
         elif ai_response["action"] == "show_help":
