@@ -153,6 +153,22 @@ When AI confidence is below threshold, reminders enter pending confirmation stor
 ### AM/PM and Time-of-Day Recognition
 Recognizes AM/PM in three forms: explicit (`am`/`pm`), natural language (`morning`/`afternoon`/`evening`/`night`). Affects `has_am_pm` check, `clarify_time` handler, and `is_valid_response` check in `main.py`.
 
+### Context-Aware Deletion
+When users view a numbered list (memories, lists, reminders, recurring reminders), the system sets `last_active_list` to a context marker so "Delete #" knows what they were looking at. Without this, "Delete 2" would show a confusing disambiguation menu pulling items from all types.
+
+**Context markers** (stored in `last_active_list` via `create_or_update_user()`):
+- `"__MEMORIES__"` — set by "Show Memories" keyword handler and `list_memories` AI action
+- `"__LISTS__"` — set by "My Lists" keyword handler (multiple lists) and `list_lists` AI action
+- `"__REMINDERS__"` — set by `list_reminders` AI action
+- `"__RECURRING__"` — set by "My Recurring" keyword handler
+- `list_name` (actual name) — set when viewing a specific list's items
+
+**Delete-by-number flow** in `main.py`: checks markers in order (`__RECURRING__` → `__REMINDERS__` → `__LISTS__` → `__MEMORIES__` → specific list → fallback disambiguation). Each stores a `pending_reminder_delete` JSON with `awaiting_confirmation: true` and clears `last_active_list`.
+
+**YES confirmation handler** supports all types: `reminder`, `recurring`, `list_item`, `memory`, `list`.
+
+**When adding new viewable lists:** set `last_active_list` to a `__MARKER__` when displaying, add a handler in the delete-by-number section, add the marker to the exclusion list, and add the type to the YES confirmation handler.
+
 ### Keyword Handlers vs AI Processing
 `main.py` has keyword-based handlers that run **before** AI processing. When adding new commands:
 - Add keyword matches for common phrasings
