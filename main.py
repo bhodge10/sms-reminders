@@ -2320,6 +2320,17 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             return Response(content=str(resp), media_type="application/xml")
 
         # ==========================================
+        # DELETE MULTIPLE NUMBERS (catch and redirect)
+        # ==========================================
+        # Catch "Delete 1 and 2", "Remove 1, 2, 3", "Delete 1 2" etc. before they fall through to AI
+        multi_delete_match = re.match(r'^(?:delete|remove)\s+\d+\s*(?:[,&]\s*\d+|\s+and\s+\d+|\s+\d+)+', incoming_msg.strip(), re.IGNORECASE)
+        if multi_delete_match:
+            resp = MessagingResponse()
+            resp.message("I can only delete one at a time. Just text 'Delete 1', then 'Delete 2', etc.")
+            log_interaction(phone_number, incoming_msg, "Multi-delete redirect", "delete_multi_redirect", True)
+            return Response(content=str(resp), media_type="application/xml")
+
+        # ==========================================
         # DELETE BY NUMBER (smart disambiguation)
         # ==========================================
         # Handle "Delete 1", "Remove 2", etc. - ask user what they want to delete
