@@ -1,5 +1,14 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Auto-Clear Stale Opted-Out Flags & Admin Manual Clear (Feb 2026)
+Users who texted STOP and later re-engaged could have a stale `opted_out` database flag, causing them to be silently excluded from broadcasts even though Twilio was no longer blocking them. Added automatic and manual fixes.
+
+**Auto-clear:** When any user texts in (past the STOP keyword handler), if their `opted_out` flag is `TRUE`, it's automatically cleared. Uses the existing `get_user()` result — `opted_out` added to `USER_COLUMNS` at index 21 — so no extra DB query on normal requests. The UPDATE only fires for the rare stale case.
+
+**Admin manual clear:** Customer detail profile (`/admin/cs/customer/{phone}`) now shows a red "Opted Out" banner with date when the flag is set. A "Clear Flag" button calls `POST /admin/cs/customer/{phone}/clear-opted-out`, logs a CS note, and refreshes the profile. Also added a "Clear" button next to each opted-out user in the broadcast recipients preview excluded list — clears the flag and refreshes the preview inline.
+
+**Why both?** Broadcasts are outbound-only and don't trigger the auto-clear. The manual clear covers users who haven't texted recently.
+
 ## Broadcast Recipients Preview & Opted-Out Count Fix (Feb 2026)
 The broadcast stats endpoint included opted-out users in its counts, making the preview numbers misleading — the actual send logic correctly filtered them out. Fixed the stats query and added a full recipients preview so admins can see exactly who will receive a broadcast before sending.
 
