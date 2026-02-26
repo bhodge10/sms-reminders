@@ -1365,6 +1365,18 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                         else:
                             reply_msg = "Couldn't delete that item."
 
+                    elif delete_type == 'memory':
+                        if delete_memory(phone_number, delete_data['id']):
+                            reply_msg = f"Deleted memory: {delete_data['text']}"
+                        else:
+                            reply_msg = "Couldn't delete that memory."
+
+                    elif delete_type == 'list':
+                        if delete_list(phone_number, delete_data['text']):
+                            reply_msg = f"Deleted list: {delete_data['text']} and all its items."
+                        else:
+                            reply_msg = "Couldn't delete that list."
+
                     create_or_update_user(phone_number, pending_reminder_delete=None)
                     resp = MessagingResponse()
                     resp.message(staging_prefix(reply_msg))
@@ -1890,11 +1902,87 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                     resp.message(f"Please enter a number between 1 and {len(recurring_list)}. Text 'MY RECURRING' to see the list.")
                     return Response(content=str(resp), media_type="application/xml")
 
+            # Check if user was viewing reminders
+            if last_active == "__REMINDERS__":
+                reminders = get_user_reminders(phone_number)
+                pending_reminders = [r for r in reminders if not r[4]]  # unsent only
+                if pending_reminders and 1 <= item_num <= len(pending_reminders):
+                    reminder = pending_reminders[item_num - 1]
+                    reminder_id = reminder[0]
+                    reminder_text = reminder[2]
+                    recurring_id = reminder[3]
+                    # Store pending delete and ask for confirmation
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'reminder',
+                        'id': reminder_id,
+                        'text': reminder_text,
+                        'recurring_id': recurring_id
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data, last_active_list=None)
+                    display_prefix = "[R] " if recurring_id else ""
+                    resp = MessagingResponse()
+                    resp.message(f"Delete reminder: {display_prefix}{reminder_text}?\n\nReply YES to confirm or CANCEL to keep it.")
+                    log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_reminder_confirm", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Please enter a number between 1 and {len(pending_reminders) if pending_reminders else 0}. Text 'Show my reminders' to see the list.")
+                    return Response(content=str(resp), media_type="application/xml")
+
+            # Check if user was viewing list of lists
+            if last_active == "__LISTS__":
+                all_lists = get_lists(phone_number)
+                if all_lists and 1 <= item_num <= len(all_lists):
+                    lst = all_lists[item_num - 1]
+                    list_id, list_name, item_count, _ = lst
+                    # Store pending delete and ask for confirmation
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'list',
+                        'id': list_id,
+                        'text': list_name
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data, last_active_list=None)
+                    resp = MessagingResponse()
+                    resp.message(f"Delete list '{list_name}' and all its {item_count} items?\n\nReply YES to confirm or CANCEL to keep it.")
+                    log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_list_confirm", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Please enter a number between 1 and {len(all_lists) if all_lists else 0}. Text 'MY LISTS' to see the list.")
+                    return Response(content=str(resp), media_type="application/xml")
+
+            # Check if user was viewing memories
+            if last_active == "__MEMORIES__":
+                memories = get_memories(phone_number)
+                if memories and 1 <= item_num <= len(memories):
+                    memory = memories[item_num - 1]
+                    memory_id = memory[0]
+                    memory_text = memory[1] if len(memory) > 1 else str(memory)
+                    display_text = memory_text[:50] + "..." if len(memory_text) > 50 else memory_text
+                    # Store pending delete and ask for confirmation
+                    confirm_data = json.dumps({
+                        'awaiting_confirmation': True,
+                        'type': 'memory',
+                        'id': memory_id,
+                        'text': memory_text
+                    })
+                    create_or_update_user(phone_number, pending_reminder_delete=confirm_data, last_active_list=None)
+                    resp = MessagingResponse()
+                    resp.message(f"Delete memory: {display_text}?\n\nReply YES to confirm or CANCEL to keep it.")
+                    log_interaction(phone_number, incoming_msg, "Asking delete confirmation", "delete_memory_confirm", True)
+                    return Response(content=str(resp), media_type="application/xml")
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"Please enter a number between 1 and {len(memories) if memories else 0}. Text 'SHOW MEMORIES' to see the list.")
+                    return Response(content=str(resp), media_type="application/xml")
+
             delete_options = []
 
             # UX PRIORITY: If user is viewing a specific list, ONLY delete from that list
             # Don't show options from reminders/memories - that's confusing
-            if last_active and last_active not in ("__RECURRING__", "__LISTS__"):
+            if last_active and last_active not in ("__RECURRING__", "__REMINDERS__", "__LISTS__", "__MEMORIES__"):
                 # User is viewing a specific list - delete directly from it
                 list_info = get_list_by_name(phone_number, last_active)
                 if list_info:
@@ -3060,6 +3148,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
             if memories:
                 memory_list = "\n\n".join([f"{i+1}. {m[1]}" for i, m in enumerate(memories[:20])])
                 reply = f"Your stored memories:\n\n{memory_list}"
+                # Set context so "Delete #" knows we're viewing memories
+                create_or_update_user(phone_number, last_active_list="__MEMORIES__")
             else:
                 reply = "You don't have any memories stored yet."
 
@@ -3096,6 +3186,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 for i, (list_id, list_name, item_count, completed_count) in enumerate(lists, 1):
                     list_lines.append(f"{i}. {list_name} ({item_count} items)")
                 reply = "Your lists:\n\n" + "\n".join(list_lines) + "\n\nReply with a number to see that list."
+                # Set context so "Delete #" knows we're viewing list of lists
+                create_or_update_user(phone_number, last_active_list="__LISTS__")
             else:
                 reply = "You don't have any lists yet. Try saying 'Create a grocery list'!"
 
@@ -3115,6 +3207,8 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
                 selected_list = lists[list_num - 1]
                 list_id = selected_list[0]
                 list_name = selected_list[1]
+                # Set context so "Delete #" knows we're viewing this specific list
+                create_or_update_user(phone_number, last_active_list=list_name)
                 items = get_list_items(list_id)
                 if items:
                     item_lines = []
@@ -3442,6 +3536,9 @@ def process_single_action(ai_response, phone_number, incoming_msg):
             reminders = get_user_reminders(phone_number)
             user_tz = get_user_timezone(phone_number)
             reply_text = format_reminders_list(reminders, user_tz)
+            # Set context so "Delete #" knows we're viewing reminders
+            if reminders:
+                create_or_update_user(phone_number, last_active_list="__REMINDERS__")
             log_interaction(phone_number, incoming_msg, reply_text, "list_reminders", True)
 
         elif ai_response["action"] == "show_help":
