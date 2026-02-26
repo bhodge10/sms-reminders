@@ -196,7 +196,7 @@ async def get_recipients_preview(audience: str = "all", admin: str = Depends(ver
             }
 
             if opted_out:
-                excluded.append({**user_info, "reason": "opted_out"})
+                excluded.append({**user_info, "reason": "opted_out", "phone_full": phone})
                 excluded_opted_out += 1
             elif not is_within_broadcast_window(timezone_str):
                 excluded.append({**user_info, "reason": "outside_window"})
@@ -4167,6 +4167,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                                     <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Reason</th>
                                     <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Timezone</th>
                                     <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;">Local Time</th>
+                                    <th style="padding: 6px 10px; text-align: left; border-bottom: 1px solid #ddd;"></th>
                                 </tr>
                             </thead>
                             <tbody id="excludedTableBody"></tbody>
@@ -5261,12 +5262,16 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     const reasonLabel = u.reason === 'opted_out'
                         ? '<span style="background: #e74c3c; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Opted Out</span>'
                         : '<span style="background: #e67e22; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Outside Window</span>';
+                    const clearBtn = u.reason === 'opted_out' && u.phone_full
+                        ? `<button onclick="clearOptedOutFromPreview('${{u.phone_full}}')" style="background: #e74c3c; color: white; border: none; padding: 3px 8px; border-radius: 3px; font-size: 0.8em; cursor: pointer;">Clear</button>`
+                        : '';
                     row.innerHTML = `
                         <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.phone)}}</td>
                         <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.name) || '<span style="color:#95a5a6">-</span>'}}</td>
                         <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{reasonLabel}}</td>
                         <td style="padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 0.85em;">${{escapeHtml(u.timezone)}}</td>
                         <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{escapeHtml(u.local_time)}}</td>
+                        <td style="padding: 6px 10px; border-bottom: 1px solid #eee;">${{clearBtn}}</td>
                     `;
                     excludedBody.appendChild(row);
                 }});
@@ -5276,6 +5281,21 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         function togglePreviewSection(sectionId) {{
             const section = document.getElementById(sectionId);
             section.style.display = section.style.display === 'none' ? 'block' : 'none';
+        }}
+
+        async function clearOptedOutFromPreview(phone) {{
+            if (!confirm('Clear the opted-out flag for this user? They will be included in future broadcasts.')) return;
+            try {{
+                const response = await fetch(`/admin/cs/customer/${{encodeURIComponent(phone)}}/clear-opted-out`, {{
+                    method: 'POST'
+                }});
+                if (!response.ok) throw new Error('Failed to clear flag');
+                // Refresh the preview and stats
+                await loadStats();
+                await loadRecipientsPreview();
+            }} catch (e) {{
+                alert('Error clearing opted-out flag: ' + e.message);
+            }}
         }}
 
         function updatePreview() {{
