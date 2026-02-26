@@ -1,5 +1,19 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Broadcast Recipients Preview & Opted-Out Count Fix (Feb 2026)
+The broadcast stats endpoint included opted-out users in its counts, making the preview numbers misleading — the actual send logic correctly filtered them out. Fixed the stats query and added a full recipients preview so admins can see exactly who will receive a broadcast before sending.
+
+**Bug fix:** `/admin/broadcast/stats` now excludes opted-out users (`AND (opted_out = FALSE OR opted_out IS NULL)`), matching the send queries in lines 608-627.
+
+**New endpoint:** `GET /admin/broadcast/recipients-preview?audience=all|free|premium` — returns included/excluded user lists with masked phones, decrypted names, tiers, timezones, current local times, and exclusion reasons (`opted_out`, `outside_window`). Summary counts included.
+
+**UI changes:**
+- "Preview Recipients" button in broadcast preview box (hidden for single-number mode)
+- Collapsible panel with color-coded included (green) and excluded (red) tables
+- Tier badges (blue/gold) and reason badges (red "Opted Out", orange "Outside Window")
+- Panel resets when audience selection changes
+- Confirmation modal shows yellow excluded-users warning with breakdown when preview data is available
+
 ## Contact Messages — Separate from Support Tickets (Feb 2026)
 FEEDBACK, BUG, and web question/feedback/bug submissions no longer create support tickets. They go to a new lightweight `contact_messages` table instead. Only SUPPORT requests create tracked tickets in `support_tickets`.
 
