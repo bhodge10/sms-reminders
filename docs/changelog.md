@@ -1,5 +1,16 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Daily Twilio Cost Polling (Feb 2026)
+The admin dashboard Cost Analytics section previously estimated SMS costs using a flat rate (`message_count * 2 * $0.0079`), which didn't account for carrier surcharges, multi-segment messages, or price changes. Added a daily Celery task that polls Twilio's Usage Records API for actual costs.
+
+**New table:** `twilio_costs` (cost_date UNIQUE, inbound_count, inbound_cost, outbound_count, outbound_cost, total_cost, created_at)
+
+**New task:** `poll_twilio_costs` in `tasks/twilio_tasks.py` — runs daily at 6:30 AM UTC via Celery Beat. Fetches yesterday's `sms-inbound` and `sms-outbound` usage records from Twilio, upserts into `twilio_costs` using `ON CONFLICT DO UPDATE` for idempotency. Skips in test environment; handles negative Twilio price values with `abs()`.
+
+**Metrics:** `get_twilio_actual_costs()` in `services/metrics_service.py` queries day/week/month summaries. `get_cost_analytics()` now includes a `twilio_actual` key alongside existing per-plan estimates.
+
+**Dashboard UI:** "Actual vs Estimated" summary below the cost table shows estimated SMS cost, actual Twilio cost, and color-coded difference (green if actual <= estimated, red if higher). Includes inbound/outbound message count and cost breakdown. Shows "No Twilio data yet" before the first poll runs.
+
 ## Auto-Clear Stale Opted-Out Flags & Admin Manual Clear (Feb 2026)
 Users who texted STOP and later re-engaged could have a stale `opted_out` database flag, causing them to be silently excluded from broadcasts even though Twilio was no longer blocking them. Added automatic and manual fixes.
 
