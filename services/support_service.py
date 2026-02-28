@@ -169,7 +169,7 @@ def get_contact_messages(category_filter: str = None, include_resolved: bool = F
 
         query = """
             SELECT cm.id, cm.phone_number, cm.message, cm.category, cm.source,
-                   cm.resolved, cm.created_at, u.first_name
+                   cm.resolved, cm.created_at, u.first_name, cm.admin_reply
             FROM contact_messages cm
             LEFT JOIN users u ON cm.phone_number = u.phone_number
             WHERE 1=1
@@ -196,7 +196,8 @@ def get_contact_messages(category_filter: str = None, include_resolved: bool = F
                 'source': r[4],
                 'resolved': r[5],
                 'created_at': r[6].isoformat() if r[6] else None,
-                'user_name': r[7]
+                'user_name': r[7],
+                'admin_reply': r[8]
             }
             for r in rows
         ]
@@ -228,6 +229,58 @@ def toggle_contact_message_resolved(message_id: int) -> bool:
     except Exception as e:
         logger.error(f"Error toggling contact message resolved: {e}")
         return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def reply_to_contact_message(message_id: int, message: str) -> dict:
+    """
+    Send an SMS reply to a contact message and store it.
+
+    Args:
+        message_id: The contact message ID
+        message: The reply text
+
+    Returns:
+        dict with success status
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        # Get contact message phone number
+        c.execute(
+            "SELECT phone_number FROM contact_messages WHERE id = %s",
+            (message_id,)
+        )
+        result = c.fetchone()
+
+        if not result:
+            return {'success': False, 'error': 'Contact message not found'}
+
+        phone_number = result[0]
+
+        # Send SMS
+        sms_message = f"[Remyndrs]\n\n{message}"
+        send_sms(phone_number, sms_message)
+
+        # Store the admin reply
+        c.execute(
+            "UPDATE contact_messages SET admin_reply = %s WHERE id = %s",
+            (message, message_id)
+        )
+        conn.commit()
+
+        logger.info(f"Sent reply to contact message #{message_id}")
+        return {'success': True}
+
+    except Exception as e:
+        logger.error(f"Error replying to contact message: {e}")
+        if conn:
+            conn.rollback()
+        return {'success': False, 'error': str(e)}
     finally:
         if conn:
             return_db_connection(conn)

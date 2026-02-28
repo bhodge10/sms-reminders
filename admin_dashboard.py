@@ -951,6 +951,20 @@ async def toggle_contact_message(message_id: int, admin: str = Depends(verify_ad
     return JSONResponse(content={"success": True})
 
 
+@router.post("/admin/contact-messages/{message_id}/reply")
+async def reply_to_contact_message_endpoint(message_id: int, request: Request, admin: str = Depends(verify_admin)):
+    """Reply to a contact message via SMS"""
+    from services.support_service import reply_to_contact_message
+    body = await request.json()
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+    result = reply_to_contact_message(message_id, message)
+    if not result['success']:
+        raise HTTPException(status_code=404, detail=result.get('error', 'Failed to send reply'))
+    return JSONResponse(content={"success": True})
+
+
 # =====================================================
 # COST ANALYTICS API ENDPOINT
 # =====================================================
@@ -6495,6 +6509,12 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     const srcColor = srcColors[m.source] || '#95a5a6';
                     const date = new Date(m.created_at).toLocaleString();
                     const resolvedStyle = m.resolved ? 'opacity: 0.6;' : '';
+                    const replyHtml = m.admin_reply
+                        ? `<div style="background: #eaf7ea; padding: 8px 12px; border-radius: 6px; margin-top: 8px; border-left: 3px solid #27ae60;">
+                               <span style="color: #27ae60; font-weight: bold; font-size: 0.85em;">Admin Reply:</span>
+                               <span style="color: #333; margin-left: 6px;">${{m.admin_reply}}</span>
+                           </div>`
+                        : '';
                     return `
                         <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid ${{catColor}}; ${{resolvedStyle}}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -6503,12 +6523,25 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                                     <span style="background: ${{catColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">${{m.category.toUpperCase()}}</span>
                                     <span style="background: ${{srcColor}}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 4px;">${{m.source.toUpperCase()}}</span>
                                 </div>
-                                <button onclick="toggleContactMsg(${{m.id}})" class="btn" style="background: ${{m.resolved ? '#f39c12' : '#27ae60'}}; font-size: 0.85em; padding: 5px 12px;">
-                                    ${{m.resolved ? 'Unresolve' : 'Resolve'}}
-                                </button>
+                                <div style="display: flex; gap: 6px;">
+                                    <button onclick="showContactReplyForm(${{m.id}})" class="btn" style="background: #3498db; font-size: 0.85em; padding: 5px 12px;">
+                                        ${{m.admin_reply ? 'Reply Again' : 'Reply'}}
+                                    </button>
+                                    <button onclick="toggleContactMsg(${{m.id}})" class="btn" style="background: ${{m.resolved ? '#f39c12' : '#27ae60'}}; font-size: 0.85em; padding: 5px 12px;">
+                                        ${{m.resolved ? 'Unresolve' : 'Resolve'}}
+                                    </button>
+                                </div>
                             </div>
                             <div style="color: #333; margin-top: 8px;">${{m.message}}</div>
+                            ${{replyHtml}}
                             <div style="color: #95a5a6; font-size: 0.8em; margin-top: 5px;">${{date}}${{m.resolved ? ' — Resolved' : ''}}</div>
+                            <div id="contactReplyForm-${{m.id}}" style="display: none; margin-top: 10px;">
+                                <div style="display: flex; gap: 8px;">
+                                    <input type="text" id="contactReplyInput-${{m.id}}" placeholder="Type your reply..." style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                    <button onclick="sendContactReply(${{m.id}})" class="btn" style="background: #3498db; padding: 8px 16px;">Send</button>
+                                    <button onclick="hideContactReplyForm(${{m.id}})" class="btn" style="background: #95a5a6; padding: 8px 12px;">Cancel</button>
+                                </div>
+                            </div>
                         </div>
                     `;
                 }}).join('');
@@ -6524,6 +6557,38 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 if (response.ok) loadContactMessages();
             }} catch (e) {{
                 alert('Error updating contact message');
+            }}
+        }}
+
+        function showContactReplyForm(id) {{
+            document.getElementById(`contactReplyForm-${{id}}`).style.display = 'block';
+            document.getElementById(`contactReplyInput-${{id}}`).focus();
+        }}
+
+        function hideContactReplyForm(id) {{
+            document.getElementById(`contactReplyForm-${{id}}`).style.display = 'none';
+            document.getElementById(`contactReplyInput-${{id}}`).value = '';
+        }}
+
+        async function sendContactReply(id) {{
+            const input = document.getElementById(`contactReplyInput-${{id}}`);
+            const message = input.value.trim();
+            if (!message) return;
+
+            try {{
+                const response = await fetch(`/admin/contact-messages/${{id}}/reply`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ message }})
+                }});
+                if (response.ok) {{
+                    loadContactMessages();
+                }} else {{
+                    const error = await response.json();
+                    alert('Error: ' + (error.detail || 'Failed to send reply'));
+                }}
+            }} catch (e) {{
+                alert('Error sending reply: ' + e.message);
             }}
         }}
 

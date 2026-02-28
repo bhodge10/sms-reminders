@@ -356,6 +356,7 @@ def init_db():
                 category TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'sms',
                 resolved BOOLEAN DEFAULT FALSE,
+                admin_reply TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -591,6 +592,8 @@ def init_db():
                 total_cost NUMERIC(10,4) DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
+            # Admin reply to contact messages
+            "ALTER TABLE contact_messages ADD COLUMN IF NOT EXISTS admin_reply TEXT",
         ]
 
         # Create indexes on phone_hash columns for efficient lookups
