@@ -164,13 +164,15 @@ def get_reminders_created_today(phone_number: str) -> int:
             c.execute(
                 '''SELECT COUNT(*) FROM reminders
                    WHERE (phone_hash = %s OR phone_number = %s)
-                   AND created_at >= %s''',
+                   AND created_at >= %s
+                   AND (snoozed IS NOT TRUE)''',
                 (phone_hash, phone_number, today_start)
             )
         else:
             c.execute(
                 '''SELECT COUNT(*) FROM reminders
-                   WHERE phone_number = %s AND created_at >= %s''',
+                   WHERE phone_number = %s AND created_at >= %s
+                   AND (snoozed IS NOT TRUE)''',
                 (phone_number, today_start)
             )
 
