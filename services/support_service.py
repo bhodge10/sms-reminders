@@ -160,7 +160,7 @@ def save_contact_message(phone_number: str, message: str, category: str, source:
             return_db_connection(conn)
 
 
-def get_contact_messages(category_filter: str = None, include_resolved: bool = False) -> list:
+def get_contact_messages(category_filter: str = None, include_resolved: bool = False, start_date=None, end_date=None) -> list:
     """Get contact messages for admin/CS dashboard"""
     conn = None
     try:
@@ -182,6 +182,13 @@ def get_contact_messages(category_filter: str = None, include_resolved: bool = F
         if category_filter:
             query += " AND cm.category = %s"
             params.append(category_filter)
+
+        if start_date:
+            query += " AND cm.created_at >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND cm.created_at < %s"
+            params.append(end_date)
 
         query += " ORDER BY cm.created_at DESC"
 
@@ -606,7 +613,7 @@ def reopen_ticket(ticket_id: int) -> bool:
             return_db_connection(conn)
 
 
-def get_all_tickets(include_closed: bool = False, category_filter: str = None, source_filter: str = None) -> list:
+def get_all_tickets(include_closed: bool = False, category_filter: str = None, source_filter: str = None, start_date=None, end_date=None) -> list:
     """Get all support tickets for admin/CS dashboard"""
     conn = None
     try:
@@ -638,6 +645,13 @@ def get_all_tickets(include_closed: bool = False, category_filter: str = None, s
         if source_filter:
             query += " AND COALESCE(t.source, 'sms') = %s"
             params.append(source_filter)
+
+        if start_date:
+            query += " AND t.created_at >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND t.created_at < %s"
+            params.append(end_date)
 
         query += " ORDER BY t.updated_at DESC"
 

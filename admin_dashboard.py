@@ -30,6 +30,13 @@ from utils.encryption import safe_decrypt
 from utils.auth import enforce_auth_rate_limit, record_auth_failure
 import re
 
+def parse_date_filter(start_date: Optional[str], end_date: Optional[str]):
+    """Parse date filter strings into datetime objects."""
+    sd = datetime.strptime(start_date, '%Y-%m-%d') if start_date else None
+    ed = datetime.strptime(end_date, '%Y-%m-%d') if end_date else None
+    return sd, ed
+
+
 # Broadcast time window (8am - 8pm in user's local timezone)
 BROADCAST_START_HOUR = 8
 BROADCAST_END_HOUR = 20  # 8pm
@@ -86,6 +93,26 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
+
+
+# =====================================================
+# OVERVIEW STATS API ENDPOINT
+# =====================================================
+
+@router.get("/admin/stats/overview")
+async def get_overview_stats(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
+    """Get all overview metrics with optional date filtering"""
+    try:
+        sd, ed = parse_date_filter(start_date, end_date)
+        metrics = get_all_metrics(start_date=sd, end_date=ed)
+        return JSONResponse(content=metrics)
+    except Exception as e:
+        logger.error(f"Error getting overview stats: {e}")
+        raise HTTPException(status_code=500, detail="Error getting overview stats")
 
 
 # =====================================================
@@ -225,20 +252,33 @@ async def get_recipients_preview(audience: str = "all", admin: str = Depends(ver
 
 
 @router.get("/admin/broadcast/history")
-async def get_broadcast_history(admin: str = Depends(verify_admin)):
+async def get_broadcast_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get history of past broadcasts"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        sd, ed = parse_date_filter(start_date, end_date)
 
-        c.execute('''
+        query = '''
             SELECT id, sender, message, audience, recipient_count,
                    success_count, fail_count, status, created_at, completed_at, source
             FROM broadcast_logs
-            ORDER BY created_at DESC
-            LIMIT 20
-        ''')
+            WHERE 1=1
+        '''
+        params = []
+        if sd:
+            query += ' AND created_at >= %s'
+            params.append(sd)
+        if ed:
+            query += ' AND created_at < %s'
+            params.append(ed)
+        query += ' ORDER BY created_at DESC LIMIT 20'
+        c.execute(query, params)
         results = c.fetchall()
 
         history = []
@@ -862,18 +902,32 @@ def start_broadcast_checker():
 # =====================================================
 
 @router.get("/admin/feedback")
-async def get_feedback(admin: str = Depends(verify_admin)):
+async def get_feedback(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get all feedback entries, sorted by most recent first"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        sd, ed = parse_date_filter(start_date, end_date)
 
-        c.execute('''
+        query = '''
             SELECT id, user_phone, message, created_at, resolved
             FROM feedback
-            ORDER BY created_at DESC
-        ''')
+            WHERE 1=1
+        '''
+        params = []
+        if sd:
+            query += ' AND created_at >= %s'
+            params.append(sd)
+        if ed:
+            query += ' AND created_at < %s'
+            params.append(ed)
+        query += ' ORDER BY created_at DESC'
+        c.execute(query, params)
         results = c.fetchall()
 
         feedback_list = []
@@ -934,10 +988,17 @@ async def toggle_feedback_resolved(feedback_id: int, admin: str = Depends(verify
 # =====================================================
 
 @router.get("/admin/contact-messages")
-async def get_contact_messages_endpoint(category: str = None, include_resolved: bool = False, admin: str = Depends(verify_admin)):
+async def get_contact_messages_endpoint(
+    category: str = None,
+    include_resolved: bool = False,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get contact messages (feedback, bug reports, questions)"""
     from services.support_service import get_contact_messages
-    messages = get_contact_messages(category_filter=category, include_resolved=include_resolved)
+    sd, ed = parse_date_filter(start_date, end_date)
+    messages = get_contact_messages(category_filter=category, include_resolved=include_resolved, start_date=sd, end_date=ed)
     return JSONResponse(content={"messages": messages})
 
 
@@ -970,10 +1031,15 @@ async def reply_to_contact_message_endpoint(message_id: int, request: Request, a
 # =====================================================
 
 @router.get("/admin/costs")
-async def get_costs(admin: str = Depends(verify_admin)):
+async def get_costs(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get cost analytics broken down by plan tier and time period"""
     try:
-        costs = get_cost_analytics()
+        sd, ed = parse_date_filter(start_date, end_date)
+        costs = get_cost_analytics(start_date=sd, end_date=ed)
         return JSONResponse(content=costs)
     except Exception as e:
         logger.error(f"Error getting cost analytics: {e}")
@@ -1187,11 +1253,14 @@ async def get_conversations(
     phone: Optional[str] = None,
     intent: Optional[str] = None,
     hide_reviewed: bool = True,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     admin: str = Depends(verify_admin)
 ):
     """Get recent conversation logs"""
     try:
-        logs = get_recent_logs(limit=limit, offset=offset, phone_filter=phone, intent_filter=intent, hide_reviewed=hide_reviewed)
+        sd, ed = parse_date_filter(start_date, end_date)
+        logs = get_recent_logs(limit=limit, offset=offset, phone_filter=phone, intent_filter=intent, hide_reviewed=hide_reviewed, start_date=sd, end_date=ed)
         return JSONResponse(content=logs)
     except Exception as e:
         logger.error(f"Error getting conversations: {e}")
@@ -1199,10 +1268,16 @@ async def get_conversations(
 
 
 @router.get("/admin/conversations/flagged")
-async def get_flagged(include_reviewed: bool = False, admin: str = Depends(verify_admin)):
+async def get_flagged(
+    include_reviewed: bool = False,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get AI-flagged conversations"""
     try:
-        flagged = get_flagged_conversations(limit=50, include_reviewed=include_reviewed)
+        sd, ed = parse_date_filter(start_date, end_date)
+        flagged = get_flagged_conversations(limit=50, include_reviewed=include_reviewed, start_date=sd, end_date=ed)
         return JSONResponse(content=flagged)
     except Exception as e:
         logger.error(f"Error getting flagged conversations: {e}")
@@ -2358,19 +2433,33 @@ async def clear_teams_webhook(admin: str = Depends(verify_admin)):
 # =====================================================
 
 @router.get("/admin/recurring")
-async def get_all_recurring_reminders(admin: str = Depends(verify_admin)):
+async def get_all_recurring_reminders(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get all recurring reminders for admin view"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("""
+        sd, ed = parse_date_filter(start_date, end_date)
+
+        query = """
             SELECT id, phone_number, reminder_text, recurrence_type, recurrence_day,
                    reminder_time, timezone, active, created_at, last_generated_date, next_occurrence
             FROM recurring_reminders
-            ORDER BY created_at DESC
-            LIMIT 200
-        """)
+            WHERE 1=1
+        """
+        params = []
+        if sd:
+            query += ' AND created_at >= %s'
+            params.append(sd)
+        if ed:
+            query += ' AND created_at < %s'
+            params.append(ed)
+        query += ' ORDER BY created_at DESC LIMIT 200'
+        c.execute(query, params)
         rows = c.fetchall()
 
         recurring_list = []
@@ -2702,17 +2791,27 @@ async def public_updates_page():
 
 
 @router.get("/admin/changelog")
-async def get_changelog_entries(admin: str = Depends(verify_admin)):
+async def get_changelog_entries(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get all changelog entries for admin management"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
-            SELECT id, title, description, entry_type, created_at, published
-            FROM changelog
-            ORDER BY created_at DESC
-        ''')
+        sd, ed = parse_date_filter(start_date, end_date)
+        query = 'SELECT id, title, description, entry_type, created_at, published FROM changelog WHERE 1=1'
+        params = []
+        if sd:
+            query += ' AND created_at >= %s'
+            params.append(sd)
+        if ed:
+            query += ' AND created_at < %s'
+            params.append(ed)
+        query += ' ORDER BY created_at DESC'
+        c.execute(query, params)
         entries = c.fetchall()
         return [
             {
@@ -2800,10 +2899,16 @@ class SupportReplyRequest(BaseModel):
 
 
 @router.get("/admin/support/tickets")
-async def get_support_tickets(include_closed: bool = False, admin: str = Depends(verify_admin)):
+async def get_support_tickets(
+    include_closed: bool = False,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
     """Get all support tickets (delegates to support_service)"""
     from services.support_service import get_all_tickets
-    tickets = get_all_tickets(include_closed)
+    sd, ed = parse_date_filter(start_date, end_date)
+    tickets = get_all_tickets(include_closed, start_date=sd, end_date=ed)
     return tickets
 
 
@@ -3903,7 +4008,52 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             margin-right: 10px;
         }}
         .section-anchor {{
-            scroll-margin-top: 70px;
+            scroll-margin-top: 120px;
+        }}
+
+        /* Date Filter Bar */
+        .date-filter-bar {{
+            position: sticky;
+            top: 52px;
+            background: #eef2f7;
+            padding: 10px 20px;
+            margin: -0px -20px 20px -20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            z-index: 99;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #d5dce6;
+        }}
+        .filter-btn {{
+            padding: 6px 18px;
+            border: 2px solid #3498db;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            background: white;
+            color: #3498db;
+            transition: all 0.2s;
+        }}
+        .filter-btn:hover {{
+            background: #ebf5fb;
+        }}
+        .filter-btn.active {{
+            background: #3498db;
+            color: white;
+        }}
+        .filter-date-input {{
+            padding: 6px 12px;
+            border: 1px solid #bdc3c7;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }}
+        .filter-label {{
+            font-size: 0.85em;
+            color: #555;
+            font-weight: 500;
         }}
 
         /* Collapsible Sections */
@@ -3968,103 +4118,123 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         <a href="#settings">Settings</a>
     </div>
 
+    <!-- Date Filter Bar -->
+    <div class="date-filter-bar">
+        <span class="filter-label">View:</span>
+        <button class="filter-btn" id="filterBetaBtn" onclick="setDateFilter('beta')">Beta</button>
+        <button class="filter-btn active" id="filterLiveBtn" onclick="setDateFilter('live')">Live</button>
+        <span id="filterDateGroup" style="display: flex; gap: 8px; align-items: center;">
+            <span class="filter-label">From:</span>
+            <input type="date" id="filterStartDate" class="filter-date-input" value="2026-03-01" min="2026-03-01" onchange="onDateFilterChange()">
+        </span>
+        <span id="filterRangeLabel" class="filter-label" style="margin-left: 8px;"></span>
+    </div>
+
     <h2 id="overview" class="section-anchor" style="margin-top: 0;">Overview</h2>
 
-    <div class="cards">
-        <div class="card">
-            <div class="card-title">Total Users</div>
-            <div class="card-value">{metrics.get('total_users', 0)}</div>
-            <div class="card-subtitle">completed onboarding</div>
-        </div>
-        <div class="card orange">
-            <div class="card-title">Pending Onboarding</div>
-            <div class="card-value">{metrics.get('pending_onboarding', 0)}</div>
-            <div class="card-subtitle">started but not finished</div>
-            <button class="cleanup-btn" onclick="cleanupIncomplete()">Clean Up</button>
-        </div>
-        <div class="card green">
-            <div class="card-title">Active (7 days)</div>
-            <div class="card-value">{metrics.get('active_7d', 0)}</div>
-            <div class="card-subtitle">sent a message</div>
-        </div>
-        <div class="card blue">
-            <div class="card-title">Active (30 days)</div>
-            <div class="card-value">{metrics.get('active_30d', 0)}</div>
-            <div class="card-subtitle">sent a message</div>
-        </div>
-        <div class="card purple">
-            <div class="card-title">Premium Users</div>
-            <div class="card-value">{premium.get('premium', 0)}</div>
-            <div class="card-subtitle">free: {premium.get('free', 0)}</div>
-        </div>
-    </div>
-
-    <h2>New User Signups</h2>
-    <div class="cards">
-        <div class="card green">
-            <div class="card-title">Today</div>
-            <div class="card-value">{new_users.get('today', 0)}</div>
-            <div class="card-subtitle">new users</div>
-        </div>
-        <div class="card blue">
-            <div class="card-title">This Week</div>
-            <div class="card-value">{new_users.get('this_week', 0)}</div>
-            <div class="card-subtitle">last 7 days</div>
-        </div>
-        <div class="card orange">
-            <div class="card-title">This Month</div>
-            <div class="card-value">{new_users.get('this_month', 0)}</div>
-            <div class="card-subtitle">last 30 days</div>
-        </div>
-    </div>
-
-    <div class="grid-2">
-        <div class="section">
-            <h2>Engagement Stats</h2>
-            <table>
-                <tr><th>Metric</th><th>Value</th></tr>
-                <tr><td>Avg Messages / User</td><td>{engagement.get('avg_messages_per_user', 0)}</td></tr>
-                <tr><td>Avg Memories / User</td><td>{engagement.get('avg_memories_per_user', 0)}</td></tr>
-                <tr><td>Avg Reminders / User</td><td>{engagement.get('avg_reminders_per_user', 0)}</td></tr>
-                <tr><td>Avg Lists / User</td><td>{engagement.get('avg_lists_per_user', 0)}</td></tr>
-                <tr><td>Avg Items / List</td><td>{engagement.get('avg_items_per_list', 0)}</td></tr>
-                <tr><td>Total Messages</td><td>{engagement.get('total_messages', 0)}</td></tr>
-                <tr><td>Total Memories</td><td>{engagement.get('total_memories', 0)}</td></tr>
-                <tr><td>Total Reminders</td><td>{engagement.get('total_reminders', 0)}</td></tr>
-                <tr><td>Total Lists</td><td>{engagement.get('total_lists', 0)}</td></tr>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2>Reminder Delivery</h2>
-            <table>
-                <tr><th>Status</th><th>Count</th></tr>
-                <tr><td>Pending</td><td>{reminder_stats.get('pending', 0)}</td></tr>
-                <tr><td>Sent</td><td>{reminder_stats.get('sent', 0)}</td></tr>
-                <tr><td>Failed</td><td>{reminder_stats.get('failed', 0)}</td></tr>
-                <tr><td><strong>Completion Rate</strong></td><td><strong>{reminder_stats.get('completion_rate', 0)}%</strong></td></tr>
-            </table>
-        </div>
-    </div>
-
-    <div class="section">
-        <h2>Daily Signups (Last 14 Days)</h2>
-        <div class="chart">
-            <div class="bar-chart">
-                {"".join([
-                    f'<div class="bar" style="height: {max(10, (v / max(signup_values) * 100) if signup_values and max(signup_values) > 0 else 10)}%"><span class="bar-value">{v}</span><span class="bar-label">{signup_labels[i][-5:]}</span></div>'
-                    for i, v in enumerate(signup_values)
-                ]) if signup_values else '<div style="color: #95a5a6; padding: 40px;">No signup data yet</div>'}
+    <div id="overviewSection">
+        <div class="cards">
+            <div class="card">
+                <div class="card-title">Total Users</div>
+                <div class="card-value" id="overviewTotalUsers">{metrics.get('total_users', 0)}</div>
+                <div class="card-subtitle">completed onboarding</div>
+            </div>
+            <div class="card orange">
+                <div class="card-title">Pending Onboarding</div>
+                <div class="card-value" id="overviewPendingOnboarding">{metrics.get('pending_onboarding', 0)}</div>
+                <div class="card-subtitle">started but not finished</div>
+                <button class="cleanup-btn" onclick="cleanupIncomplete()">Clean Up</button>
+            </div>
+            <div class="card green">
+                <div class="card-title">Active (7 days)</div>
+                <div class="card-value" id="overviewActive7d">{metrics.get('active_7d', 0)}</div>
+                <div class="card-subtitle">sent a message</div>
+            </div>
+            <div class="card blue">
+                <div class="card-title">Active (30 days)</div>
+                <div class="card-value" id="overviewActive30d">{metrics.get('active_30d', 0)}</div>
+                <div class="card-subtitle">sent a message</div>
+            </div>
+            <div class="card purple">
+                <div class="card-title">Premium Users</div>
+                <div class="card-value" id="overviewPremiumCount">{premium.get('premium', 0)}</div>
+                <div class="card-subtitle">free: <span id="overviewFreeCount">{premium.get('free', 0)}</span></div>
             </div>
         </div>
-    </div>
 
-    <div class="section">
-        <h2>Referral Sources</h2>
-        <table>
-            <tr><th>Source</th><th>Users</th></tr>
-            {referral_rows if referral_rows else '<tr><td colspan="2" style="color: #95a5a6;">No referral data yet</td></tr>'}
-        </table>
+        <h2>New User Signups</h2>
+        <div class="cards">
+            <div class="card green">
+                <div class="card-title">Today</div>
+                <div class="card-value" id="overviewNewToday">{new_users.get('today', 0)}</div>
+                <div class="card-subtitle">new users</div>
+            </div>
+            <div class="card blue">
+                <div class="card-title">This Week</div>
+                <div class="card-value" id="overviewNewWeek">{new_users.get('this_week', 0)}</div>
+                <div class="card-subtitle">last 7 days</div>
+            </div>
+            <div class="card orange">
+                <div class="card-title">This Month</div>
+                <div class="card-value" id="overviewNewMonth">{new_users.get('this_month', 0)}</div>
+                <div class="card-subtitle">last 30 days</div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="section">
+                <h2>Engagement Stats</h2>
+                <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+                    <tbody id="engagementTableBody">
+                    <tr><td>Avg Messages / User</td><td>{engagement.get('avg_messages_per_user', 0)}</td></tr>
+                    <tr><td>Avg Memories / User</td><td>{engagement.get('avg_memories_per_user', 0)}</td></tr>
+                    <tr><td>Avg Reminders / User</td><td>{engagement.get('avg_reminders_per_user', 0)}</td></tr>
+                    <tr><td>Avg Lists / User</td><td>{engagement.get('avg_lists_per_user', 0)}</td></tr>
+                    <tr><td>Avg Items / List</td><td>{engagement.get('avg_items_per_list', 0)}</td></tr>
+                    <tr><td>Total Messages</td><td>{engagement.get('total_messages', 0)}</td></tr>
+                    <tr><td>Total Memories</td><td>{engagement.get('total_memories', 0)}</td></tr>
+                    <tr><td>Total Reminders</td><td>{engagement.get('total_reminders', 0)}</td></tr>
+                    <tr><td>Total Lists</td><td>{engagement.get('total_lists', 0)}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <h2>Reminder Delivery</h2>
+                <table>
+                    <tr><th>Status</th><th>Count</th></tr>
+                    <tbody id="reminderTableBody">
+                    <tr><td>Pending</td><td>{reminder_stats.get('pending', 0)}</td></tr>
+                    <tr><td>Sent</td><td>{reminder_stats.get('sent', 0)}</td></tr>
+                    <tr><td>Failed</td><td>{reminder_stats.get('failed', 0)}</td></tr>
+                    <tr><td><strong>Completion Rate</strong></td><td><strong>{reminder_stats.get('completion_rate', 0)}%</strong></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Daily Signups (Last 14 Days)</h2>
+            <div class="chart" id="signupChartContainer">
+                <div class="bar-chart">
+                    {"".join([
+                        f'<div class="bar" style="height: {max(10, (v / max(signup_values) * 100) if signup_values and max(signup_values) > 0 else 10)}%"><span class="bar-value">{v}</span><span class="bar-label">{signup_labels[i][-5:]}</span></div>'
+                        for i, v in enumerate(signup_values)
+                    ]) if signup_values else '<div style="color: #95a5a6; padding: 40px;">No signup data yet</div>'}
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Referral Sources</h2>
+            <table>
+                <tr><th>Source</th><th>Users</th></tr>
+                <tbody id="referralTableBody">
+                {referral_rows if referral_rows else '<tr><td colspan="2" style="color: #95a5a6;">No referral data yet</td></tr>'}
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <!-- Maintenance Message Section (Staging Only) -->
@@ -4872,6 +5042,141 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         // Call on page load
         document.addEventListener('DOMContentLoaded', restoreCollapsedStates);
 
+        // ===== Date Filter State & Helpers =====
+        const LIVE_DATE = '2026-03-01';
+        let dateFilterMode = 'live';
+
+        function getDateFilterParams() {{
+            if (dateFilterMode === 'beta') {{
+                return 'end_date=' + LIVE_DATE;
+            }} else {{
+                const startDate = document.getElementById('filterStartDate').value || LIVE_DATE;
+                return 'start_date=' + startDate;
+            }}
+        }}
+
+        function appendDateFilter(url) {{
+            const params = getDateFilterParams();
+            if (!params) return url;
+            return url + (url.includes('?') ? '&' : '?') + params;
+        }}
+
+        function setDateFilter(mode) {{
+            dateFilterMode = mode;
+            document.getElementById('filterBetaBtn').classList.toggle('active', mode === 'beta');
+            document.getElementById('filterLiveBtn').classList.toggle('active', mode === 'live');
+            document.getElementById('filterDateGroup').style.display = mode === 'live' ? 'flex' : 'none';
+            updateFilterLabel();
+            reloadAllSections();
+        }}
+
+        function onDateFilterChange() {{
+            updateFilterLabel();
+            reloadAllSections();
+        }}
+
+        function updateFilterLabel() {{
+            const label = document.getElementById('filterRangeLabel');
+            if (dateFilterMode === 'beta') {{
+                label.textContent = 'Showing: All data before Mar 1, 2026';
+            }} else {{
+                const startDate = document.getElementById('filterStartDate').value || LIVE_DATE;
+                const d = new Date(startDate + 'T00:00:00');
+                const formatted = d.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric', year: 'numeric' }});
+                label.textContent = 'Showing: ' + formatted + ' to now';
+            }}
+        }}
+
+        function reloadAllSections() {{
+            loadOverviewStats();
+            loadHistory();
+            loadFeedback();
+            loadCostData();
+            loadConversations();
+            loadFlaggedConversations();
+            loadChangelog();
+            loadSupportTickets();
+            loadContactMessages();
+            loadRecurring();
+        }}
+
+        async function loadOverviewStats() {{
+            try {{
+                const url = appendDateFilter('/admin/stats/overview');
+                const response = await fetch(url);
+                const m = await response.json();
+
+                // Update card values
+                const el = (id) => document.getElementById(id);
+                el('overviewTotalUsers').textContent = m.total_users || 0;
+                el('overviewPendingOnboarding').textContent = m.pending_onboarding || 0;
+                el('overviewActive7d').textContent = m.active_7d || 0;
+                el('overviewActive30d').textContent = m.active_30d || 0;
+
+                const ps = m.premium_stats || {{}};
+                el('overviewPremiumCount').textContent = ps.premium || 0;
+                el('overviewFreeCount').textContent = ps.free || 0;
+
+                const nu = m.new_users || {{}};
+                el('overviewNewToday').textContent = nu.today || 0;
+                el('overviewNewWeek').textContent = nu.this_week || 0;
+                el('overviewNewMonth').textContent = nu.this_month || 0;
+
+                // Engagement table
+                const eng = m.engagement || {{}};
+                el('engagementTableBody').innerHTML = `
+                    <tr><td>Avg Messages / User</td><td>${{eng.avg_messages_per_user || 0}}</td></tr>
+                    <tr><td>Avg Memories / User</td><td>${{eng.avg_memories_per_user || 0}}</td></tr>
+                    <tr><td>Avg Reminders / User</td><td>${{eng.avg_reminders_per_user || 0}}</td></tr>
+                    <tr><td>Avg Lists / User</td><td>${{eng.avg_lists_per_user || 0}}</td></tr>
+                    <tr><td>Avg Items / List</td><td>${{eng.avg_items_per_list || 0}}</td></tr>
+                    <tr><td>Total Messages</td><td>${{eng.total_messages || 0}}</td></tr>
+                    <tr><td>Total Memories</td><td>${{eng.total_memories || 0}}</td></tr>
+                    <tr><td>Total Reminders</td><td>${{eng.total_reminders || 0}}</td></tr>
+                    <tr><td>Total Lists</td><td>${{eng.total_lists || 0}}</td></tr>
+                `;
+
+                // Reminder table
+                const rs = m.reminder_stats || {{}};
+                el('reminderTableBody').innerHTML = `
+                    <tr><td>Pending</td><td>${{rs.pending || 0}}</td></tr>
+                    <tr><td>Sent</td><td>${{rs.sent || 0}}</td></tr>
+                    <tr><td>Failed</td><td>${{rs.failed || 0}}</td></tr>
+                    <tr><td><strong>Completion Rate</strong></td><td><strong>${{rs.completion_rate || 0}}%</strong></td></tr>
+                `;
+
+                // Signup chart
+                const signups = (m.daily_signups || []).slice(0, 14);
+                const labels = signups.map(s => s[0]);
+                const values = signups.map(s => s[1]);
+                labels.reverse();
+                values.reverse();
+                const maxVal = Math.max(...values, 1);
+                const chartContainer = el('signupChartContainer');
+                if (values.length === 0) {{
+                    chartContainer.innerHTML = '<div style="color: #95a5a6; padding: 40px;">No signup data</div>';
+                }} else {{
+                    chartContainer.innerHTML = '<div class="bar-chart">' + values.map((v, i) => {{
+                        const h = Math.max(10, (v / maxVal) * 100);
+                        const lbl = labels[i].slice(-5);
+                        return `<div class="bar" style="height: ${{h}}%"><span class="bar-value">${{v}}</span><span class="bar-label">${{lbl}}</span></div>`;
+                    }}).join('') + '</div>';
+                }}
+
+                // Referral table
+                const refs = m.referrals || [];
+                if (refs.length === 0) {{
+                    el('referralTableBody').innerHTML = '<tr><td colspan="2" style="color: #95a5a6;">No referral data</td></tr>';
+                }} else {{
+                    el('referralTableBody').innerHTML = refs.map(r => `<tr><td>${{r[0]}}</td><td>${{r[1]}}</td></tr>`).join('');
+                }}
+            }} catch (e) {{
+                console.error('Error loading overview stats:', e);
+            }}
+        }}
+
+        // ===== End Date Filter =====
+
         let audienceStats = {{ all: 0, free: 0, premium: 0 }};
         let currentBroadcastId = null;
 
@@ -4892,7 +5197,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         async function loadHistory() {{
             try {{
-                const response = await fetch('/admin/broadcast/history');
+                const response = await fetch(appendDateFilter('/admin/broadcast/history'));
                 const history = await response.json();
                 broadcastHistoryData = history;
 
@@ -4963,7 +5268,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         // Load user feedback
         async function loadFeedback() {{
             try {{
-                const response = await fetch('/admin/feedback');
+                const response = await fetch(appendDateFilter('/admin/feedback'));
                 const feedback = await response.json();
 
                 const openTable = document.getElementById('openFeedbackTable');
@@ -5113,7 +5418,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         async function loadCostData() {{
             try {{
-                const response = await fetch('/admin/costs');
+                const response = await fetch(appendDateFilter('/admin/costs'));
                 costData = await response.json();
                 renderCostTable(currentPeriod);
             }} catch (e) {{
@@ -6013,7 +6318,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                     url += `&intent=${{encodeURIComponent(intent)}}`;
                 }}
 
-                const response = await fetch(url);
+                const response = await fetch(appendDateFilter(url));
                 const conversations = await response.json();
 
                 // Clear existing rows except header
@@ -6108,7 +6413,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
             }}
 
             try {{
-                const response = await fetch(`/admin/conversations/flagged?include_reviewed=${{includeReviewed}}`);
+                const response = await fetch(appendDateFilter(`/admin/conversations/flagged?include_reviewed=${{includeReviewed}}`));
                 const flagged = await response.json();
 
                 // Store for export
@@ -6391,7 +6696,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         // Changelog functions
         async function loadChangelog() {{
             try {{
-                const response = await fetch('/admin/changelog');
+                const response = await fetch(appendDateFilter('/admin/changelog'));
                 const entries = await response.json();
 
                 const container = document.getElementById('changelogEntries');
@@ -6488,7 +6793,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
                 let url = `/admin/contact-messages?include_resolved=${{includeResolved}}`;
                 if (category) url += `&category=${{category}}`;
 
-                const response = await fetch(url);
+                const response = await fetch(appendDateFilter(url));
                 const data = await response.json();
                 const messages = data.messages || [];
 
@@ -6599,7 +6904,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         async function loadSupportTickets() {{
             try {{
                 const includeClosed = document.getElementById('showClosedTickets').checked;
-                const response = await fetch(`/admin/support/tickets?include_closed=${{includeClosed}}`);
+                const response = await fetch(appendDateFilter(`/admin/support/tickets?include_closed=${{includeClosed}}`));
                 const tickets = await response.json();
 
                 const container = document.getElementById('supportTicketsList');
@@ -6790,6 +7095,8 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
         }});
 
         // Initialize
+        updateFilterLabel();
+        loadOverviewStats();
         loadStats();
         loadHistory();
         loadFeedback();
@@ -6838,7 +7145,7 @@ async def admin_dashboard(admin: str = Depends(verify_admin)):
 
         async function loadRecurring() {{
             try {{
-                const response = await fetch('/admin/recurring');
+                const response = await fetch(appendDateFilter('/admin/recurring'));
                 const data = await response.json();
                 allRecurring = data.recurring || [];
                 document.getElementById('recurringCount').textContent = data.count || 0;
