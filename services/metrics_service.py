@@ -7,6 +7,30 @@ from datetime import datetime
 from database import get_db_connection, return_db_connection
 from config import logger
 
+
+def _date_filter(column, start_date=None, end_date=None):
+    """Returns (sql_fragment, params_list) for date range filtering.
+
+    Args:
+        column: Fully qualified column name (e.g., 'u.created_at')
+        start_date: datetime or None for range start (inclusive)
+        end_date: datetime or None for range end (exclusive)
+
+    Returns:
+        Tuple of (sql_fragment_string, params_list)
+    """
+    clauses = []
+    params = []
+    if start_date:
+        clauses.append(f"{column} >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append(f"{column} < %s")
+        params.append(end_date)
+    if clauses:
+        return " AND " + " AND ".join(clauses), params
+    return "", []
+
 # Cost constants
 SMS_COST_PER_MESSAGE = 0.0079  # $0.0079 per inbound/outbound SMS
 # OpenAI pricing (per 1K tokens) - GPT-4o-mini
@@ -100,17 +124,22 @@ def set_referral_source(phone_number, source):
 # AGGREGATION QUERIES
 # =============================================================================
 
-def get_active_users(days=7):
+def get_active_users(days=7, start_date=None, end_date=None):
     """Get count of users active in last N days"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        query = '''
             SELECT COUNT(*) FROM users
             WHERE last_active_at >= NOW() - INTERVAL '%s days'
             AND onboarding_complete = TRUE
-        ''', (days,))
+        '''
+        params = [days]
+        df, dp = _date_filter('created_at', start_date, end_date)
+        query += df
+        params.extend(dp)
+        c.execute(query, params)
         result = c.fetchone()[0]
         return result
     except Exception as e:
@@ -121,20 +150,33 @@ def get_active_users(days=7):
             return_db_connection(conn)
 
 
-def get_daily_signups(days=30):
+def get_daily_signups(days=30, start_date=None, end_date=None):
     """Get daily signup counts for last N days"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
-            SELECT DATE(created_at) as signup_date, COUNT(*) as count
-            FROM users
-            WHERE created_at >= NOW() - INTERVAL '%s days'
-            AND onboarding_complete = TRUE
-            GROUP BY DATE(created_at)
-            ORDER BY signup_date DESC
-        ''', (days,))
+        if start_date or end_date:
+            query = '''
+                SELECT DATE(created_at) as signup_date, COUNT(*) as count
+                FROM users
+                WHERE onboarding_complete = TRUE
+            '''
+            params = []
+            df, dp = _date_filter('created_at', start_date, end_date)
+            query += df
+            params.extend(dp)
+            query += ' GROUP BY DATE(created_at) ORDER BY signup_date DESC'
+            c.execute(query, params)
+        else:
+            c.execute('''
+                SELECT DATE(created_at) as signup_date, COUNT(*) as count
+                FROM users
+                WHERE created_at >= NOW() - INTERVAL '%s days'
+                AND onboarding_complete = TRUE
+                GROUP BY DATE(created_at)
+                ORDER BY signup_date DESC
+            ''', (days,))
         results = c.fetchall()
         return results
     except Exception as e:
@@ -145,35 +187,42 @@ def get_daily_signups(days=30):
             return_db_connection(conn)
 
 
-def get_new_user_counts():
+def get_new_user_counts(start_date=None, end_date=None):
     """Get new user counts for today, this week, and this month"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        df, dp = _date_filter('created_at', start_date, end_date)
 
         # Today
-        c.execute('''
+        query = '''
             SELECT COUNT(*) FROM users
             WHERE DATE(created_at) = CURRENT_DATE
             AND onboarding_complete = TRUE
-        ''')
+        '''
+        query += df
+        c.execute(query, dp)
         today = c.fetchone()[0]
 
         # This week (last 7 days)
-        c.execute('''
+        query = '''
             SELECT COUNT(*) FROM users
             WHERE created_at >= NOW() - INTERVAL '7 days'
             AND onboarding_complete = TRUE
-        ''')
+        '''
+        query += df
+        c.execute(query, list(dp))
         this_week = c.fetchone()[0]
 
         # This month (last 30 days)
-        c.execute('''
+        query = '''
             SELECT COUNT(*) FROM users
             WHERE created_at >= NOW() - INTERVAL '30 days'
             AND onboarding_complete = TRUE
-        ''')
+        '''
+        query += df
+        c.execute(query, list(dp))
         this_month = c.fetchone()[0]
 
         return {
@@ -189,20 +238,25 @@ def get_new_user_counts():
             return_db_connection(conn)
 
 
-def get_premium_stats():
+def get_premium_stats(start_date=None, end_date=None):
     """Get premium vs free user counts"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        query = '''
             SELECT
                 COALESCE(premium_status, 'free') as status,
                 COUNT(*) as count
             FROM users
             WHERE onboarding_complete = TRUE
-            GROUP BY COALESCE(premium_status, 'free')
-        ''')
+        '''
+        params = []
+        df, dp = _date_filter('created_at', start_date, end_date)
+        query += df
+        params.extend(dp)
+        query += ' GROUP BY COALESCE(premium_status, \'free\')'
+        c.execute(query, params)
         results = c.fetchall()
 
         stats = {'free': 0, 'premium': 0, 'churned': 0}
@@ -218,19 +272,25 @@ def get_premium_stats():
             return_db_connection(conn)
 
 
-def get_reminder_completion_rate():
+def get_reminder_completion_rate(start_date=None, end_date=None):
     """Get reminder delivery statistics"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        query = '''
             SELECT
                 COALESCE(delivery_status, 'pending') as status,
                 COUNT(*) as count
             FROM reminders
-            GROUP BY COALESCE(delivery_status, 'pending')
-        ''')
+            WHERE 1=1
+        '''
+        params = []
+        df, dp = _date_filter('created_at', start_date, end_date)
+        query += df
+        params.extend(dp)
+        query += " GROUP BY COALESCE(delivery_status, 'pending')"
+        c.execute(query, params)
         results = c.fetchall()
 
         stats = {'pending': 0, 'sent': 0, 'failed': 0}
@@ -253,35 +313,52 @@ def get_reminder_completion_rate():
             return_db_connection(conn)
 
 
-def get_engagement_stats():
+def get_engagement_stats(start_date=None, end_date=None):
     """Get average engagement metrics per user"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        df_user, dp_user = _date_filter('created_at', start_date, end_date)
 
         # Get total users
-        c.execute('SELECT COUNT(*) FROM users WHERE onboarding_complete = TRUE')
+        query = 'SELECT COUNT(*) FROM users WHERE onboarding_complete = TRUE'
+        query += df_user
+        c.execute(query, dp_user)
         total_users = c.fetchone()[0] or 1
 
         # Get total memories
-        c.execute('SELECT COUNT(*) FROM memories')
+        df_mem, dp_mem = _date_filter('created_at', start_date, end_date)
+        query = 'SELECT COUNT(*) FROM memories WHERE 1=1'
+        query += df_mem
+        c.execute(query, dp_mem)
         total_memories = c.fetchone()[0]
 
         # Get total reminders
-        c.execute('SELECT COUNT(*) FROM reminders')
+        df_rem, dp_rem = _date_filter('created_at', start_date, end_date)
+        query = 'SELECT COUNT(*) FROM reminders WHERE 1=1'
+        query += df_rem
+        c.execute(query, dp_rem)
         total_reminders = c.fetchone()[0]
 
-        # Get total messages
-        c.execute('SELECT SUM(COALESCE(total_messages, 0)) FROM users')
+        # Get total messages (from users created in range)
+        query = 'SELECT SUM(COALESCE(total_messages, 0)) FROM users WHERE 1=1'
+        query += df_user
+        c.execute(query, list(dp_user))
         total_messages = c.fetchone()[0] or 0
 
         # Get total lists
-        c.execute('SELECT COUNT(*) FROM lists')
+        df_list, dp_list = _date_filter('created_at', start_date, end_date)
+        query = 'SELECT COUNT(*) FROM lists WHERE 1=1'
+        query += df_list
+        c.execute(query, dp_list)
         total_lists = c.fetchone()[0]
 
         # Get total list items
-        c.execute('SELECT COUNT(*) FROM list_items')
+        df_li, dp_li = _date_filter('created_at', start_date, end_date)
+        query = 'SELECT COUNT(*) FROM list_items WHERE 1=1'
+        query += df_li
+        c.execute(query, dp_li)
         total_list_items = c.fetchone()[0]
 
         # Calculate avg items per list
@@ -316,21 +393,25 @@ def get_engagement_stats():
             return_db_connection(conn)
 
 
-def get_referral_breakdown():
+def get_referral_breakdown(start_date=None, end_date=None):
     """Get user counts by referral source"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        query = '''
             SELECT
                 COALESCE(referral_source, 'unknown') as source,
                 COUNT(*) as count
             FROM users
             WHERE onboarding_complete = TRUE
-            GROUP BY COALESCE(referral_source, 'unknown')
-            ORDER BY count DESC
-        ''')
+        '''
+        params = []
+        df, dp = _date_filter('created_at', start_date, end_date)
+        query += df
+        params.extend(dp)
+        query += " GROUP BY COALESCE(referral_source, 'unknown') ORDER BY count DESC"
+        c.execute(query, params)
         results = c.fetchall()
         return results
     except Exception as e:
@@ -341,7 +422,7 @@ def get_referral_breakdown():
             return_db_connection(conn)
 
 
-def get_cost_analytics():
+def get_cost_analytics(start_date=None, end_date=None):
     """Get cost analytics broken down by plan tier and time period"""
     conn = None
     try:
@@ -357,8 +438,7 @@ def get_cost_analytics():
         }
 
         # Get user counts by plan (distinguishing trial users)
-        # Trial = premium_status is premium/family AND trial_end_date > NOW()
-        c.execute('''
+        user_query = '''
             SELECT
                 CASE
                     WHEN trial_end_date > NOW() AND premium_status IN ('premium', 'family')
@@ -368,8 +448,12 @@ def get_cost_analytics():
                 COUNT(*) as count
             FROM users
             WHERE onboarding_complete = TRUE
-            GROUP BY 1
-        ''')
+        '''
+        user_params = []
+        df_u, dp_u = _date_filter('created_at', start_date, end_date)
+        user_query += df_u + ' GROUP BY 1'
+        user_params.extend(dp_u)
+        c.execute(user_query, user_params)
         user_counts = {row[0]: row[1] for row in c.fetchall()}
 
         results = {}
@@ -377,9 +461,12 @@ def get_cost_analytics():
         for period_name, interval in periods.items():
             period_data = {}
 
+            # Build additional date filter for logs/api_usage
+            df_l, dp_l = _date_filter('l.created_at', start_date, end_date)
+            df_a, dp_a = _date_filter('a.created_at', start_date, end_date)
+
             # Get SMS costs by plan (count messages from logs table)
-            # Each log entry = 1 inbound + 1 outbound message
-            c.execute('''
+            sms_query = '''
                 SELECT
                     CASE
                         WHEN u.trial_end_date > NOW() AND u.premium_status IN ('premium', 'family')
@@ -390,12 +477,16 @@ def get_cost_analytics():
                 FROM logs l
                 JOIN users u ON l.phone_number = u.phone_number
                 WHERE l.created_at >= NOW() - %s::interval
-                GROUP BY 1
-            ''', (interval,))
+            '''
+            sms_params = [interval]
+            sms_query += df_l
+            sms_params.extend(dp_l)
+            sms_query += ' GROUP BY 1'
+            c.execute(sms_query, sms_params)
             sms_by_plan = {row[0]: row[1] for row in c.fetchall()}
 
             # Get AI costs by plan (from api_usage table)
-            c.execute('''
+            ai_query = '''
                 SELECT
                     CASE
                         WHEN u.trial_end_date > NOW() AND u.premium_status IN ('premium', 'family')
@@ -407,8 +498,12 @@ def get_cost_analytics():
                 FROM api_usage a
                 JOIN users u ON a.phone_number = u.phone_number
                 WHERE a.created_at >= NOW() - %s::interval
-                GROUP BY 1
-            ''', (interval,))
+            '''
+            ai_params = [interval]
+            ai_query += df_a
+            ai_params.extend(dp_a)
+            ai_query += ' GROUP BY 1'
+            c.execute(ai_query, ai_params)
             ai_by_plan = {row[0]: {'prompt': row[1] or 0, 'completion': row[2] or 0} for row in c.fetchall()}
 
             # Calculate costs for each plan tier (including trial)
@@ -441,19 +536,19 @@ def get_cost_analytics():
             # Add totals
             total_sms = sum(p.get('sms_cost', 0) for p in period_data.values())
             total_ai = sum(p.get('ai_cost', 0) for p in period_data.values())
-            total_users = sum(user_counts.values())
+            total_users_count = sum(user_counts.values())
             period_data['total'] = {
                 'sms_cost': round(total_sms, 4),
                 'ai_cost': round(total_ai, 4),
                 'total_cost': round(total_sms + total_ai, 4),
-                'user_count': total_users,
-                'cost_per_user': round((total_sms + total_ai) / total_users, 4) if total_users > 0 else 0
+                'user_count': total_users_count,
+                'cost_per_user': round((total_sms + total_ai) / total_users_count, 4) if total_users_count > 0 else 0
             }
 
             results[period_name] = period_data
 
         # Add actual Twilio costs alongside estimates
-        results['twilio_actual'] = get_twilio_actual_costs()
+        results['twilio_actual'] = get_twilio_actual_costs(start_date=start_date, end_date=end_date)
 
         return results
 
@@ -465,7 +560,7 @@ def get_cost_analytics():
             return_db_connection(conn)
 
 
-def get_twilio_actual_costs():
+def get_twilio_actual_costs(start_date=None, end_date=None):
     """Get actual Twilio costs from the twilio_costs table.
 
     Returns summary for today, last 7 days, and last 30 days.
@@ -481,9 +576,11 @@ def get_twilio_actual_costs():
             'month': '30 days',
         }
 
+        df, dp = _date_filter('cost_date', start_date, end_date)
+
         results = {}
         for period_name, interval in periods.items():
-            c.execute('''
+            query = '''
                 SELECT
                     COALESCE(SUM(inbound_count), 0),
                     COALESCE(SUM(inbound_cost), 0),
@@ -493,7 +590,11 @@ def get_twilio_actual_costs():
                     COUNT(*)
                 FROM twilio_costs
                 WHERE cost_date >= CURRENT_DATE - %s::interval
-            ''', (interval,))
+            '''
+            params = [interval]
+            query += df
+            params.extend(list(dp))
+            c.execute(query, params)
             row = c.fetchone()
             results[period_name] = {
                 'inbound_count': row[0],
@@ -514,7 +615,7 @@ def get_twilio_actual_costs():
             return_db_connection(conn)
 
 
-def get_all_metrics():
+def get_all_metrics(start_date=None, end_date=None):
     """Get all metrics for dashboard"""
     conn = None
     try:
@@ -522,24 +623,39 @@ def get_all_metrics():
         c = conn.cursor()
 
         # Total users (completed onboarding)
-        c.execute('SELECT COUNT(*) FROM users WHERE onboarding_complete = TRUE')
+        query = 'SELECT COUNT(*) FROM users WHERE onboarding_complete = TRUE'
+        params = []
+        df, dp = _date_filter('created_at', start_date, end_date)
+        query += df
+        params.extend(dp)
+        c.execute(query, params)
         total_users = c.fetchone()[0]
 
         # Pending onboarding (started but not completed)
-        c.execute('SELECT COUNT(*) FROM users WHERE onboarding_complete = FALSE AND onboarding_step > 0')
+        query = 'SELECT COUNT(*) FROM users WHERE onboarding_complete = FALSE AND onboarding_step > 0'
+        query += df
+        c.execute(query, list(dp))
         pending_onboarding = c.fetchone()[0]
+
+        # Convert referrals to serializable format
+        referrals_raw = get_referral_breakdown(start_date=start_date, end_date=end_date)
+        referrals = [[str(r[0]), r[1]] for r in referrals_raw]
+
+        # Convert daily_signups to serializable format
+        signups_raw = get_daily_signups(30, start_date=start_date, end_date=end_date)
+        daily_signups = [[str(s[0]), s[1]] for s in signups_raw]
 
         return {
             'total_users': total_users,
             'pending_onboarding': pending_onboarding,
-            'active_7d': get_active_users(7),
-            'active_30d': get_active_users(30),
-            'new_users': get_new_user_counts(),
-            'premium_stats': get_premium_stats(),
-            'reminder_stats': get_reminder_completion_rate(),
-            'engagement': get_engagement_stats(),
-            'referrals': get_referral_breakdown(),
-            'daily_signups': get_daily_signups(30)
+            'active_7d': get_active_users(7, start_date=start_date, end_date=end_date),
+            'active_30d': get_active_users(30, start_date=start_date, end_date=end_date),
+            'new_users': get_new_user_counts(start_date=start_date, end_date=end_date),
+            'premium_stats': get_premium_stats(start_date=start_date, end_date=end_date),
+            'reminder_stats': get_reminder_completion_rate(start_date=start_date, end_date=end_date),
+            'engagement': get_engagement_stats(start_date=start_date, end_date=end_date),
+            'referrals': referrals,
+            'daily_signups': daily_signups
         }
     except Exception as e:
         logger.error(f"Error getting all metrics: {e}")

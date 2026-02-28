@@ -769,7 +769,7 @@ def log_confidence(phone_number, action_type, confidence_score, threshold, confi
             return_db_connection(conn)
 
 
-def get_recent_logs(limit=100, offset=0, phone_filter=None, intent_filter=None, hide_reviewed=False):
+def get_recent_logs(limit=100, offset=0, phone_filter=None, intent_filter=None, hide_reviewed=False, start_date=None, end_date=None):
     """Get recent conversation logs for viewing"""
     conn = None
     try:
@@ -798,6 +798,13 @@ def get_recent_logs(limit=100, offset=0, phone_filter=None, intent_filter=None, 
 
         if hide_reviewed:
             query += ' AND NOT EXISTS(SELECT 1 FROM conversation_analysis ca WHERE ca.log_id = l.id)'
+
+        if start_date:
+            query += ' AND l.created_at >= %s'
+            params.append(start_date)
+        if end_date:
+            query += ' AND l.created_at < %s'
+            params.append(end_date)
 
         query += ' ORDER BY l.created_at DESC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
@@ -900,37 +907,39 @@ def save_conversation_analysis(log_id, phone_number, issue_type, severity, expla
             return_db_connection(conn)
 
 
-def get_flagged_conversations(limit=50, include_reviewed=False):
+def get_flagged_conversations(limit=50, include_reviewed=False, start_date=None, end_date=None):
     """Get flagged conversations from AI or manual flagging"""
     conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
+
+        base_select = '''
+            SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
+                   ca.ai_explanation, ca.reviewed, l.created_at,
+                   l.message_in, l.message_out, COALESCE(ca.source, 'ai'),
+                   COALESCE(u.timezone, 'America/New_York')
+            FROM conversation_analysis ca
+            LEFT JOIN logs l ON ca.log_id = l.id
+            LEFT JOIN users u ON ca.phone_number = u.phone_number
+        '''
+        params = []
+
         if include_reviewed:
-            c.execute('''
-                SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
-                       ca.ai_explanation, ca.reviewed, l.created_at,
-                       l.message_in, l.message_out, COALESCE(ca.source, 'ai'),
-                       COALESCE(u.timezone, 'America/New_York')
-                FROM conversation_analysis ca
-                LEFT JOIN logs l ON ca.log_id = l.id
-                LEFT JOIN users u ON ca.phone_number = u.phone_number
-                ORDER BY l.created_at DESC
-                LIMIT %s
-            ''', (limit,))
+            query = base_select + ' WHERE 1=1'
         else:
-            c.execute('''
-                SELECT ca.id, ca.log_id, ca.phone_number, ca.issue_type, ca.severity,
-                       ca.ai_explanation, ca.reviewed, l.created_at,
-                       l.message_in, l.message_out, COALESCE(ca.source, 'ai'),
-                       COALESCE(u.timezone, 'America/New_York')
-                FROM conversation_analysis ca
-                LEFT JOIN logs l ON ca.log_id = l.id
-                LEFT JOIN users u ON ca.phone_number = u.phone_number
-                WHERE ca.reviewed = FALSE
-                ORDER BY l.created_at DESC
-                LIMIT %s
-            ''', (limit,))
+            query = base_select + ' WHERE ca.reviewed = FALSE'
+
+        if start_date:
+            query += ' AND l.created_at >= %s'
+            params.append(start_date)
+        if end_date:
+            query += ' AND l.created_at < %s'
+            params.append(end_date)
+
+        query += ' ORDER BY l.created_at DESC LIMIT %s'
+        params.append(limit)
+        c.execute(query, params)
         rows = c.fetchall()
         return [
             {
