@@ -474,7 +474,7 @@ async def sms_reply(request: Request, Body: str = Form(...), From: str = Form(..
         # ==========================================
         # DELETE ACCOUNT COMMAND (two-step confirmation)
         # ==========================================
-        if incoming_msg.upper() == "DELETE ACCOUNT":
+        if incoming_msg.upper() in ("DELETE ACCOUNT", "CANCEL ACCOUNT", "CANCEL MY ACCOUNT", "DELETE MY ACCOUNT", "REMOVE MY ACCOUNT", "CLOSE MY ACCOUNT"):
             logger.info(f"DELETE ACCOUNT requested by {mask_phone_number(phone_number)}")
             create_or_update_user(phone_number, pending_delete_account=True)
             resp = MessagingResponse()
