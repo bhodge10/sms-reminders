@@ -1,5 +1,16 @@
 # Changelog — Recent Improvements & Bug Fixes
 
+## Contact Message Reply from Admin Dashboard (Feb 2026)
+Admins can now reply to contact messages (feedback, bug reports, questions) directly via SMS without creating a support ticket. Adds an inline reply button to each message card in the Contact Messages section.
+
+**New column:** `admin_reply TEXT` on `contact_messages` table (with ALTER TABLE migration for existing databases).
+
+**New function:** `reply_to_contact_message()` in `services/support_service.py` — looks up phone number by message ID, sends SMS formatted as `[Remyndrs]\n\n{message}`, stores the reply text. Does not auto-resolve; admin resolves separately.
+
+**New endpoint:** `POST /admin/contact-messages/{message_id}/reply` — accepts `{ message: str }`, validates, sends SMS, stores reply.
+
+**Dashboard UI:** Blue "Reply" button on each contact message card expands an inline text input with Send/Cancel. After sending, the reply is displayed in a green-highlighted box below the message. Button changes to "Reply Again" if a reply already exists. `get_contact_messages()` updated to include `admin_reply` in query and response.
+
 ## Daily Twilio Cost Polling (Feb 2026)
 The admin dashboard Cost Analytics section previously estimated SMS costs using a flat rate (`message_count * 2 * $0.0079`), which didn't account for carrier surcharges, multi-segment messages, or price changes. Added a daily Celery task that polls Twilio's Usage Records API for actual costs.
 
